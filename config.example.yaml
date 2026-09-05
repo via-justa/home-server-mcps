@@ -1,0 +1,49 @@
+# Lowest-priority way to configure services — env vars always win (see
+# .env.example). Useful for checking instance config into version control
+# without secrets (keep api_key out of anything you commit) or for
+# multi-instance setups you'd rather not cram into a JSON env var.
+#
+# Copy to config.yaml (or point MEDIA_APPS_MCP_CONFIG at this file) — it's
+# read whenever a service has no {SERVICE}_URL/{SERVICE}_API_KEY/
+# {SERVICE}_INSTANCES env vars set. Exactly one instance per service should
+# have `is_default: true`; the first one is used if none do.
+
+services:
+  sonarr:
+    - id: default
+      name: Sonarr
+      base_url: http://sonarr.local:8989
+      api_key: CHANGE_ME
+      is_default: true
+
+  radarr:
+    - id: hd
+      name: Radarr HD
+      base_url: http://radarr.local:7878
+      api_key: CHANGE_ME
+      is_default: true
+    - id: 4k
+      name: Radarr 4K
+      base_url: http://radarr4k.local:7878
+      api_key: CHANGE_ME
+
+  lidarr:
+    - id: default
+      name: Lidarr
+      base_url: http://lidarr.local:8686
+      api_key: CHANGE_ME
+      is_default: true
+
+  prowlarr:
+    - id: default
+      name: Prowlarr
+      base_url: http://prowlarr.local:9696
+      api_key: CHANGE_ME
+      is_default: true
+
+  seerr:
+    - id: default
+      name: Seerr
+      base_url: http://seerr.local:5055
+      api_key: CHANGE_ME
+      is_default: true
