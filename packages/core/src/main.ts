@@ -1,31 +1,32 @@
-import { bootstrap } from './bootstrap.js';
+import { createAppContext } from './app.js';
 import { loadConfig } from './config/env.js';
 import { startServers } from './server.js';
 
 const config = loadConfig();
-const core = bootstrap(config);
-for (const warning of core.warnings) console.warn(`WARN ${warning}`);
-console.log(
-  `Plugins: ${[...core.plugins.added, ...core.plugins.updated].join(', ') || 'none'} (data in ${config.DATA_DIR})`,
-);
+const ctx = await createAppContext(config);
+for (const warning of ctx.warnings) console.warn(`WARN ${warning}`);
+if (ctx.users.count() === 0) console.log('No users yet: open the admin portal to create the first account.');
+await ctx.start();
 
-const servers = await startServers(config);
-
+const servers = await startServers(ctx);
 console.log(`MCP listener on ${config.MCP_HOST}:${servers.mcp.port}`);
 console.log(`Admin listener on ${config.ADMIN_HOST}:${servers.admin.port}`);
 
+let stopping = false;
 const shutdown = (signal: string) => {
+  if (stopping) return;
+  stopping = true;
   console.log(`${signal} received, shutting down`);
-  servers.close().then(
-    () => {
-      core.db.$client.close();
-      process.exit(0);
-    },
-    (err: unknown) => {
-      console.error(err);
-      process.exit(1);
-    },
-  );
+  servers
+    .close()
+    .then(() => ctx.stop())
+    .then(
+      () => process.exit(0),
+      (err: unknown) => {
+        console.error(err);
+        process.exit(1);
+      },
+    );
 };
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
