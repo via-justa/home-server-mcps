@@ -14,6 +14,7 @@ import { CoreEvents } from './events.js';
 import { SlidingWindowLimiter } from './gate/rate-limit.js';
 import type { GateDeps } from './gate/pipeline.js';
 import { InstanceManager } from './instances/manager.js';
+import { runHousekeeping } from './maintenance.js';
 import type { ManagerOptions } from './instances/manager.js';
 import { ApprovalLinkService } from './notify/links.js';
 import { NotifierService } from './notify/service.js';
@@ -183,8 +184,19 @@ export async function createAppContext(config: Config, opts: AppOptions = {}): P
     discoverPlugins: discover,
     async start() {
       await instances.startAll();
-      // Daily backstop sync (design §10), checked hourly so instances don't all sync at once.
-      timers.push(setInterval(() => void instances.syncStale(), 60 * 60_000).unref());
+      // Hourly: daily backstop sync per instance and per plugin repo (design §10), staggered by their
+      // own last-run times, plus housekeeping.
+      const hourly = () => {
+        void instances.syncStale();
+        void repos.refreshStale();
+        try {
+          runHousekeeping(ctx);
+        } catch (err) {
+          console.error('housekeeping failed', err);
+        }
+      };
+      hourly();
+      timers.push(setInterval(hourly, 60 * 60_000).unref());
     },
     onStop(fn) {
       stopHooks.push(fn);

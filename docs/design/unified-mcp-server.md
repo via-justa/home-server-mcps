@@ -617,8 +617,8 @@ approval_links(token_hash PK, approval_id FK, action 'approve'|'deny'|'view', ex
 - Encryption: AES-256-GCM with a random 96-bit nonce per value. The ciphertext blob is `v1 ‖ nonce ‖ ciphertext ‖ tag`, and the AAD is `table:column:row-id`, so a ciphertext can't be copied to another row.
 - Encrypted columns: `plugin_instances.secrets_enc` (all `writeOnly` connection fields), `users.totp_secret_enc`, `oidc_config.client_secret_enc`, `notifier_channels.secrets_enc`.
 - The Admin API **never returns decrypted secrets**. `GET` returns `{ set: true, hint: "…ab12" }` per secret field. `PUT` with a secret field replaces it. Omitting the field keeps the old value (TN §2.6).
-- Key rotation: `hsm rotate-master-key` CLI re-encrypts all columns in one transaction.
-- Derived keys (HKDF from the master key): the attestation HMAC key, the approval-link HMAC key, and the session-ID pepper.
+- Key rotation: `node dist/cli.js rotate-master-key`, run with the server stopped, decrypts every encrypted column first and then re-encrypts them all in one transaction, so a wrong current key changes nothing. With a key file, the new key is written to `master.key.new` before the database changes and then moved over `master.key`. With `MASTER_KEY` in the environment, the replacement must be supplied as `NEW_MASTER_KEY`, so it exists before any data depends on it. All sessions are cleared, because their pepper is derived from the master key.
+- Derived keys (HKDF from the master key): the attestation HMAC key, the signed-state key (MFA and consent forms), and the session-ID pepper. Approval-link tokens are random and stored as SHA-256 hashes, so they need no key.
 
 ### 7.3 Write ownership (TN §8, adapted)
 
@@ -783,7 +783,7 @@ TN §5, SR §5, and HA §5 apply unchanged, each run **per instance** by the cor
 - **Registry freshness (HA).** `syncRegistry` runs on the same cadence, plus when the plugin sends `catalogChanged`. `resolveTargets` uses the plugin's live view, so area membership is evaluated as of call time (HA §5).
 - **Sync failure.** Keep serving the last-synced catalog (fail open on _reading_ classifications), set `last_sync_status = error`, and notify `sync.failed`. If an instance has **no** prior sync and the upstream is unreachable, it stays in `error` and its endpoint returns 503 (TN §2.2 refuse-to-start, now per instance, not for the whole process).
 - **Plugin repo index refresh.** Daily. Surfaces update availability and key changes. It never installs anything.
-- **Housekeeping.** Purge `pre_approval_hits` older than the largest rule window. Purge expired sessions, OAuth codes, tokens, and approval links. `audit_log` has **no** automatic purge; an optional `audit.retentionDays` setting (default unset = keep forever) exists for disk hygiene and is itself audited.
+- **Housekeeping (hourly).** Purge `pre_approval_hits` older than the largest rule window. Purge expired sessions, OAuth codes, tokens, and approval links. Purge decided approvals older than 7 days; the audit log keeps their record. `audit_log` has **no** automatic purge; an optional `audit.retentionDays` setting (default unset = keep forever) exists for disk hygiene and is itself audited.
 
 ---
 
