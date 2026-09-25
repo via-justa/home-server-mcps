@@ -1,0 +1,19 @@
+{
+  "v": 3,
+  "createdOnFiles": { "v": 1, "at": "2026-09-25T18:00:00Z" },
+  "title": "MCP Admin Portal — Page Mockups",
+  "launch": { "view": "canvas" },
+  "pages": [],
+  "boards": {
+    "Main.dc.html": { "x": 0, "y": 0, "w": 1280, "h": 800, "title": "Connection" },
+    "Methods.dc.html": { "x": 1360, "y": 0, "w": 1280, "h": 800, "title": "Methods" },
+    "PreApprovalRules.dc.html": { "x": 2720, "y": 0, "w": 1280, "h": 800, "title": "Pre-Approval Rules" },
+    "PendingApprovals.dc.html": { "x": 4080, "y": 0, "w": 1280, "h": 800, "title": "Pending Approvals" },
+    "AuditLog.dc.html": { "x": 5440, "y": 0, "w": 1280, "h": 800, "title": "Audit Log" }
+  },
+  "order": ["Main.dc.html", "Methods.dc.html", "PreApprovalRules.dc.html", "PendingApprovals.dc.html", "AuditLog.dc.html"],
+  "notes": {
+    "n1": { "x": 2000, "y": -280, "text": "MCP Admin Portal — Page Mockups", "kind": "title1", "maxW": 5720 }
+  },
+  "designSystems": []
+}

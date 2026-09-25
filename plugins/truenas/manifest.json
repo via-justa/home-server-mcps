@@ -1,0 +1,43 @@
+{
+  "id": "truenas",
+  "name": "TrueNAS",
+  "version": "0.1.0",
+  "sdk": "^1.0.0",
+  "description": "Search/execute over the TrueNAS JSON-RPC API, catalog from core.get_methods.",
+  "entry": "dist/index.js",
+  "binding": { "namespace": "truenas", "functions": ["call"] },
+  "labels": { "operation": "Method", "operations": "Methods" },
+  "connection": {
+    "schema": {
+      "type": "object",
+      "required": ["baseUrl", "apiKey"],
+      "properties": {
+        "baseUrl": { "type": "string", "format": "uri", "title": "Base URL" },
+        "apiKey": { "type": "string", "title": "API key", "writeOnly": true },
+        "verifyTls": { "type": "boolean", "title": "Verify TLS certificate", "default": true }
+      }
+    },
+    "ui": {
+      "baseUrl": { "widget": "url", "placeholder": "https://truenas.internal.lan" },
+      "apiKey": {
+        "widget": "secret",
+        "help": "Credentials → API Keys. FULL_ADMIN is the accepted operating assumption."
+      },
+      "verifyTls": { "widget": "bool" }
+    }
+  },
+  "sensitiveKeys": ["apiKey", "api_key", "password", "passphrase", "bindpw", "privatekey", "private_key"],
+  "network": { "hosts": ["{{connection.baseUrl}}"] },
+  "matchProfiles": {
+    "dataset-name-prefix": [{ "field": "/name", "label": "Name prefix", "op": "prefix", "widget": "prefix" }],
+    "app-name-in": [
+      {
+        "field": "/app_name",
+        "label": "App in",
+        "op": "in",
+        "widget": "multiselect",
+        "optionsSource": "installed-apps"
+      }
+    ]
+  }
+}

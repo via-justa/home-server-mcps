@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pending Approvals</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+  body { margin: 0; font-family: -apple-system, "Segoe UI", system-ui, sans-serif; }
+</style>
+</helmet>
+
+<div style="width: 1280px; height: 800px; box-sizing: border-box; display: flex; background: #f7f7f5; color: #1c1e21;">
+
+  <div style="width: 220px; flex-shrink: 0; background: #1c1e21; display: flex; flex-direction: column; padding: 22px 0;">
+    <div style="padding: 0 20px 22px 20px; display: flex; align-items: center; gap: 8px;">
+      <div style="width: 22px; height: 22px; border-radius: 6px; background: #2563eb; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 12px; font-weight: 700;">M</div>
+      <div style="font-size: 14px; font-weight: 700; color: #fff; letter-spacing: 0.01em;">MCP Admin</div>
+    </div>
+    <nav style="display: flex; flex-direction: column; gap: 1px; margin-top: 6px;">
+      <div style="padding: 10px 20px 10px 17px; border-left: 3px solid transparent; color: #b7b5ac; font-size: 14px;">Connection</div>
+      <div style="padding: 10px 20px 10px 17px; border-left: 3px solid transparent; color: #b7b5ac; font-size: 14px;">Methods</div>
+      <div style="padding: 10px 20px 10px 17px; border-left: 3px solid transparent; color: #b7b5ac; font-size: 14px;">Pre-Approval Rules</div>
+      <div style="padding: 10px 20px 10px 17px; border-left: 3px solid #60a5fa; background: #2a2d31; color: #fff; font-size: 14px; font-weight: 600; display: flex; align-items: center; justify-content: space-between;">
+        <span>Pending Approvals</span>
+        <span style="background: #dc2626; color: #fff; font-size: 10px; font-weight: 700; border-radius: 999px; padding: 1px 6px; line-height: 1.5;">2</span>
+      </div>
+      <div style="padding: 10px 20px 10px 17px; border-left: 3px solid transparent; color: #b7b5ac; font-size: 14px;">Audit Log</div>
+    </nav>
+    <div style="margin-top: auto; padding: 16px 20px 0 20px; border-top: 1px solid #33353a;">
+      <div style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #8a8880;">
+        <span style="width: 7px; height: 7px; border-radius: 50%; background: #22c55e; flex-shrink: 0;"></span>
+        TrueNAS · Connected
+      </div>
+    </div>
+  </div>
+
+  <div style="flex-grow: 1; display: flex; flex-direction: column; min-width: 0;">
+
+    <div style="padding: 20px 32px; border-bottom: 1px solid #e5e3de; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;">
+      <div>
+        <h1 style="margin: 0; font-size: 19px; font-weight: 600;">Pending Approvals</h1>
+        <div style="margin-top: 3px; font-size: 13px; color: #6b6963;">Write calls paused on a live decision — via MCP elicitation or here</div>
+      </div>
+    </div>
+
+    <div style="flex-grow: 1; padding: 22px 32px; overflow: auto; display: flex; flex-direction: column; gap: 14px; max-width: 780px;">
+
+      <div style="background: #fff; border: 1px solid #e5e3de; border-radius: 10px; padding: 18px 20px;">
+        <div style="display: flex; align-items: flex-start; justify-content: space-between;">
+          <div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-family: ui-monospace, monospace; font-size: 14px; font-weight: 700;">pool.dataset.delete</span>
+              <span style="background: #fee2e2; color: #991b1b; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px;">locked</span>
+            </div>
+            <div style="margin-top: 8px; font-size: 13px; color: #44423c; line-height: 1.5;">This will permanently delete dataset <span style="font-family: ui-monospace, monospace; background: #f2f1ec; padding: 1px 5px; border-radius: 4px;">tank/scratch/tmp123</span> and all its snapshots.</div>
+            <div style="margin-top: 9px; display: flex; gap: 6px; flex-wrap: wrap;">
+              <span style="font-size: 11px; font-family: ui-monospace, monospace; background: #f2f1ec; color: #6b6963; padding: 3px 8px; border-radius: 5px;">name: tank/scratch/tmp123</span>
+              <span style="font-size: 11px; font-family: ui-monospace, monospace; background: #f2f1ec; color: #6b6963; padding: 3px 8px; border-radius: 5px;">recursive: true</span>
+            </div>
+          </div>
+          <div style="font-size: 12px; color: #8a8880; white-space: nowrap; margin-left: 16px;">requested 2m ago</div>
+        </div>
+        <div style="display: flex; gap: 10px; margin-top: 16px; padding-top: 14px; border-top: 1px solid #ece9e2;">
+          <button style="padding: 8px 16px; border-radius: 7px; border: none; background: #16a34a; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer;">Approve</button>
+          <button style="padding: 8px 16px; border-radius: 7px; border: 1px solid #fecaca; background: #fff; color: #b91c1c; font-size: 13px; font-weight: 600; cursor: pointer;">Deny</button>
+          <div style="margin-left: auto; font-size: 11px; color: #8a8880; align-self: center;">Requires typed confirmation of the dataset name</div>
+        </div>
+      </div>
+
+      <div style="background: #fff; border: 1px solid #e5e3de; border-radius: 10px; padding: 18px 20px;">
+        <div style="display: flex; align-items: flex-start; justify-content: space-between;">
+          <div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-family: ui-monospace, monospace; font-size: 14px; font-weight: 700;">app.upgrade</span>
+              <span style="background: #fef3c7; color: #92400e; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px;">write</span>
+            </div>
+            <div style="margin-top: 8px; font-size: 13px; color: #44423c; line-height: 1.5;">Upgrade installed app <span style="font-family: ui-monospace, monospace; background: #f2f1ec; padding: 1px 5px; border-radius: 4px;">sonarr</span> to version 4.2.1.</div>
+            <div style="margin-top: 9px; display: flex; gap: 6px; flex-wrap: wrap;">
+              <span style="font-size: 11px; font-family: ui-monospace, monospace; background: #f2f1ec; color: #6b6963; padding: 3px 8px; border-radius: 5px;">app_name: sonarr</span>
+              <span style="font-size: 11px; font-family: ui-monospace, monospace; background: #f2f1ec; color: #6b6963; padding: 3px 8px; border-radius: 5px;">version: 4.2.1</span>
+            </div>
+            <div style="margin-top: 8px; font-size: 11px; color: #8a8880;">No matching pre-approval rule (outside the configured app list)</div>
+          </div>
+          <div style="font-size: 12px; color: #8a8880; white-space: nowrap; margin-left: 16px;">requested 15m ago</div>
+        </div>
+        <div style="display: flex; gap: 10px; margin-top: 16px; padding-top: 14px; border-top: 1px solid #ece9e2;">
+          <button style="padding: 8px 16px; border-radius: 7px; border: none; background: #16a34a; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer;">Approve</button>
+          <button style="padding: 8px 16px; border-radius: 7px; border: 1px solid #fecaca; background: #fff; color: #b91c1c; font-size: 13px; font-weight: 600; cursor: pointer;">Deny</button>
+        </div>
+      </div>
+
+      <div style="text-align: center; padding: 18px; color: #8a8880; font-size: 12px;">Unanswered requests auto-deny after 15 minutes and are logged.</div>
+
+    </div>
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":800}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {};
+  }
+}
+</script>
+</body>
+</html>
