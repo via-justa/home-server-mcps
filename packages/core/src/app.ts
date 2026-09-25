@@ -15,6 +15,9 @@ import { SlidingWindowLimiter } from './gate/rate-limit.js';
 import type { GateDeps } from './gate/pipeline.js';
 import { InstanceManager } from './instances/manager.js';
 import type { ManagerOptions } from './instances/manager.js';
+import { ApprovalLinkService } from './notify/links.js';
+import { NotifierService } from './notify/service.js';
+import type { FetchLike } from './notify/service.js';
 import { discoverPlugins, syncPluginRegistry } from './plugins/discovery.js';
 
 /**
@@ -36,7 +39,9 @@ export interface AppContext {
   instances: InstanceManager;
   approvals: ApprovalService;
   limiter: SlidingWindowLimiter;
-  keys: { attestation: Buffer; state: Buffer; approvalLinks: Buffer };
+  links: ApprovalLinkService;
+  notifier: NotifierService;
+  keys: { attestation: Buffer; state: Buffer };
   warnings: string[];
   now: () => Date;
   gateDeps(): GateDeps;
@@ -55,6 +60,9 @@ export interface AppOptions {
   oidcAllowInsecure?: boolean;
   /** Use an in-memory database (tests). */
   memoryDb?: boolean;
+  /** Outbound HTTP for notifications (tests). */
+  notifyFetch?: FetchLike;
+  notifyRetryDelaysMs?: number[];
 }
 
 export async function createAppContext(config: Config, opts: AppOptions = {}): Promise<AppContext> {
@@ -109,9 +117,18 @@ export async function createAppContext(config: Config, opts: AppOptions = {}): P
   const keys = {
     attestation: secrets.deriveKey('attestation'),
     state: secrets.deriveKey('signed-state'),
-    approvalLinks: secrets.deriveKey('approval-links'),
   };
   const limiter = new SlidingWindowLimiter();
+  const links = new ApprovalLinkService(db, now);
+  const notifier = new NotifierService(db, secrets, links, {
+    publicMcpUrl: config.PUBLIC_MCP_URL,
+    fetch: opts.notifyFetch,
+    retryDelaysMs: opts.notifyRetryDelaysMs,
+    now,
+  });
+  const unsubscribeNotifier = notifier.subscribe(events);
+  if (!config.PUBLIC_MCP_URL)
+    warnings.push('PUBLIC_MCP_URL is not set: approval notifications will not include approve/deny links');
   const discover = () =>
     syncPluginRegistry(
       db,
@@ -140,6 +157,8 @@ export async function createAppContext(config: Config, opts: AppOptions = {}): P
     instances,
     approvals,
     limiter,
+    links,
+    notifier,
     keys,
     warnings,
     now,
@@ -156,6 +175,7 @@ export async function createAppContext(config: Config, opts: AppOptions = {}): P
     async stop() {
       for (const t of timers) clearInterval(t);
       for (const fn of stopHooks.splice(0).reverse()) await fn();
+      unsubscribeNotifier();
       approvals.cancelAll('shutdown');
       await instances.stopAll();
       db.$client.close();

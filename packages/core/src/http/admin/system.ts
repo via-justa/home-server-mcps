@@ -138,6 +138,21 @@ export function registerSystemRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
     ),
   );
 
+  // ── notification channels (design §9) ──
+
+  app.get('/api/notifiers', (c) => c.json(ctx.notifier.list()));
+  app.post('/api/notifiers', async (c) =>
+    c.json(ctx.notifier.save(await readJson(c, z.unknown()), { actor: actor(c) }), 201),
+  );
+  app.patch('/api/notifiers/:id', async (c) =>
+    c.json(ctx.notifier.save(await readJson(c, z.unknown()), { id: c.req.param('id'), actor: actor(c) })),
+  );
+  app.delete('/api/notifiers/:id', (c) => {
+    ctx.notifier.remove(c.req.param('id'), actor(c));
+    return c.body(null, 204);
+  });
+  app.post('/api/notifiers/:id/test', async (c) => c.json(await ctx.notifier.test(c.req.param('id'))));
+
   // ── audit ──
 
   app.get('/api/audit', (c) => c.json(queryAudit(ctx.db, c.req.query())));

@@ -50,7 +50,7 @@ export function uiCsrf(ctx: AppContext, c: Context): string {
   return token;
 }
 
-const checkUiCsrf = (c: Context, submitted: unknown) => {
+export const checkUiCsrf = (c: Context, submitted: unknown) => {
   const cookie = getCookie(c, UI_CSRF_COOKIE);
   return !!cookie && typeof submitted === 'string' && safeEqual(cookie, submitted);
 };

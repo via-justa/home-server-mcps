@@ -59,7 +59,7 @@ export function page(c: Context, title: string, body: Body, status: 200 | 400 | 
   );
 }
 
-export function errorPage(c: Context, title: string, message: string, status: 400 | 403 | 404 = 400) {
+export function errorPage(c: Context, title: string, message: string, status: 200 | 400 | 403 | 404 = 400) {
   return page(
     c,
     title,
@@ -175,5 +175,81 @@ export function consentPage(c: Context, v: ConsentView) {
           <button class="primary" type="submit" name="decision" value="approve">Approve</button>
         </div>
       </form>`,
+  );
+}
+
+export interface ApprovalView {
+  token: string;
+  csrf: string;
+  username: string;
+  slug: string;
+  instanceName: string;
+  operationKey: string;
+  locked: boolean;
+  summary: string;
+  params: unknown;
+  targets: unknown;
+  diff: unknown;
+  expiresAt: Date;
+  confirmLiteral: string | null;
+  /** The button the notification link pointed at; only highlights it, never decides. */
+  intent: 'approve' | 'deny' | 'view';
+  status: string;
+  error?: string;
+}
+
+const pretty = (v: unknown) => JSON.stringify(v, null, 2);
+
+export function approvalPage(c: Context, v: ApprovalView, status: 200 | 400 = 200) {
+  const open = v.status === 'pending';
+  return page(
+    c,
+    'Approval request',
+    html`<h1>${v.operationKey} ${v.locked ? html`<span class="badge">locked</span>` : ''}</h1>
+      <p class="sub"><code>/${v.slug}</code> · ${v.instanceName}</p>
+      <p>${v.summary}</p>
+      ${
+        v.targets != null
+          ? html`<label>Targets</label>
+              <pre>${pretty(v.targets)}</pre>`
+          : ''
+      }
+      ${
+        v.diff != null
+          ? html`<label>Changes</label>
+              <pre>${pretty(v.diff)}</pre>`
+          : ''
+      }
+      <label>Parameters (secrets redacted)</label>
+      <pre>${pretty(v.params ?? {})}</pre>
+      ${
+        open
+          ? html`<p class="muted">Signed in as <strong>${v.username}</strong> · expires ${v.expiresAt.toISOString()}</p>
+              <form method="post" action="/a/${v.token}">
+                <input type="hidden" name="csrf" value="${v.csrf}" />
+                ${
+                  v.confirmLiteral
+                    ? html`<label for="confirm">Type <code>${v.confirmLiteral}</code> to approve</label
+                        ><input id="confirm" type="text" name="confirm" autocomplete="off" />`
+                    : ''
+                }
+                ${v.error ? html`<p class="error" role="alert">${v.error}</p>` : ''}
+                <div class="row">
+                  <button
+                    class="${v.intent === 'deny' ? 'primary' : 'danger'}"
+                    type="submit"
+                    name="decision"
+                    value="deny"
+                  >
+                    Deny
+                  </button>
+                  <button class="${v.intent === 'deny' ? '' : 'primary'}" type="submit" name="decision" value="approve">
+                    Approve
+                  </button>
+                </div>
+              </form>`
+          : html`<p class="error" role="status">This request is ${v.status.replace('_', ' ')}.</p>`
+      }`,
+    status,
   );
 }

@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { AppContext } from '../app.js';
 import { errorResponse } from './common.js';
 import { McpEndpoints } from './mcp/endpoint.js';
+import { registerApprovalRoutes } from './mcp/approval-routes.js';
 import { registerOAuthRoutes } from './mcp/oauth-routes.js';
 
 const jsonRpcError = (code: number, message: string) => ({
@@ -24,6 +25,7 @@ export function createMcpApp(ctx: AppContext): Hono {
   app.get('/healthz', (c) => c.json({ status: 'ok' }));
 
   registerOAuthRoutes(app, ctx, ctx.oauth);
+  registerApprovalRoutes(app, ctx);
   app.all('/.well-known/*', (c) => c.json({ error: 'not_found' }, 404));
   app.all('/oauth/*', (c) => c.json({ error: 'not_found' }, 404));
 
