@@ -17,7 +17,7 @@ Each endpoint exposes two MCP tools, `search(code)` and `execute(code)`. Model-a
 
 **Design:** [`docs/design/unified-mcp-server.md`](docs/design/unified-mcp-server.md). The original per-server designs and UI mockups it builds on are in [`docs/reference/`](docs/reference/).
 
-> **Status:** skeleton (design §13, phase 0). Both listeners boot and the login page renders. No gate, sandbox, plugin host, auth or MCP logic exists yet.
+> **Status:** core foundations (design §13, phases 0–4): database + encryption, catalog sync with group-level access, and the sandboxed plugin host. Not yet: sandbox, approval gate, auth, Admin API, MCP endpoints, real plugin logic. See the progress table in design §13.
 
 ## Layout
 
@@ -38,7 +38,7 @@ pnpm test        # all packages (workspace deps resolve to TS sources, no build 
 pnpm typecheck
 pnpm lint
 pnpm build
-pnpm start       # node packages/core/dist/main.js — MCP on :8080, admin on :8081
+DATA_DIR=./data pnpm start   # MCP on :8080, admin on :8081; creates ./data/hsm.sqlite + master.key
 ```
 
 Admin UI with hot reload: run `pnpm start` in one shell and `pnpm --filter @home-server-mcps/admin-ui dev` in another. Vite proxies `/api` and `/auth` to `:8081`.
