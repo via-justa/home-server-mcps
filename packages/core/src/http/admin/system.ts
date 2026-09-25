@@ -156,6 +156,41 @@ export function registerSystemRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
     return c.body(null, 204);
   });
 
+  // ── OAuth clients & grants (design §6.2) ──
+
+  app.get('/api/oauth/clients', (c) => c.json(ctx.oauth.listClients()));
+  app.post('/api/oauth/clients', async (c) => {
+    const body = await readJson(
+      c,
+      z.object({
+        name: z.string().trim().min(1).max(100),
+        redirectUris: z.array(z.string()).min(1).max(10),
+        confidential: z.boolean().default(false),
+      }),
+    );
+    return c.json(
+      ctx.oauth.register(
+        {
+          client_name: body.name,
+          redirect_uris: body.redirectUris,
+          token_endpoint_auth_method: body.confidential ? 'client_secret_post' : 'none',
+        },
+        'admin',
+        actor(c),
+      ),
+      201,
+    );
+  });
+  app.delete('/api/oauth/clients/:id', (c) => {
+    ctx.oauth.revokeClient(c.req.param('id'), actor(c));
+    return c.body(null, 204);
+  });
+  app.get('/api/oauth/grants', (c) => c.json(ctx.oauth.listGrants()));
+  app.delete('/api/oauth/grants/:id', (c) => {
+    ctx.oauth.revokeGrant(c.req.param('id'), actor(c));
+    return c.body(null, 204);
+  });
+
   // ── users (no roles: every user is an admin) ──
 
   app.get('/api/users', (c) => c.json(ctx.users.list()));

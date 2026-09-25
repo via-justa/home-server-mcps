@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { ApprovalService } from './approvals/service.js';
 import { McpTokenService } from './auth/mcp-tokens.js';
+import { OAuthService } from './auth/oauth.js';
 import { OidcService } from './auth/oidc.js';
 import { SessionService } from './auth/sessions.js';
 import { LoginThrottle } from './auth/throttle.js';
@@ -31,6 +32,7 @@ export interface AppContext {
   throttle: LoginThrottle;
   oidc: OidcService;
   tokens: McpTokenService;
+  oauth: OAuthService;
   instances: InstanceManager;
   approvals: ApprovalService;
   limiter: SlidingWindowLimiter;
@@ -41,6 +43,8 @@ export interface AppContext {
   /** Re-scan plugin directories and update the registry (startup, after installs). */
   discoverPlugins(): ReturnType<typeof syncPluginRegistry>;
   start(): Promise<void>;
+  /** Registers cleanup to run on stop (e.g. closing open MCP sessions). */
+  onStop(fn: () => unknown): void;
   stop(): Promise<void>;
 }
 
@@ -121,6 +125,7 @@ export async function createAppContext(config: Config, opts: AppOptions = {}): P
   for (const id of registered.rejected) warnings.push(`Plugin ${id} was ignored: its id is already taken`);
 
   const timers: NodeJS.Timeout[] = [];
+  const stopHooks: (() => unknown)[] = [];
   const ctx: AppContext = {
     config,
     db,
@@ -131,6 +136,7 @@ export async function createAppContext(config: Config, opts: AppOptions = {}): P
     throttle: new LoginThrottle(),
     oidc: new OidcService(db, secrets, keys.state, opts.oidcAllowInsecure ?? false),
     tokens: new McpTokenService(db, now),
+    oauth: new OAuthService(db, now),
     instances,
     approvals,
     limiter,
@@ -144,8 +150,12 @@ export async function createAppContext(config: Config, opts: AppOptions = {}): P
       // Daily backstop sync (design §10), checked hourly so instances don't all sync at once.
       timers.push(setInterval(() => void instances.syncStale(), 60 * 60_000).unref());
     },
+    onStop(fn) {
+      stopHooks.push(fn);
+    },
     async stop() {
       for (const t of timers) clearInterval(t);
+      for (const fn of stopHooks.splice(0).reverse()) await fn();
       approvals.cancelAll('shutdown');
       await instances.stopAll();
       db.$client.close();
