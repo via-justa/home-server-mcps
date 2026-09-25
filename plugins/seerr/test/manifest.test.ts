@@ -26,4 +26,16 @@ describe('seerr manifest', () => {
       }
     }
   });
+
+  it('defaults to a local user and shows only the fields for the chosen sign-in method', () => {
+    const { connection } = parseManifest(raw);
+    const props = connection.schema.properties as Record<string, { default?: unknown }>;
+    expect(props.authMethod?.default).toBe('local');
+    const shownFor = (method: string) =>
+      Object.entries(connection.ui)
+        .filter(([, ui]) => !ui.showWhen || ui.showWhen.in.includes(method))
+        .map(([name]) => name);
+    expect(shownFor('local')).toEqual(['baseUrl', 'authMethod', 'email', 'password']);
+    expect(shownFor('apiKey')).toEqual(['baseUrl', 'authMethod', 'apiKey', 'actAsUserId']);
+  });
 });

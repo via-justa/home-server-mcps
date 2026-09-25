@@ -59,6 +59,35 @@ describe('parseManifest', () => {
     expect(() => parseManifest({ ...minimal, binding })).toThrow(/capabilities.registry/);
     expect(() => parseManifest({ ...minimal, binding, capabilities: { registry: true } })).not.toThrow();
   });
+
+  describe('connection ui', () => {
+    const schema = {
+      type: 'object',
+      properties: { method: { type: 'string' }, password: { type: 'string', writeOnly: true } },
+    };
+    const withUi = (ui: unknown) => ({ ...minimal, connection: { schema, ui, help: 'Create a local user first.' } });
+
+    it('accepts showWhen referencing another field', () => {
+      const m = parseManifest(withUi({ password: { widget: 'secret', showWhen: { field: 'method', in: ['local'] } } }));
+      expect(m.connection.ui.password?.showWhen).toEqual({ field: 'method', in: ['local'] });
+      expect(m.connection.help).toBe('Create a local user first.');
+    });
+
+    it('rejects hints for unknown fields', () => {
+      expect(() => parseManifest(withUi({ token: { widget: 'secret' } }))).toThrow(/no such connection field/);
+    });
+
+    it.each([
+      ['an unknown field', { field: 'nope', in: ['x'] }],
+      ['itself', { field: 'password', in: ['x'] }],
+    ])('rejects showWhen referencing %s', (_name, showWhen) => {
+      expect(() => parseManifest(withUi({ password: { showWhen } }))).toThrow(/another connection field/);
+    });
+
+    it('rejects an empty showWhen value list', () => {
+      expect(() => parseManifest(withUi({ password: { showWhen: { field: 'method', in: [] } } }))).toThrow();
+    });
+  });
 });
 
 describe('isSdkCompatible', () => {
