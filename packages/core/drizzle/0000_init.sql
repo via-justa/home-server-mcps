@@ -122,19 +122,48 @@ CREATE TABLE `oidc_config` (
 	`enabled` integer DEFAULT false NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE `operation_group_aliases` (
+	`instance_id` text NOT NULL,
+	`plugin_group` text NOT NULL,
+	`group_key` text NOT NULL,
+	FOREIGN KEY (`instance_id`) REFERENCES `plugin_instances`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `operation_group_aliases_idx` ON `operation_group_aliases` (`instance_id`,`plugin_group`);--> statement-breakpoint
+CREATE TABLE `operation_groups` (
+	`id` text PRIMARY KEY NOT NULL,
+	`instance_id` text NOT NULL,
+	`key` text NOT NULL,
+	`label` text NOT NULL,
+	`level` text DEFAULT 'read' NOT NULL,
+	`level_changed_at` integer,
+	`level_changed_by` text,
+	`first_seen_at` integer NOT NULL,
+	`stale` integer DEFAULT false NOT NULL,
+	FOREIGN KEY (`instance_id`) REFERENCES `plugin_instances`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`level_changed_by`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE no action
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `operation_groups_instance_key_idx` ON `operation_groups` (`instance_id`,`key`);--> statement-breakpoint
 CREATE TABLE `operations` (
 	`id` text PRIMARY KEY NOT NULL,
 	`instance_id` text NOT NULL,
 	`key` text NOT NULL,
 	`display_name` text,
 	`kind` text NOT NULL,
+	`plugin_group` text NOT NULL,
+	`group_id` text NOT NULL,
 	`tag` text,
 	`classification` text NOT NULL,
 	`classification_source` text NOT NULL,
 	`inferred_classification` text NOT NULL,
 	`inferred_reason` text NOT NULL,
 	`locked` integer DEFAULT false NOT NULL,
-	`enabled` integer DEFAULT false NOT NULL,
+	`excluded` integer DEFAULT false NOT NULL,
+	`locked_opt_in` integer DEFAULT false NOT NULL,
+	`write_acknowledged` integer DEFAULT false NOT NULL,
+	`acknowledged_at` integer,
+	`acknowledged_by` text,
 	`typed_confirmation` integer DEFAULT false NOT NULL,
 	`attestation_required` integer DEFAULT false NOT NULL,
 	`needs_review` integer DEFAULT false NOT NULL,
@@ -144,10 +173,13 @@ CREATE TABLE `operations` (
 	`first_seen_at` integer NOT NULL,
 	`last_seen_at` integer NOT NULL,
 	`stale` integer DEFAULT false NOT NULL,
-	FOREIGN KEY (`instance_id`) REFERENCES `plugin_instances`(`id`) ON UPDATE no action ON DELETE cascade
+	FOREIGN KEY (`instance_id`) REFERENCES `plugin_instances`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`group_id`) REFERENCES `operation_groups`(`id`) ON UPDATE no action ON DELETE no action,
+	FOREIGN KEY (`acknowledged_by`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE no action
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `operations_instance_key_idx` ON `operations` (`instance_id`,`key`);--> statement-breakpoint
+CREATE INDEX `operations_group_idx` ON `operations` (`group_id`);--> statement-breakpoint
 CREATE TABLE `pending_approvals` (
 	`id` text PRIMARY KEY NOT NULL,
 	`instance_id` text NOT NULL,

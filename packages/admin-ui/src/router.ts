@@ -31,7 +31,7 @@ export const routes: RouteRecordRaw[] = [
       page('clients', 'Clients & Tokens', '§6.2, §8.2', 'Bearer tokens, OAuth clients and grants'),
       page('settings', 'Settings', '§6, §9, §8.2', 'MCP access, authentication, users, notifications'),
       instancePage('connection', 'Connection', '§8.2'),
-      instancePage('operations', 'Operations', '§8.2'),
+      instancePage('access', 'Access', '§5.2, §8.2'),
       instancePage('rules', 'Pre-Approval Rules', '§5.2, §8.2'),
       instancePage('settings', 'Endpoint Settings', '§8.2'),
     ],

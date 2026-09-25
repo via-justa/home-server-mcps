@@ -123,6 +123,41 @@ export const pluginInstances = sqliteTable('plugin_instances', {
 
 // ── catalog ──────────────────────────────────────────────────────────────────────────────────────
 
+/** One none/read/write level per group replaces per-operation toggles (design §5.2). */
+export const operationGroups = sqliteTable(
+  'operation_groups',
+  {
+    id: id(),
+    instanceId: text('instance_id')
+      .notNull()
+      .references(() => pluginInstances.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    label: text('label').notNull(),
+    /** New groups start read-only. */
+    level: text('level', { enum: ['none', 'read', 'write'] })
+      .notNull()
+      .default('read'),
+    levelChangedAt: ts('level_changed_at'),
+    levelChangedBy: text('level_changed_by').references(() => users.id),
+    firstSeenAt: ts('first_seen_at').notNull(),
+    stale: flag('stale').notNull().default(false),
+  },
+  (t) => [uniqueIndex('operation_groups_instance_key_idx').on(t.instanceId, t.key)],
+);
+
+/** Admin regrouping: maps a plugin-derived group onto a (possibly merged) group key; survives syncs. */
+export const operationGroupAliases = sqliteTable(
+  'operation_group_aliases',
+  {
+    instanceId: text('instance_id')
+      .notNull()
+      .references(() => pluginInstances.id, { onDelete: 'cascade' }),
+    pluginGroup: text('plugin_group').notNull(),
+    groupKey: text('group_key').notNull(),
+  },
+  (t) => [uniqueIndex('operation_group_aliases_idx').on(t.instanceId, t.pluginGroup)],
+);
+
 export const operations = sqliteTable(
   'operations',
   {
@@ -133,6 +168,11 @@ export const operations = sqliteTable(
     key: text('key').notNull(),
     displayName: text('display_name'),
     kind: text('kind').notNull(),
+    /** Group as derived by the plugin, before admin aliases are applied. */
+    pluginGroup: text('plugin_group').notNull(),
+    groupId: text('group_id')
+      .notNull()
+      .references(() => operationGroups.id),
     tag: text('tag'),
     /** Effective classification; locked implies write. */
     classification: text('classification', { enum: ['read', 'write'] }).notNull(),
@@ -140,7 +180,14 @@ export const operations = sqliteTable(
     inferredClassification: text('inferred_classification', { enum: ['read', 'write'] }).notNull(),
     inferredReason: text('inferred_reason').notNull(),
     locked: flag('locked').notNull().default(false),
-    enabled: flag('enabled').notNull().default(false),
+    /** Exclude-only override: removes the op even when its group level would allow it. */
+    excluded: flag('excluded').notNull().default(false),
+    /** Locked ops stay unreachable at group level `write` until opted in individually. */
+    lockedOptIn: flag('locked_opt_in').notNull().default(false),
+    /** Writes discovered by sync are quarantined until acknowledged. */
+    writeAcknowledged: flag('write_acknowledged').notNull().default(false),
+    acknowledgedAt: ts('acknowledged_at'),
+    acknowledgedBy: text('acknowledged_by').references(() => users.id),
     typedConfirmation: flag('typed_confirmation').notNull().default(false),
     attestationRequired: flag('attestation_required').notNull().default(false),
     needsReview: flag('needs_review').notNull().default(false),
@@ -151,7 +198,10 @@ export const operations = sqliteTable(
     lastSeenAt: ts('last_seen_at').notNull(),
     stale: flag('stale').notNull().default(false),
   },
-  (t) => [uniqueIndex('operations_instance_key_idx').on(t.instanceId, t.key)],
+  (t) => [
+    uniqueIndex('operations_instance_key_idx').on(t.instanceId, t.key),
+    index('operations_group_idx').on(t.groupId),
+  ],
 );
 
 export const registryEntries = sqliteTable(

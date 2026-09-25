@@ -11,7 +11,16 @@ export const OperationDescriptorSchema = z.object({
   displayName: z.string().optional(),
   /** Plugin-defined kind: 'method' | 'rest' | 'service' | 'ws_command' … */
   kind: z.string().min(1),
-  /** Grouping: namespace / OpenAPI tag / HA domain. */
+  /**
+   * Access group: admins set one none/read/write level per group instead of toggling each operation
+   * (design §5.2). Derived during discovery: TrueNAS namespace, Seerr OpenAPI tag, HA domain.
+   */
+  group: z
+    .string()
+    .max(128)
+    .regex(/^[a-z0-9][a-z0-9._-]*$/, 'lowercase letters, digits, dots, dashes and underscores'),
+  groupLabel: z.string().max(128).optional(),
+  /** Free-form tag for filtering/display; not used for access. */
   tag: z.string().optional(),
   /** The plugin's inferred default. Core applies locked ▸ override ▸ inferred on top. */
   classification: z.enum(['read', 'write']),
