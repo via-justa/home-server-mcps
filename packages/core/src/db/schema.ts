@@ -23,6 +23,8 @@ export const users = sqliteTable('users', {
   passwordHash: text('password_hash'),
   totpSecretEnc: blob('totp_secret_enc', { mode: 'buffer' }),
   totpEnabled: flag('totp_enabled').notNull().default(false),
+  /** Last accepted TOTP time step, so a code can't be replayed within its window. */
+  totpLastStep: integer('totp_last_step'),
   recoveryCodesHash: json('recovery_codes_hash').$type<string[]>(),
   oidcIssuer: text('oidc_issuer'),
   oidcSubject: text('oidc_subject'),
