@@ -2,11 +2,15 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createAppContext } from '../src/app.js';
+import type { AppContext } from '../src/app.js';
 import { loadConfig } from '../src/config/env.js';
 import { startServers } from '../src/server.js';
 import type { RunningServers } from '../src/server.js';
 
 let servers: RunningServers;
+let ctx: AppContext;
+let dataDir: string;
 let uiDir: string;
 let mcp: string;
 let admin: string;
@@ -14,16 +18,28 @@ let admin: string;
 beforeAll(async () => {
   uiDir = mkdtempSync(path.join(tmpdir(), 'hsm-ui-'));
   writeFileSync(path.join(uiDir, 'index.html'), '<!doctype html><div id="app"></div>');
-  servers = await startServers(
-    loadConfig({ MCP_HOST: '127.0.0.1', MCP_PORT: '0', ADMIN_HOST: '127.0.0.1', ADMIN_PORT: '0', ADMIN_UI_DIR: uiDir }),
+  dataDir = mkdtempSync(path.join(tmpdir(), 'hsm-data-'));
+  ctx = await createAppContext(
+    loadConfig({
+      MCP_HOST: '127.0.0.1',
+      MCP_PORT: '0',
+      ADMIN_HOST: '127.0.0.1',
+      ADMIN_PORT: '0',
+      ADMIN_UI_DIR: uiDir,
+      DATA_DIR: dataDir,
+      CORE_PLUGINS_DIR: path.join(dataDir, 'no-core-plugins'),
+    }),
   );
+  servers = await startServers(ctx);
   mcp = `http://127.0.0.1:${servers.mcp.port}`;
   admin = `http://127.0.0.1:${servers.admin.port}`;
 });
 
 afterAll(async () => {
   await servers?.close();
+  await ctx?.stop();
   rmSync(uiDir, { recursive: true, force: true });
+  rmSync(dataDir, { recursive: true, force: true });
 });
 
 describe('listeners', () => {
@@ -78,9 +94,9 @@ describe('admin listener', () => {
     expect(await res.text()).toContain('<div id="app">');
   });
 
-  it('reports an unauthenticated session', async () => {
+  it('reports an unauthenticated session that needs setup', async () => {
     const res = await fetch(`${admin}/api/session`);
-    expect(await res.json()).toEqual({ authenticated: false });
+    expect(await res.json()).toMatchObject({ authenticated: false, setupRequired: true });
   });
 
   it('does not let the SPA fallback swallow unknown API routes', async () => {

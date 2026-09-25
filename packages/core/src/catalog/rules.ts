@@ -1,0 +1,185 @@
+import { randomUUID } from 'node:crypto';
+import type { Manifest } from '@home-server-mcps/plugin-sdk';
+import { and, asc, eq } from 'drizzle-orm';
+import { z } from 'zod';
+import { writeAudit } from '../audit.js';
+import type { Db } from '../db/index.js';
+import { operations, preApprovalRules } from '../db/schema.js';
+import { ConflictError, NotFoundError, ValidationError } from '../errors.js';
+import { MatchSchema } from '../gate/match.js';
+import { resolveAccess } from './groups.js';
+
+/**
+ * Pre-approval rules (design §5.2, TN §3.5): picked from the synced catalog, never free text; a
+ * required reason; structured match; optional rate limit and expiry. Locked operations can never be
+ * referenced (409), enforced here regardless of what the UI offers.
+ */
+
+export const RuleInputSchema = z.object({
+  operationId: z.string().min(1),
+  match: MatchSchema.default([]),
+  rateLimit: z.number().int().min(1).max(100_000).nullable().optional(),
+  windowSeconds: z
+    .number()
+    .int()
+    .min(60)
+    .max(31 * 24 * 3600)
+    .nullable()
+    .optional(),
+  expiresAt: z.coerce.date().nullable().optional(),
+  reason: z.string().trim().min(3, 'A reason is required').max(500),
+  enabled: z.boolean().default(true),
+});
+export type RuleInput = z.infer<typeof RuleInputSchema>;
+
+type OperationRow = typeof operations.$inferSelect;
+type RuleRow = typeof preApprovalRules.$inferSelect;
+
+function loadOperation(db: Db, instanceId: string, operationId: string): OperationRow {
+  const op = db
+    .select()
+    .from(operations)
+    .where(and(eq(operations.id, operationId), eq(operations.instanceId, instanceId)))
+    .get();
+  if (!op) throw new NotFoundError('operation_not_found', 'No such operation on this endpoint');
+  return op;
+}
+
+/** Param conditions must use fields the plugin declared for this operation (design §8.3). */
+function checkMatchAgainstProfile(manifest: Manifest, op: OperationRow, match: RuleInput['match']) {
+  if (match.length === 0) return;
+  const profile = op.matchProfile ? manifest.matchProfiles[op.matchProfile] : undefined;
+  if (!profile) throw new ValidationError('no_match_profile', `${op.key} has no matchable fields; use an empty match`);
+  for (const c of match) {
+    const field = profile.find((f) => f.field === c.field);
+    if (!field) throw new ValidationError('unknown_match_field', `${c.field} is not a matchable field of ${op.key}`);
+    if (c.field !== '$targets' && 'op' in c && field.op !== c.op) {
+      throw new ValidationError('wrong_match_op', `${c.field} must use the "${field.op}" operator`);
+    }
+  }
+}
+
+function describe(db: Db, instanceId: string, rule: RuleRow, op: OperationRow) {
+  const access = resolveAccess(db, instanceId, op.key);
+  return {
+    ...rule,
+    operation: { id: op.id, key: op.key, locked: op.locked, matchProfile: op.matchProfile },
+    /** A rule on an unreachable operation never fires; the UI flags it (design §5.2.1). */
+    inert: rule.enabled && !access.reachable ? access.reason : null,
+  };
+}
+
+export function listRules(db: Db, instanceId: string) {
+  return db
+    .select({ rule: preApprovalRules, op: operations })
+    .from(preApprovalRules)
+    .innerJoin(operations, eq(preApprovalRules.operationId, operations.id))
+    .where(eq(preApprovalRules.instanceId, instanceId))
+    .orderBy(asc(operations.key), asc(preApprovalRules.createdAt))
+    .all()
+    .map(({ rule, op }) => describe(db, instanceId, rule, op));
+}
+
+export function createRule(
+  db: Db,
+  manifest: Manifest,
+  instanceId: string,
+  raw: unknown,
+  actor: { userId?: string } = {},
+) {
+  const input = RuleInputSchema.parse(raw);
+  const op = loadOperation(db, instanceId, input.operationId);
+  if (op.locked) throw new ConflictError('operation_locked', `${op.key} is locked and can never be pre-approved`);
+  checkMatchAgainstProfile(manifest, op, input.match);
+  const id = randomUUID();
+  db.transaction((tx) => {
+    tx.insert(preApprovalRules)
+      .values({
+        id,
+        instanceId,
+        operationId: op.id,
+        match: input.match,
+        rateLimit: input.rateLimit ?? null,
+        windowSeconds: input.rateLimit ? (input.windowSeconds ?? 3600) : null,
+        expiresAt: input.expiresAt ?? null,
+        reason: input.reason,
+        enabled: input.enabled,
+        createdBy: actor.userId ?? null,
+        createdAt: new Date(),
+      })
+      .run();
+    writeAudit(tx, {
+      kind: 'config',
+      instanceId,
+      operationKey: op.key,
+      decision: 'rule_created',
+      actorKind: 'user',
+      actorId: actor.userId,
+      detail: { ruleId: id, ...input },
+    });
+  });
+  return listRules(db, instanceId).find((r) => r.id === id)!;
+}
+
+export function updateRule(
+  db: Db,
+  manifest: Manifest,
+  instanceId: string,
+  ruleId: string,
+  raw: unknown,
+  actor: { userId?: string } = {},
+) {
+  const before = db
+    .select()
+    .from(preApprovalRules)
+    .where(and(eq(preApprovalRules.id, ruleId), eq(preApprovalRules.instanceId, instanceId)))
+    .get();
+  if (!before) throw new NotFoundError('rule_not_found', 'No such rule');
+  const input = RuleInputSchema.parse({ ...before, ...(raw as object) });
+  const op = loadOperation(db, instanceId, input.operationId);
+  if (op.locked) throw new ConflictError('operation_locked', `${op.key} is locked and can never be pre-approved`);
+  checkMatchAgainstProfile(manifest, op, input.match);
+  const set = {
+    operationId: op.id,
+    match: input.match,
+    rateLimit: input.rateLimit ?? null,
+    windowSeconds: input.rateLimit ? (input.windowSeconds ?? 3600) : null,
+    expiresAt: input.expiresAt ?? null,
+    reason: input.reason,
+    enabled: input.enabled,
+    updatedAt: new Date(),
+  };
+  db.transaction((tx) => {
+    tx.update(preApprovalRules).set(set).where(eq(preApprovalRules.id, ruleId)).run();
+    writeAudit(tx, {
+      kind: 'config',
+      instanceId,
+      operationKey: op.key,
+      decision: 'rule_updated',
+      actorKind: 'user',
+      actorId: actor.userId,
+      detail: { ruleId, before, after: set },
+    });
+  });
+  return listRules(db, instanceId).find((r) => r.id === ruleId)!;
+}
+
+export function deleteRule(db: Db, instanceId: string, ruleId: string, actor: { userId?: string } = {}) {
+  const before = db
+    .select()
+    .from(preApprovalRules)
+    .where(and(eq(preApprovalRules.id, ruleId), eq(preApprovalRules.instanceId, instanceId)))
+    .get();
+  if (!before) throw new NotFoundError('rule_not_found', 'No such rule');
+  db.transaction((tx) => {
+    tx.delete(preApprovalRules).where(eq(preApprovalRules.id, ruleId)).run();
+    writeAudit(tx, {
+      kind: 'config',
+      instanceId,
+      decision: 'rule_deleted',
+      actorKind: 'user',
+      actorId: actor.userId,
+      detail: { rule: before },
+    });
+  });
+}

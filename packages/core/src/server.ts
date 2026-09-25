@@ -1,8 +1,7 @@
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { serve } from '@hono/node-server';
-import type { Config } from './config/env.js';
-import { EndpointRegistry } from './endpoints/registry.js';
+import type { AppContext } from './app.js';
 import { createAdminApp } from './http/admin-app.js';
 import { createMcpApp } from './http/mcp-app.js';
 
@@ -26,10 +25,10 @@ function close(server: Server) {
 }
 
 /** Starts the two listeners on separate ports (design §2.1). */
-export async function startServers(config: Config): Promise<RunningServers> {
-  const endpoints = new EndpointRegistry();
-  const mcp = await listen(createMcpApp({ endpoints }), config.MCP_HOST, config.MCP_PORT);
-  const admin = await listen(createAdminApp({ uiDir: config.ADMIN_UI_DIR }), config.ADMIN_HOST, config.ADMIN_PORT);
+export async function startServers(ctx: AppContext): Promise<RunningServers> {
+  const { config } = ctx;
+  const mcp = await listen(createMcpApp(ctx), config.MCP_HOST, config.MCP_PORT);
+  const admin = await listen(createAdminApp(ctx, { uiDir: config.ADMIN_UI_DIR }), config.ADMIN_HOST, config.ADMIN_PORT);
   return {
     mcp,
     admin,

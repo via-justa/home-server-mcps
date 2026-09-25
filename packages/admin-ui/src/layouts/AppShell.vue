@@ -1,17 +1,26 @@
 <script setup lang="ts">
-import { useRouter } from 'vue-router';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
+import { useAppStore } from '../stores/app';
 import { useSessionStore } from '../stores/session';
 
 const session = useSessionStore();
+const app = useAppStore();
 const router = useRouter();
+const route = useRoute();
 
-// Instances and pending-approval counts come from /api/overview once the Admin API exists (design §8.1).
-const endpoints: { slug: string; status: 'ready' | 'error' | 'stopped' }[] = [];
-const pendingCount = 0;
+// Small screens: the sidebar collapses into a top bar with a menu toggle.
+const menuOpen = ref(false);
+watch(
+  () => route.fullPath,
+  () => (menuOpen.value = false),
+);
+
+const endpoints = computed(() => app.instances);
 
 const globalNav = [
   { to: '/', label: 'Overview' },
-  { to: '/approvals', label: 'Pending Approvals', badge: () => pendingCount },
+  { to: '/approvals', label: 'Pending Approvals', badge: () => app.pendingCount },
   { to: '/audit', label: 'Audit Log' },
 ];
 const adminNav = [
@@ -20,7 +29,14 @@ const adminNav = [
   { to: '/settings', label: 'Settings' },
 ];
 
+onMounted(() => {
+  void app.refresh().catch(() => undefined);
+  app.connect();
+});
+onBeforeUnmount(() => app.disconnect());
+
 async function logout() {
+  app.disconnect();
   await session.logout();
   await router.replace('/login');
 }
@@ -28,10 +44,14 @@ async function logout() {
 
 <template>
   <div class="shell">
-    <aside class="sidebar">
+    <aside class="sidebar" :class="{ open: menuOpen }">
       <div class="brand">
         <div class="logo">M</div>
         <div class="name">MCP Admin</div>
+        <span v-if="app.pendingCount" class="badge mobile-only">{{ app.pendingCount }}</span>
+        <button class="menu mobile-only" type="button" :aria-expanded="menuOpen" @click="menuOpen = !menuOpen">
+          {{ menuOpen ? 'Close' : 'Menu' }}
+        </button>
       </div>
 
       <nav>
@@ -46,11 +66,13 @@ async function logout() {
           :key="ep.slug"
           :to="`/endpoints/${ep.slug}/connection`"
           class="nav-item mono"
-          active-class="active"
+          :class="{ active: $route.path.startsWith(`/endpoints/${ep.slug}/`) }"
         >
-          /{{ ep.slug }}
+          <span>/{{ ep.slug }}</span>
+          <span class="dot" :class="ep.status" :title="ep.status" />
         </RouterLink>
         <div v-if="endpoints.length === 0" class="nav-empty">No endpoints yet</div>
+        <RouterLink to="/endpoints/new" class="nav-item add" exact-active-class="active">+ New endpoint</RouterLink>
 
         <div class="nav-section" />
         <RouterLink v-for="item in adminNav" :key="item.to" :to="item.to" class="nav-item" active-class="active">
@@ -59,7 +81,7 @@ async function logout() {
       </nav>
 
       <div class="footer">
-        <span>{{ session.username ?? 'admin' }}</span>
+        <RouterLink to="/settings/profile" class="me">{{ session.username ?? 'admin' }}</RouterLink>
         <button class="link" type="button" @click="logout">Log out</button>
       </div>
     </aside>
@@ -157,6 +179,14 @@ nav {
   font-size: 12px;
   color: var(--subtle);
 }
+.add {
+  font-size: 13px;
+  color: var(--subtle);
+}
+.me {
+  color: var(--sidebar-text);
+  text-decoration: none;
+}
 .link {
   background: none;
   border: none;
@@ -164,6 +194,47 @@ nav {
   cursor: pointer;
   font-size: 12px;
   padding: 0;
+}
+.menu {
+  margin-left: auto;
+  background: none;
+  border: 1px solid #44464b;
+  color: var(--sidebar-text);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.mobile-only {
+  display: none;
+}
+@media (max-width: 720px) {
+  .shell {
+    flex-direction: column;
+  }
+  .sidebar {
+    width: 100%;
+    padding: 12px 0;
+  }
+  .brand {
+    padding: 0 16px;
+  }
+  .mobile-only {
+    display: inline-block;
+  }
+  .sidebar nav,
+  .sidebar .footer {
+    display: none;
+  }
+  .sidebar.open nav {
+    display: flex;
+    margin-top: 12px;
+  }
+  .sidebar.open .footer {
+    display: flex;
+    margin-top: 12px;
+    padding: 12px 20px 0;
+  }
 }
 .content {
   flex-grow: 1;

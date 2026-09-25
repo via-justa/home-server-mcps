@@ -1,0 +1,86 @@
+<script setup lang="ts">
+import { computed, ref } from 'vue';
+import { useRouter } from 'vue-router';
+import { errorText } from '../api';
+import { useSessionStore } from '../stores/session';
+
+const session = useSessionStore();
+const router = useRouter();
+const username = ref('admin');
+const password = ref('');
+const confirm = ref('');
+const error = ref<string>();
+const busy = ref(false);
+
+const problem = computed(() => {
+  if (password.value && password.value.length < 12) return 'Use at least 12 characters.';
+  if (confirm.value && confirm.value !== password.value) return 'The passwords do not match.';
+  return undefined;
+});
+const canSubmit = computed(
+  () =>
+    username.value.trim().length >= 2 && password.value.length >= 12 && confirm.value === password.value && !busy.value,
+);
+
+async function submit() {
+  if (!canSubmit.value) return;
+  busy.value = true;
+  error.value = undefined;
+  try {
+    await session.setup(username.value.trim(), password.value);
+    await router.replace('/');
+  } catch (err) {
+    error.value = errorText(err);
+  } finally {
+    busy.value = false;
+  }
+}
+</script>
+
+<template>
+  <main class="setup">
+    <form class="card" @submit.prevent="submit">
+      <h1>Create the first admin account</h1>
+      <p class="muted small">
+        Every account is an administrator. You can add more accounts, two-factor authentication and single sign-on later
+        under Settings.
+      </p>
+      <div class="field">
+        <label for="su">Username</label>
+        <input id="su" v-model="username" autocomplete="username" />
+      </div>
+      <div class="field">
+        <label for="sp">Password</label>
+        <input id="sp" v-model="password" type="password" autocomplete="new-password" />
+      </div>
+      <div class="field">
+        <label for="sc">Confirm password</label>
+        <input id="sc" v-model="confirm" type="password" autocomplete="new-password" />
+      </div>
+      <p v-if="problem || error" class="error" role="alert">{{ error ?? problem }}</p>
+      <button class="btn btn-primary" type="submit" :disabled="!canSubmit">Create account</button>
+    </form>
+  </main>
+</template>
+
+<style scoped>
+.setup {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+form {
+  width: 400px;
+  max-width: 100%;
+}
+h1 {
+  font-size: 18px;
+  margin: 0 0 6px;
+}
+.error {
+  color: var(--danger);
+  font-size: 13px;
+}
+</style>

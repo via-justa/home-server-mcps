@@ -3,33 +3,77 @@ import { computed, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ApiError } from '../api';
 import { useSessionStore } from '../stores/session';
+import type { LoginResult } from '../stores/session';
 
 const session = useSessionStore();
 const router = useRouter();
 const route = useRoute();
 
+const OIDC_ERRORS: Record<string, string> = {
+  oidc_failed: 'Single sign-on failed. Try again.',
+  oidc_not_allowed: 'Your single sign-on account is not allowed to use this portal.',
+  session_changed: 'Your session changed during sign-on. Try again.',
+  wrong_flow: 'Single sign-on failed. Try again.',
+};
+
+const step = ref<'password' | 'totp'>('password');
 const username = ref('');
 const password = ref('');
+const code = ref('');
 const submitting = ref(false);
-const error = ref<string>();
+const error = ref<string | undefined>(
+  typeof route.query.error === 'string' ? (OIDC_ERRORS[route.query.error] ?? 'Sign-in failed.') : undefined,
+);
 
-const canSubmit = computed(() => username.value.trim() !== '' && password.value !== '' && !submitting.value);
+const redirect = computed(() => {
+  const r = typeof route.query.redirect === 'string' ? route.query.redirect : '/';
+  return r.startsWith('/') && !r.startsWith('//') ? r : '/';
+});
+const oidcHref = computed(() => `/auth/oidc/start?returnTo=${encodeURIComponent(redirect.value)}`);
+const canSubmit = computed(() =>
+  step.value === 'password'
+    ? username.value.trim() !== '' && password.value !== '' && !submitting.value
+    : code.value.trim() !== '' && !submitting.value,
+);
+
+async function done(result: LoginResult) {
+  await router.replace(result === 'must_enroll_totp' ? '/enroll-totp' : redirect.value);
+}
+
+function message(err: unknown, fallback: string) {
+  if (err instanceof ApiError) {
+    if (err.status === 429) return 'Too many attempts. Wait a few minutes and try again.';
+    if (err.code === 'local_login_disabled') return 'Password sign-in is disabled. Use single sign-on.';
+    if (err.status === 401) return fallback;
+  }
+  return 'Sign-in is unavailable right now. Try again later.';
+}
 
 async function submit() {
   if (!canSubmit.value) return;
   submitting.value = true;
   error.value = undefined;
   try {
-    await session.login(username.value.trim(), password.value);
-    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/';
-    await router.replace(redirect.startsWith('/') && !redirect.startsWith('//') ? redirect : '/');
+    if (step.value === 'password') {
+      const result = await session.login(username.value.trim(), password.value);
+      if (result === 'totp_required') {
+        step.value = 'totp';
+        return;
+      }
+      await done(result);
+    } else {
+      await done(await session.verifyTotp(code.value.trim()));
+    }
   } catch (err) {
-    error.value =
-      err instanceof ApiError && err.status === 401
-        ? 'Invalid username or password.'
-        : 'Sign-in is unavailable right now. Try again later.';
+    if (step.value === 'totp' && err instanceof ApiError && err.code === 'mfa_expired') {
+      step.value = 'password';
+      error.value = 'That took too long. Sign in again.';
+    } else {
+      error.value = message(err, step.value === 'password' ? 'Invalid username or password.' : 'Invalid code.');
+    }
   } finally {
     password.value = '';
+    code.value = '';
     submitting.value = false;
   }
 }
@@ -43,24 +87,40 @@ async function submit() {
         <h1>MCP Admin</h1>
       </div>
 
-      <div class="field">
-        <label for="username">Username</label>
-        <input id="username" v-model="username" name="username" autocomplete="username" autofocus />
-      </div>
-      <div class="field">
-        <label for="password">Password</label>
-        <input id="password" v-model="password" name="password" type="password" autocomplete="current-password" />
-      </div>
+      <template v-if="step === 'password'">
+        <template v-if="session.localLoginEnabled">
+          <div class="field">
+            <label for="username">Username</label>
+            <input id="username" v-model="username" name="username" autocomplete="username" autofocus />
+          </div>
+          <div class="field">
+            <label for="password">Password</label>
+            <input id="password" v-model="password" name="password" type="password" autocomplete="current-password" />
+          </div>
+        </template>
+      </template>
+      <template v-else>
+        <p class="muted small hint">Enter the code from your authenticator app, or a recovery code.</p>
+        <div class="field">
+          <label for="code">Two-factor code</label>
+          <input id="code" v-model="code" name="code" inputmode="numeric" autocomplete="one-time-code" autofocus />
+        </div>
+      </template>
 
       <p v-if="error" class="error" role="alert">{{ error }}</p>
 
-      <button class="btn btn-primary" type="submit" :disabled="!canSubmit">
-        {{ submitting ? 'Signing in…' : 'Sign in' }}
+      <button
+        v-if="step === 'totp' || session.localLoginEnabled"
+        class="btn btn-primary"
+        type="submit"
+        :disabled="!canSubmit"
+      >
+        {{ submitting ? 'Signing in…' : step === 'totp' ? 'Verify' : 'Sign in' }}
       </button>
 
-      <template v-if="session.oidcEnabled">
-        <div class="divider"><span>or</span></div>
-        <a class="btn oidc" href="/auth/oidc/start">Sign in with {{ session.oidcLabel ?? 'SSO' }}</a>
+      <template v-if="session.oidcEnabled && step === 'password'">
+        <div v-if="session.localLoginEnabled" class="divider"><span>or</span></div>
+        <a class="btn oidc" :href="oidcHref">Sign in with {{ session.oidcLabel }}</a>
       </template>
     </form>
   </main>
@@ -72,12 +132,17 @@ async function submit() {
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 16px;
 }
 .login-card {
   width: 340px;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+.login-card .field {
+  margin: 0;
 }
 .brand {
   display: flex;
@@ -100,6 +165,9 @@ async function submit() {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+.hint {
+  margin: 0;
 }
 .error {
   margin: 0;

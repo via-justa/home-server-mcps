@@ -27,6 +27,15 @@ export const InstanceSettingsSchema = z
       })
       .prefault({}),
     extraRedactKeys: z.array(z.string().min(1)).default([]),
+    /** Re-sync the catalog on session start when the last sync is older than this (TN §5). */
+    syncMaxAgeMs: z
+      .number()
+      .int()
+      .min(60_000)
+      .max(7 * 24 * 60 * 60_000)
+      .default(60 * 60_000),
+    /** Plugin child heap limit (design §4.4). */
+    memoryMb: z.number().int().min(64).max(4096).default(256),
   })
   .prefault({});
 

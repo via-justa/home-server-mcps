@@ -107,7 +107,7 @@ const __hsm_call = __hsm.call;
 const __hsm_log = __hsm.log;
 delete globalThis.__hsm;
 globalThis.console = Object.freeze({
-  log: (...a) => __hsm_log.applyIgnored(undefined, [a.map((x) => typeof x === 'string' ? x : JSON.stringify(x)).join(' ')]),
+  log: (...a) => __hsm_log.applySync(undefined, [a.map((x) => typeof x === 'string' ? x : JSON.stringify(x)).join(' ')]),
 });
 function __hsm_bind(ns, fn) {
   return async (...args) => {

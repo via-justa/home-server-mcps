@@ -33,10 +33,10 @@ const handlers = {
     reply(id);
   },
   testConnection: (id) => reply(id, { ok: true, upstreamVersion: '1.0' }),
-  getUpstreamVersion: (id) => reply(id, '1.0'),
+  getUpstreamVersion: (id) => reply(id, config.version ?? '1.0'),
   syncCatalog(id) {
     if (config.mode === 'bad-output') return reply(id, { upstreamVersion: '1.0', operations: 'nope' });
-    reply(id, { upstreamVersion: '1.0', operations: CATALOG });
+    reply(id, { upstreamVersion: config.version ?? '1.0', operations: CATALOG });
   },
   resolveOperation(id, { args }) {
     const [key, params = {}] = args;

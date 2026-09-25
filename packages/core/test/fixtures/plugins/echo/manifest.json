@@ -14,7 +14,19 @@
       "properties": {
         "mode": {
           "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string",
+          "writeOnly": true
         }
+      }
+    },
+    "ui": {
+      "token": {
+        "widget": "secret"
       }
     }
   },

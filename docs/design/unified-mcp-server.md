@@ -296,10 +296,10 @@ The last two rows show one general pattern: **when the risk of an operation depe
 
 ### 4.1 Sources
 
-| Source         | Location                                                                 | Trust                                            |
-| -------------- | ------------------------------------------------------------------------ | ------------------------------------------------ |
-| **Core**       | `plugins/*` in this repo, built into the image at `/app/plugins/<id>`    | Trusted (shipped with core, same review process) |
-| **Repository** | Installed from an added plugin repo into `/data/plugins/<id>/<version>/` | Per-repo signing mode (§4.3)                     |
+| Source         | Location                                                                                                   | Trust                                            |
+| -------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| **Core**       | `plugins/*` in this repo, built into the image at `/app/plugins/<id>`                                      | Trusted (shipped with core, same review process) |
+| **Repository** | Installed from an added plugin repo into `/data/plugins/<id>/` (one version at a time, swapped atomically) | Per-repo signing mode (§4.3)                     |
 
 At startup the plugin host scans both locations, validates every `manifest.json` against the SDK schema and the `sdk` range, and upserts a `plugins` row. An invalid manifest is recorded with `status = 'invalid'` and an error message, and it is shown in the UI. It is never loaded.
 
@@ -337,14 +337,14 @@ The admin adds a repository by URL on the Plugins → Repositories page. The URL
 
 - The index is fetched when the repo is added, when someone clicks "Refresh", and daily. It is cached in `plugin_repos.index_cache`.
 - The Plugins page lists available plugins across all repos. It shows the installed version and whether an update is available. **There are no automatic updates.** Every install or update is an explicit admin action on a pinned version.
-- Tarballs contain a **prebuilt, self-contained** package: `manifest.json` plus the entry and everything it imports **inside the package directory**, typically a single bundle (`esbuild --bundle --platform=node`), which is how the core plugins are built. Under the permission model (§4.4) the child cannot read anything outside its directory, so an entry that imports from a shared `node_modules` fails to load. Discovery also rejects an entry whose real path (after symlinks) lies outside the directory. The server never runs `npm install` or build scripts.
+- Tarballs contain a **prebuilt, self-contained** package: `manifest.json` plus the entry and everything it imports **inside the package directory**, typically a single bundle (`esbuild --bundle --platform=node`), which is how the core plugins are built. Under the permission model (§4.4) the child cannot read anything outside its directory, so an entry that imports from a shared `node_modules` fails to load. Discovery also rejects an entry whose real path (after symlinks) lies outside the directory. The server never runs `npm install` or build scripts. Archives may be flat or npm-pack style (one top-level `package/` directory). Extraction accepts only regular files and directories: links, devices, paths that escape the target, and archives over 50 MB compressed, 200 MB extracted or 5,000 entries all fail the install. The archive's manifest must name exactly the plugin id and version being installed.
 - Plugin ID conflicts: a repository plugin cannot use a core plugin's ID. Two repos offering the same ID must be disambiguated at install time, and the installed row records its `repo_id`.
 
 ### 4.3 Trust & signing (optional per repo)
 
 When the admin adds a repo, they choose a **signing mode**:
 
-- **Signed.** Core reads `publicKey` from the index and shows its fingerprint. The admin must confirm that the fingerprint matches what the publisher advertises out of band. The key is then **pinned** on the `plugin_repos` row. Every install requires the tarball to match `sha256` **and** carry a valid ed25519 (minisign-format) signature over the tarball bytes from the pinned key. If a later index fetch shows a different `publicKey`, the repo is marked `key_changed`: installs and updates are blocked until the admin re-confirms.
+- **Signed.** Core reads `publicKey` from the index and shows it with its key id. The admin must confirm it by pasting the **full public key** (`RW…`, or the whole `.pub` file) exactly as the publisher advertises it out of band. A key id alone is not enough, because the key's owner chooses it: a hijacked index could publish a different key under the same id. The key is then **pinned** on the `plugin_repos` row. Every install requires the tarball to match `sha256` **and** carry a valid ed25519 (minisign-format) signature over the tarball bytes from the pinned key. If a later index fetch shows a different `publicKey` (compared byte for byte, not by id), the repo is marked `key_changed`: installs and updates are blocked until the admin re-confirms with the new full key. Both minisign algorithms are accepted (`ED`, prehashed with BLAKE2b-512 and the default since minisign 0.8, and legacy `Ed`), and the global signature over the trusted comment is always checked.
 - **Unsigned.** Only `sha256` is verified. Every install from an unsigned repo shows a warning and requires typing the plugin ID to confirm. The plugin is badged "unsigned" everywhere it appears.
 
 Installation, update, removal, and repo add/remove/key-change are written to the audit log as `config` events.
@@ -617,8 +617,8 @@ approval_links(token_hash PK, approval_id FK, action 'approve'|'deny'|'view', ex
 - Encryption: AES-256-GCM with a random 96-bit nonce per value. The ciphertext blob is `v1 ‖ nonce ‖ ciphertext ‖ tag`, and the AAD is `table:column:row-id`, so a ciphertext can't be copied to another row.
 - Encrypted columns: `plugin_instances.secrets_enc` (all `writeOnly` connection fields), `users.totp_secret_enc`, `oidc_config.client_secret_enc`, `notifier_channels.secrets_enc`.
 - The Admin API **never returns decrypted secrets**. `GET` returns `{ set: true, hint: "…ab12" }` per secret field. `PUT` with a secret field replaces it. Omitting the field keeps the old value (TN §2.6).
-- Key rotation: `hsm rotate-master-key` CLI re-encrypts all columns in one transaction.
-- Derived keys (HKDF from the master key): the attestation HMAC key, the approval-link HMAC key, and the session-ID pepper.
+- Key rotation: `node dist/cli.js rotate-master-key`, run with the server stopped, decrypts every encrypted column first and then re-encrypts them all in one transaction, so a wrong current key changes nothing. With a key file, the new key is written to `master.key.new` before the database changes and then moved over `master.key`. With `MASTER_KEY` in the environment, the replacement must be supplied as `NEW_MASTER_KEY`, so it exists before any data depends on it. All sessions are cleared, because their pepper is derived from the master key.
+- Derived keys (HKDF from the master key): the attestation HMAC key, the signed-state key (MFA and consent forms), and the session-ID pepper. Approval-link tokens are random and stored as SHA-256 hashes, so they need no key.
 
 ### 7.3 Write ownership (TN §8, adapted)
 
@@ -718,7 +718,7 @@ POST   /auth/login | /auth/totp | /auth/logout      GET /auth/oidc/start | /auth
 GET    /api/session                                  POST /api/setup (only while no users)
 GET    /api/overview
 GET    /api/plugins            PATCH /api/plugins/:id {enabled}        DELETE /api/plugins/:id
-GET/POST/DELETE /api/plugin-repos    POST /api/plugin-repos/:id/refresh | /confirm-key
+GET/POST/DELETE /api/plugin-repos    POST /api/plugin-repos/:id/refresh | /confirm-key {publicKey}
 GET    /api/plugin-repos/available   POST /api/plugins/install {repoId, pluginId, version, confirm}
 GET/POST /api/instances      GET/PATCH/DELETE /api/instances/:id
 GET/PUT  /api/instances/:id/connection   POST /api/instances/:id/connection/test
@@ -749,25 +749,25 @@ Every mutating route writes a `config` audit event with a before/after diff (sec
 
 ### 9.1 Channels
 
-| Kind      | Config                                                                                         | Delivery                                                                                                                            |
-| --------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `ntfy`    | server URL (default `https://ntfy.sh`), topic, optional access token (encrypted), priority map | `POST {server}/{topic}` with `Title`, `Priority`, `Tags`, `Click`, and `Actions: view, Approve, <link>; view, Deny, <link>` headers |
-| `webhook` | URL, optional HMAC secret (encrypted), optional extra headers (encrypted)                      | `POST` JSON `{event, instance, approval?, links?, at}`, signed with `X-HSM-Signature: sha256=<hmac(body)>` and `X-HSM-Timestamp`    |
+| Kind      | Config                                                                           | Delivery                                                                                                                                                                                                              |
+| --------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ntfy`    | server URL (default `https://ntfy.sh`), topic, optional access token (encrypted) | JSON publish to `POST {server}` (`topic`, `title`, `message`, `priority`, `tags`, `click`, and `actions`: view Approve / view Deny links). JSON rather than headers so titles stay UTF-8 safe                         |
+| `webhook` | URL, optional HMAC secret (encrypted), optional extra headers (encrypted)        | `POST` JSON `{event, at, instance, title, message, data, links?}` with `X-HSM-Event`, `X-HSM-Timestamp` and `X-HSM-Signature: sha256=<HMAC-SHA256(secret, timestamp + "." + body)>`, so a receiver can reject replays |
 
 Each channel subscribes to a set of **events** and can filter by instance:
 
 - `approval.pending`, `approval.decided`, `approval.timed_out`
 - `instance.error`, `instance.recovered`, `plugin.crashed`
-- `sync.failed`, `sync.new_operations`, `sync.pending_review` (new writes waiting for acknowledgement)
+- `sync.failed`, `sync.pending_review` (new writes waiting for acknowledgement)
 - `auth.lockout`
 
-Delivery is retried with backoff (3 attempts). Failures update `last_error` and are shown on the Overview page. Notification bodies are built from the **redacted** summary and never contain raw params.
+Delivery is retried with backoff (3 attempts; 4xx other than 429 is not retried). Failures update `last_error`, shown on Settings → Notifications, and every channel has a Test button. Notification bodies are built from the **redacted** summary and never contain raw params.
 
 ### 9.2 Approval links
 
 - For each pending approval and each channel, core issues link tokens: `approve`, `deny`, and `view`. A token is 256 random bits, stored hashed in `approval_links`, bound to `approval_id`, and expires with the approval.
 - A link opens `https://mcp.example.com/a/{token}` on the **MCP port**. It never points at the admin port, which is typically LAN-only.
-- **A link alone never decides an approval.** The page requires login: local password (+ TOTP) or OIDC, via the minimal MCP-port login and an `approval_ui` session. It then shows the full redacted approval (summary, params, targets, diff) and asks for confirmation. For a typed-confirmation operation it requires the literal. The token is marked `used` when the decision is recorded, and other tokens for the same approval are then invalid.
+- **A link alone never decides an approval.** The page requires login: local password (+ TOTP) or OIDC, via the minimal MCP-port login and its short-lived `oauth_ui` session (never valid on the Admin API). The decision is a CSRF-protected POST, so opening or prefetching a link changes nothing. It then shows the full redacted approval (summary, params, targets, diff) and asks for confirmation. For a typed-confirmation operation it requires the literal. The token is marked `used` when the decision is recorded, and other tokens for the same approval are then invalid.
 - This keeps the property that deciding an approval requires an authenticated human who has seen the call (TN §3.3). The link is only a shortcut to the right page.
 
 ---
@@ -783,7 +783,7 @@ TN §5, SR §5, and HA §5 apply unchanged, each run **per instance** by the cor
 - **Registry freshness (HA).** `syncRegistry` runs on the same cadence, plus when the plugin sends `catalogChanged`. `resolveTargets` uses the plugin's live view, so area membership is evaluated as of call time (HA §5).
 - **Sync failure.** Keep serving the last-synced catalog (fail open on _reading_ classifications), set `last_sync_status = error`, and notify `sync.failed`. If an instance has **no** prior sync and the upstream is unreachable, it stays in `error` and its endpoint returns 503 (TN §2.2 refuse-to-start, now per instance, not for the whole process).
 - **Plugin repo index refresh.** Daily. Surfaces update availability and key changes. It never installs anything.
-- **Housekeeping.** Purge `pre_approval_hits` older than the largest rule window. Purge expired sessions, OAuth codes, tokens, and approval links. `audit_log` has **no** automatic purge; an optional `audit.retentionDays` setting (default unset = keep forever) exists for disk hygiene and is itself audited.
+- **Housekeeping (hourly).** Purge `pre_approval_hits` older than the largest rule window. Purge expired sessions, OAuth codes, tokens, and approval links. Purge decided approvals older than 7 days; the audit log keeps their record. `audit_log` has **no** automatic purge; an optional `audit.retentionDays` setting (default unset = keep forever) exists for disk hygiene and is itself audited.
 
 ---
 
@@ -832,7 +832,7 @@ Same discipline as TN §7: tests first, phase gates, no loosening tests to pass.
 
 | #   | Phase                                       | Tests first (highlights)                                                                                                                                                                                                                                                                                                                                           |
 | --- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 0   | **Skeleton** _(this PR)_                    | Both listeners boot; `/healthz` on each; cross-port 404; SDK manifest schema validates the 3 core manifests; admin login page renders                                                                                                                                                                                                                              |
+| 0   | **Skeleton**                                | Both listeners boot; `/healthz` on each; cross-port 404; SDK manifest schema validates the 3 core manifests; admin login page renders                                                                                                                                                                                                                              |
 | 1   | **Plugin SDK contracts**                    | Manifest schema edge cases (unknown widget rejected, slug/ID patterns, `sdk` range); RPC message types round-trip; `runPlugin` dispatches, maps errors to codes                                                                                                                                                                                                    |
 | 2   | **Classification & group access (generic)** | `locked` > `override` > inferred; default-to-write; every branch of `reachable()` incl. missing group; new groups at `read`; new writes quarantined; read→write reclassification resets acknowledgement; aliases survive sync; merge takes the lower level; bulk Write rejects missing slug and stale preview and leaves locked ops off; locked API mutation → 409 |
 | 3   | **DB, migrations, crypto**                  | AES-GCM round-trip; AAD binding (swapped rows fail); secrets never serialized by API DTOs; master-key bootstrap; rotation                                                                                                                                                                                                                                          |
@@ -855,18 +855,26 @@ Same discipline as TN §7: tests first, phase gates, no loosening tests to pass.
 
 **Progress** (updated as phases land):
 
-| Phase                           | State                                    | Where                                                                                                                                                                                  |
-| ------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0 Skeleton                      | done                                     | listeners, SPA shell, CI, Docker                                                                                                                                                       |
-| 1 Plugin SDK contracts          | done                                     | `plugin-sdk`: manifest schema (incl. `showWhen`/`connection.help`), RPC types, `runPlugin`, **`checkConformance()`** for plugin test suites                                            |
-| 2 Classification & group access | done (service layer)                     | `core/src/gate/access.ts`, `core/src/catalog/groups.ts`: levels, acknowledgement, bulk preview/apply with typed slug, merge/rename with aliases, exclude / locked opt-in / override    |
-| 3 DB, migrations, crypto        | done, except the `rotate-master-key` CLI | `core/src/db`, `core/src/crypto` (AES-256-GCM + AAD, HKDF subkeys, key file bootstrap)                                                                                                 |
-| 4 Plugin host                   | done                                     | `core/src/plugins`: discovery + registry upsert, `PluginProcess` (permission-confined fork, validated JSON-RPC, timeouts), `PluginSupervisor` (init, crash → backoff restart)          |
-| 6 Catalog sync                  | apply step done                          | `core/src/catalog/sync.ts`: validated diff upsert, stale marking, quarantine, locked → rules disabled, aliases. Scheduling (session-start debounce, version check, cron) is still open |
-| 7 Sandbox                       | done                                     | `core/src/sandbox`: fresh isolate per call, frozen bindings, JSON envelope, pausable budget, memory/result/log caps                                                                    |
-| 8 Gate & pre-approval           | done                                     | `core/src/gate/pipeline.ts` (+ `match`, `redact`, `preapproval`, `attestation`, `rate-limit`), `core/src/runtime` (`executeCode`, `searchCode` with `catalog.find/get/groups`)         |
-| 9 Approval service              | done                                     | `core/src/approvals/service.ts`: elicitation / portal / link race, timeout, typed confirmation, orphan denial at startup. Notifier delivery lands in phase 15                          |
-| 5, 10–19                        | not started                              | `search` still lacks `registry.find` and `guides.get` (they need registry sync and guide fetching)                                                                                     |
+| Phase                           | State       | Where                                                                                                                                                                                                      |
+| ------------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0 Skeleton                      | done        | listeners, SPA shell, CI, Docker                                                                                                                                                                           |
+| 1 Plugin SDK contracts          | done        | `plugin-sdk`: manifest schema (incl. `showWhen`/`connection.help`), RPC types, `runPlugin`, **`checkConformance()`** for plugin test suites                                                                |
+| 2 Classification & group access | done        | `core/src/gate/access.ts`, `core/src/catalog/groups.ts`: levels, acknowledgement, bulk preview/apply with typed slug, merge/rename with aliases, exclude / locked opt-in / override                        |
+| 3 DB, migrations, crypto        | done        | `core/src/db`, `core/src/crypto` (AES-256-GCM + AAD, HKDF subkeys, key file bootstrap, `rotate.ts` + `cli.js rotate-master-key`)                                                                           |
+| 4 Plugin host                   | done        | `core/src/plugins`: discovery + registry upsert, `PluginProcess` (permission-confined fork, validated JSON-RPC, timeouts), `PluginSupervisor` (init, crash → backoff restart)                              |
+| 5 Plugin repos & install        | done        | `core/src/plugins/repos.ts`, `minisign.ts` (verified against the reference `minisign` tool, `ED` and legacy `Ed`): full-key pinning, key-change block, checksum, safe extraction, atomic swap              |
+| 6 Catalog sync                  | done        | `core/src/catalog/sync.ts` + `instances/manager.ts`: session-start sync when stale, version check, `catalogChanged` debounce, per-instance mutex, daily backstop; `registry.ts` mirror for `registry.find` |
+| 7 Sandbox                       | done        | `core/src/sandbox`: fresh isolate per call, frozen bindings, JSON envelope, pausable budget, memory/result/log caps                                                                                        |
+| 8 Gate & pre-approval           | done        | `core/src/gate/pipeline.ts` (+ `match`, `redact`, `preapproval`, `attestation`, `rate-limit`), `core/src/runtime` (`executeCode`, `searchCode` with `catalog.*`, `registry.find`, `guides.get`)            |
+| 9 Approval service              | done        | `core/src/approvals/service.ts`: elicitation / portal / link race, timeout, typed confirmation, orphan denial at startup                                                                                   |
+| 10 Admin auth                   | done        | `core/src/auth` (users, sessions, TOTP, throttle, OIDC) + `http/admin/auth.ts` (CSRF double-submit + Origin check)                                                                                         |
+| 11 MCP auth                     | done        | `core/src/auth/mcp-auth.ts`, `mcp-tokens.ts`, `oauth.ts` (OAuth 2.1 AS: DCR, PKCE, RFC 8707 resources, refresh rotation with reuse detection) + `http/mcp/oauth-routes.ts`                                 |
+| 12 Admin API                    | done        | `core/src/http/admin/*`                                                                                                                                                                                    |
+| 13 Admin UI                     | done        | `packages/admin-ui`: every page in §8.2; component tests for login/TOTP/guards, Access (write dialog, stale list, bulk Write), SchemaForm, approvals; browser smoke test against a running server          |
+| 14 MCP endpoints                | done        | `core/src/http/mcp/endpoint.ts`: `search`/`execute`, sessions bound to endpoint + principal, elicitation bridge; e2e with the real MCP SDK client                                                          |
+| 15 Notifications                | done        | `core/src/notify`: ntfy (JSON publish, actions) and signed webhooks, retries; approval links → `http/mcp/approval-routes.ts` (sign-in + CSRF POST required, single use)                                    |
+| 16 Maintenance jobs             | done        | `core/src/maintenance.ts` (hourly housekeeping, optional audit retention) + daily repo index refresh                                                                                                       |
+| 17–19 Plugins                   | not started | scaffolds only in `plugins/*`                                                                                                                                                                              |
 
 Plugins 17–19 can go in parallel once phase 14 is green. They are built against a shared **fake-plugin harness** that exercises the RPC contract without core, plus a **conformance test suite** exported from the SDK that every plugin (including third-party ones) can run.
 

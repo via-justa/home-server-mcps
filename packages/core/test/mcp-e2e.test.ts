@@ -1,0 +1,498 @@
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { eq } from 'drizzle-orm';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createAppContext } from '../src/app.js';
+import type { AppContext } from '../src/app.js';
+import { setGroupLevel, updateOperation } from '../src/catalog/groups.js';
+import { loadConfig } from '../src/config/env.js';
+import { auditLog, operations } from '../src/db/schema.js';
+import { startServers } from '../src/server.js';
+import type { RunningServers } from '../src/server.js';
+import { updateSettings } from '../src/settings.js';
+
+/**
+ * End to end over real HTTP: the MCP SDK client ↔ `/{slug}` ↔ gate ↔ sandboxed plugin child, with
+ * bearer tokens, the full OAuth 2.1 flow (DCR → sign-in → consent → PKCE → tokens), and elicitation.
+ */
+
+const PLUGINS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/plugins');
+const PASSWORD = 'correct horse battery';
+
+let ctx: AppContext;
+let servers: RunningServers;
+let dataDir: string;
+let base: string;
+let instanceId: string;
+let otherInstanceId: string;
+
+beforeAll(async () => {
+  dataDir = mkdtempSync(path.join(tmpdir(), 'hsm-e2e-'));
+  ctx = await createAppContext(
+    loadConfig({
+      DATA_DIR: dataDir,
+      CORE_PLUGINS_DIR: PLUGINS,
+      CORE_PLUGINS_AUTOENABLE: 'true',
+      MCP_HOST: '127.0.0.1',
+      MCP_PORT: '0',
+      ADMIN_HOST: '127.0.0.1',
+      ADMIN_PORT: '0',
+    }),
+    { memoryDb: true },
+  );
+  await ctx.users.create({ username: 'admin', password: PASSWORD });
+  servers = await startServers(ctx);
+  base = `http://127.0.0.1:${servers.mcp.port}`;
+  instanceId = (await ctx.instances.create({ pluginId: 'echo', slug: 'echo', connection: {} })).id;
+  otherInstanceId = (await ctx.instances.create({ pluginId: 'echo', slug: 'echo-two', connection: {} })).id;
+  await ctx.instances.syncNow(instanceId);
+  const writes = ctx.db
+    .select()
+    .from(operations)
+    .where(eq(operations.instanceId, instanceId))
+    .all()
+    .filter((o) => o.classification === 'write' && !o.locked)
+    .map((o) => o.id);
+  setGroupLevel(ctx.db, instanceId, 'echo', 'write', { acknowledge: writes });
+  const del = ctx.db
+    .select()
+    .from(operations)
+    .where(eq(operations.key, 'echo.delete'))
+    .all()
+    .find((o) => o.instanceId === instanceId)!;
+  updateOperation(ctx.db, instanceId, del.id, { lockedOptIn: true });
+}, 30_000);
+
+afterAll(async () => {
+  await servers?.close();
+  await ctx?.stop();
+  rmSync(dataDir, { recursive: true, force: true });
+});
+
+async function connect(
+  slug: string,
+  token: string,
+  onElicit?: (message: string, schema: unknown) => Record<string, unknown> | 'decline',
+) {
+  const client = new Client({ name: 'e2e', version: '1.0.0' }, { capabilities: onElicit ? { elicitation: {} } : {} });
+  if (onElicit) {
+    client.setRequestHandler(ElicitRequestSchema, async (req) => {
+      const out = onElicit(
+        req.params.message,
+        'requestedSchema' in req.params ? req.params.requestedSchema : undefined,
+      );
+      return out === 'decline'
+        ? { action: 'decline' }
+        : { action: 'accept', content: out as Record<string, string | number | boolean> };
+    });
+  }
+  const transport = new StreamableHTTPClientTransport(new URL(`${base}/${slug}`), {
+    requestInit: { headers: { authorization: `Bearer ${token}` } },
+  });
+  await client.connect(transport);
+  return client;
+}
+
+const parse = (res: unknown) =>
+  JSON.parse((res as { content: { text: string }[] }).content[0]!.text) as Record<string, unknown>;
+
+describe('MCP endpoint with bearer tokens', () => {
+  it('exposes exactly search and execute, with plugin-specific descriptions', async () => {
+    const { token } = ctx.tokens.create({ name: 'e2e', scope: [instanceId] });
+    const client = await connect('echo', token);
+    const { tools } = await client.listTools();
+    expect(tools.map((t) => t.name).sort()).toEqual(['execute', 'search']);
+    expect(tools.find((t) => t.name === 'execute')?.description).toContain('echo.call(…)');
+    expect(tools.find((t) => t.name === 'search')?.description).toContain('guides.get(key)');
+    await client.close();
+  });
+
+  it('runs search and read-only execute, redacting secrets', async () => {
+    const { token } = ctx.tokens.create({ name: 'e2e', scope: ['*'] });
+    const client = await connect('echo', token);
+    const found = parse(
+      await client.callTool({
+        name: 'search',
+        arguments: { code: `return (await catalog.find({ classification: 'read' })).map((o) => o.key);` },
+      }),
+    );
+    expect(found).toEqual({ result: ['echo.query'] });
+    const res = parse(
+      await client.callTool({
+        name: 'execute',
+        arguments: { code: `return await echo.call('echo.query', { q: 1 });` },
+      }),
+    );
+    expect(res).toEqual({ result: { key: 'echo.query', params: { q: 1 }, password: '[REDACTED]' } });
+    await client.close();
+  });
+
+  it('asks for approval over elicitation, including typed confirmation for locked operations', async () => {
+    const { token } = ctx.tokens.create({ name: 'e2e', scope: [instanceId] });
+    const prompts: string[] = [];
+    const client = await connect('echo', token, (message, schema) => {
+      prompts.push(message);
+      const confirm = (schema as { properties: Record<string, { title: string }> }).properties.confirm;
+      return { approve: true, ...(confirm ? { confirm: /Type "(.*)" to confirm/.exec(confirm.title)![1]! } : {}) };
+    });
+    const set = parse(
+      await client.callTool({
+        name: 'execute',
+        arguments: { code: `return (await echo.call('echo.set', { name: 'tank/a' })).key;` },
+      }),
+    );
+    expect(set).toEqual({ result: 'echo.set' });
+    const del = parse(
+      await client.callTool({
+        name: 'execute',
+        arguments: { code: `return (await echo.call('echo.delete', { name: 'tank/x' })).key;` },
+      }),
+    );
+    expect(del).toEqual({ result: 'echo.delete' });
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain('echo.delete');
+    const audit = ctx.db.select().from(auditLog).where(eq(auditLog.decidedVia, 'elicitation')).all();
+    expect(audit.map((a) => a.actorId)).toEqual(['token:e2e', 'token:e2e']);
+    await client.close();
+  });
+
+  it('returns a structured tool error when the human declines', async () => {
+    const { token } = ctx.tokens.create({ name: 'e2e', scope: [instanceId] });
+    const client = await connect('echo', token, () => 'decline');
+    const res = await client.callTool({
+      name: 'execute',
+      arguments: { code: `await echo.call('echo.set', { name: 'x' });` },
+    });
+    expect(res.isError).toBe(true);
+    expect(parse(res)).toMatchObject({ error: 'PERMISSION_DENIED' });
+    await client.close();
+  });
+
+  it('rejects missing, wrong, out-of-scope and revoked tokens', async () => {
+    const init = (auth?: string) =>
+      fetch(`${base}/echo`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          ...(auth ? { authorization: auth } : {}),
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'x', version: '1' } },
+        }),
+      });
+    const none = await init();
+    expect(none.status).toBe(401);
+    expect(none.headers.get('www-authenticate')).toBe(
+      `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/echo"`,
+    );
+    expect((await init('Bearer hsm_nope')).status).toBe(401);
+    const other = ctx.tokens.create({ name: 'other', scope: [otherInstanceId] });
+    expect((await init(`Bearer ${other.token}`)).status).toBe(403);
+    ctx.tokens.revoke(other.id);
+    expect((await init(`Bearer ${other.token}`)).status).toBe(401);
+  });
+
+  it('binds sessions to the principal that created them', async () => {
+    const a = ctx.tokens.create({ name: 'a', scope: ['*'] });
+    const b = ctx.tokens.create({ name: 'b', scope: ['*'] });
+    const client = await connect('echo', a.token);
+    const sessionId = (client as unknown as { _transport: { sessionId: string } })._transport.sessionId;
+    const hijack = await fetch(`${base}/echo`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${b.token}`,
+        'mcp-session-id': sessionId,
+        'mcp-protocol-version': '2025-06-18',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+    });
+    expect(hijack.status).toBe(404);
+    await client.close();
+  });
+
+  it('serves external mode with a trusted identity header', async () => {
+    updateSettings(ctx.db, 'mcp', { trustedIdentityHeader: 'remote-user' });
+    await ctx.instances.update(otherInstanceId, { authMode: 'external' });
+    await ctx.instances.syncNow(otherInstanceId);
+    const client = new Client({ name: 'e2e', version: '1' });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(`${base}/echo-two`), {
+        requestInit: { headers: { 'remote-user': 'alice' } },
+      }),
+    );
+    await client.callTool({ name: 'execute', arguments: { code: `return await echo.call('echo.query');` } });
+    const last = ctx.db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.instanceId, otherInstanceId))
+      .all()
+      .filter((a) => a.kind === 'call')
+      .at(-1);
+    expect(last?.actorId).toBe('external:alice');
+    await client.close();
+    await ctx.instances.update(otherInstanceId, { authMode: null });
+  });
+});
+
+describe('OAuth 2.1 authorization server', () => {
+  /** A tiny cookie-keeping browser for the MCP-port HTML flow. */
+  function browserSession() {
+    const jar = new Map<string, string>();
+    return async (url: string, init: RequestInit = {}) => {
+      const headers = new Headers(init.headers);
+      if (jar.size) headers.set('cookie', [...jar].map(([k, v]) => `${k}=${v}`).join('; '));
+      const res = await fetch(url.startsWith('http') ? url : `${base}${url}`, { ...init, headers, redirect: 'manual' });
+      for (const sc of res.headers.getSetCookie()) {
+        const [pair] = sc.split(';');
+        const i = pair!.indexOf('=');
+        const value = pair!.slice(i + 1);
+        if (value) jar.set(pair!.slice(0, i), value);
+        else jar.delete(pair!.slice(0, i));
+      }
+      return res;
+    };
+  }
+  const hidden = (page: string, name: string) => new RegExp(`name="${name}" value="([^"]*)"`).exec(page)?.[1] ?? '';
+  const form = (fields: Record<string, string | string[]>) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(fields)) for (const x of [v].flat()) p.append(k, x);
+    return { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: p.toString() };
+  };
+  const pkce = () => {
+    const verifier = randomBytes(32).toString('base64url');
+    return { verifier, challenge: createHash('sha256').update(verifier).digest('base64url') };
+  };
+
+  async function authorize(resources: string[]) {
+    const reg = await fetch(`${base}/oauth/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ client_name: 'Claude', redirect_uris: ['https://claude.ai/api/mcp/auth_callback'] }),
+    });
+    expect(reg.status).toBe(201);
+    const client = (await reg.json()) as { client_id: string };
+    const { verifier, challenge } = pkce();
+    const q = new URLSearchParams({
+      response_type: 'code',
+      client_id: client.client_id,
+      redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+      state: 'xyz',
+    });
+    for (const r of resources) q.append('resource', r);
+    const browse = browserSession();
+
+    const login = await (await browse(`/oauth/authorize?${q}`)).text();
+    expect(login).toContain('Sign in to let Claude use your MCP endpoints');
+    const afterLogin = await browse(
+      '/oauth/login',
+      form({
+        username: 'admin',
+        password: PASSWORD,
+        csrf: hidden(login, 'csrf'),
+        continue: hidden(login, 'continue').replace(/&amp;/g, '&'),
+      }),
+    );
+    expect(afterLogin.status).toBe(303);
+    const consent = await (await browse(afterLogin.headers.get('location')!)).text();
+    expect(consent).toContain('Authorize Claude');
+    expect(consent).toContain('/echo');
+    const approved = await browse(
+      '/oauth/consent',
+      form({ form: hidden(consent, 'form'), decision: 'approve', resource: resources }),
+    );
+    const redirect = new URL(approved.headers.get('location')!);
+    expect(redirect.origin + redirect.pathname).toBe('https://claude.ai/api/mcp/auth_callback');
+    expect(redirect.searchParams.get('state')).toBe('xyz');
+    expect(redirect.searchParams.get('iss')).toBe(base);
+    return { clientId: client.client_id, code: redirect.searchParams.get('code')!, verifier };
+  }
+
+  const token = (fields: Record<string, string>) =>
+    fetch(`${base}/oauth/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(fields).toString(),
+    });
+
+  it('publishes RFC 8414 and RFC 9728 metadata', async () => {
+    const as = (await (await fetch(`${base}/.well-known/oauth-authorization-server`)).json()) as Record<
+      string,
+      unknown
+    >;
+    expect(as).toMatchObject({
+      issuer: base,
+      code_challenge_methods_supported: ['S256'],
+      registration_endpoint: `${base}/oauth/register`,
+    });
+    const pr = await (await fetch(`${base}/.well-known/oauth-protected-resource/echo`)).json();
+    expect(pr).toMatchObject({ resource: `${base}/echo`, authorization_servers: [base] });
+  });
+
+  it('runs DCR → sign-in → consent → PKCE code exchange → MCP access, bound to the granted endpoint', async () => {
+    // A wrong PKCE verifier fails, and burns the code (single use).
+    const { clientId, code, verifier } = await authorize([`${base}/echo`]);
+    expect(
+      (
+        await token({
+          grant_type: 'authorization_code',
+          client_id: clientId,
+          code,
+          redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
+          code_verifier: 'x'.repeat(43),
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await token({
+          grant_type: 'authorization_code',
+          client_id: clientId,
+          code,
+          redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
+          code_verifier: verifier,
+        })
+      ).status,
+    ).toBe(400);
+    const second = await authorize([`${base}/echo`]);
+    const res = await token({
+      grant_type: 'authorization_code',
+      client_id: second.clientId,
+      code: second.code,
+      redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
+      code_verifier: second.verifier,
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    const tokens = (await res.json()) as { access_token: string; refresh_token: string };
+    expect(tokens.access_token).toMatch(/^hsmo_/);
+
+    const client = await connect('echo', tokens.access_token);
+    expect(
+      parse(
+        await client.callTool({ name: 'execute', arguments: { code: `return (await echo.call('echo.query')).key;` } }),
+      ),
+    ).toEqual({ result: 'echo.query' });
+    await client.close();
+    const wrongEndpoint = await fetch(`${base}/echo-two`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${tokens.access_token}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'x', version: '1' } },
+      }),
+    });
+    expect(wrongEndpoint.status).toBe(403);
+
+    // Replaying a code revokes everything issued from it.
+    expect(
+      (
+        await token({
+          grant_type: 'authorization_code',
+          client_id: second.clientId,
+          code: second.code,
+          redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
+          code_verifier: second.verifier,
+        })
+      ).status,
+    ).toBe(400);
+    const revoked = await fetch(`${base}/echo`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${tokens.access_token}` },
+    });
+    expect(revoked.status).toBe(401);
+    void verifier;
+  });
+
+  it('rotates refresh tokens and revokes the family on reuse', async () => {
+    const { clientId, code, verifier } = await authorize([`${base}/echo`]);
+    const first = (await (
+      await token({
+        grant_type: 'authorization_code',
+        client_id: clientId,
+        code,
+        redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
+        code_verifier: verifier,
+      })
+    ).json()) as { refresh_token: string };
+    const rotated = await token({
+      grant_type: 'refresh_token',
+      client_id: clientId,
+      refresh_token: first.refresh_token,
+    });
+    expect(rotated.status).toBe(200);
+    const next = (await rotated.json()) as { access_token: string; refresh_token: string };
+    expect(next.refresh_token).not.toBe(first.refresh_token);
+
+    const reuse = await token({ grant_type: 'refresh_token', client_id: clientId, refresh_token: first.refresh_token });
+    expect(await reuse.json()).toMatchObject({ error: 'invalid_grant' });
+    expect(
+      (await token({ grant_type: 'refresh_token', client_id: clientId, refresh_token: next.refresh_token })).status,
+    ).toBe(400);
+    expect(
+      (await fetch(`${base}/echo`, { method: 'POST', headers: { authorization: `Bearer ${next.access_token}` } }))
+        .status,
+    ).toBe(401);
+  });
+
+  it('never redirects to unregistered URIs and requires PKCE', async () => {
+    const reg = (await (
+      await fetch(`${base}/oauth/register`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ client_name: 'x', redirect_uris: ['https://app.example/cb'] }),
+      })
+    ).json()) as { client_id: string };
+    const evil = await fetch(
+      `${base}/oauth/authorize?response_type=code&client_id=${reg.client_id}&redirect_uri=https://evil.example/cb`,
+      { redirect: 'manual' },
+    );
+    expect(evil.status).toBe(400);
+    expect(await evil.text()).toContain('Invalid redirect');
+    const noPkce = await fetch(
+      `${base}/oauth/authorize?response_type=code&client_id=${reg.client_id}&redirect_uri=https://app.example/cb&state=s`,
+      { redirect: 'manual' },
+    );
+    expect(noPkce.headers.get('location')).toContain('error=invalid_request');
+    expect(noPkce.headers.get('location')).toContain('state=s');
+    const js = await fetch(`${base}/oauth/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ redirect_uris: ['javascript:alert(1)'] }),
+    });
+    expect(await js.json()).toMatchObject({ error: 'invalid_redirect_uri' });
+  });
+
+  it('can be closed to dynamic registration', async () => {
+    updateSettings(ctx.db, 'mcp', { allowDynamicRegistration: false });
+    const res = await fetch(`${base}/oauth/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(res.status).toBe(403);
+    expect(await (await fetch(`${base}/.well-known/oauth-authorization-server`)).json()).not.toHaveProperty(
+      'registration_endpoint',
+    );
+    updateSettings(ctx.db, 'mcp', { allowDynamicRegistration: true });
+  });
+});
