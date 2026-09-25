@@ -1,0 +1,90 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { loadConfig } from '../src/config/env.js';
+import { startServers } from '../src/server.js';
+import type { RunningServers } from '../src/server.js';
+
+let servers: RunningServers;
+let uiDir: string;
+let mcp: string;
+let admin: string;
+
+beforeAll(async () => {
+  uiDir = mkdtempSync(path.join(tmpdir(), 'hsm-ui-'));
+  writeFileSync(path.join(uiDir, 'index.html'), '<!doctype html><div id="app"></div>');
+  servers = await startServers(
+    loadConfig({ MCP_HOST: '127.0.0.1', MCP_PORT: '0', ADMIN_HOST: '127.0.0.1', ADMIN_PORT: '0', ADMIN_UI_DIR: uiDir }),
+  );
+  mcp = `http://127.0.0.1:${servers.mcp.port}`;
+  admin = `http://127.0.0.1:${servers.admin.port}`;
+});
+
+afterAll(async () => {
+  await servers?.close();
+  rmSync(uiDir, { recursive: true, force: true });
+});
+
+describe('listeners', () => {
+  it('bind two different ports', () => {
+    expect(servers.mcp.port).not.toBe(servers.admin.port);
+  });
+
+  it.each([
+    ['mcp', () => mcp],
+    ['admin', () => admin],
+  ])('%s serves /healthz', async (_name, base) => {
+    const res = await fetch(`${base()}/healthz`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: 'ok' });
+  });
+});
+
+describe('port separation', () => {
+  it('does not expose the Admin API or auth on the MCP port', async () => {
+    for (const p of ['/api/session', '/api/instances', '/auth/login']) {
+      const res = await fetch(`${mcp}${p}`, { method: p.startsWith('/auth') ? 'POST' : 'GET' });
+      expect(res.status, p).toBe(404);
+    }
+  });
+
+  it('does not expose MCP endpoints or OAuth on the admin port', async () => {
+    const post = await fetch(`${admin}/truenas`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
+    });
+    expect(post.status).toBe(404);
+    for (const p of ['/.well-known/oauth-authorization-server', '/oauth/token']) {
+      const res = await fetch(`${admin}${p}`, { method: p.startsWith('/oauth') ? 'POST' : 'GET' });
+      expect(res.status, p).toBe(404);
+    }
+  });
+});
+
+describe('mcp listener', () => {
+  it('returns a JSON-RPC 404 for an unknown slug', async () => {
+    const res = await fetch(`${mcp}/nope`, { method: 'POST' });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ jsonrpc: '2.0', error: { code: -32001 } });
+  });
+});
+
+describe('admin listener', () => {
+  it('serves the SPA for client-side routes', async () => {
+    const res = await fetch(`${admin}/endpoints/truenas/connection`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('<div id="app">');
+  });
+
+  it('reports an unauthenticated session', async () => {
+    const res = await fetch(`${admin}/api/session`);
+    expect(await res.json()).toEqual({ authenticated: false });
+  });
+
+  it('does not let the SPA fallback swallow unknown API routes', async () => {
+    const res = await fetch(`${admin}/api/does-not-exist`);
+    expect(res.headers.get('content-type')).toContain('application/json');
+  });
+});

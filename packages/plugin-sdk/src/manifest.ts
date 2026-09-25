@@ -1,0 +1,147 @@
+import semver from 'semver';
+import { z } from 'zod';
+import { SDK_VERSION } from './version.js';
+
+/**
+ * Core widget library (design §8.3). Plugins can only reference these; an unknown widget fails
+ * validation instead of silently degrading to a free-text field.
+ */
+export const WIDGETS = [
+  'text',
+  'url',
+  'number',
+  'bool',
+  'select',
+  'secret',
+  'multiselect',
+  'prefix',
+  'range',
+  'registry-picker',
+  'diff',
+] as const;
+export type Widget = (typeof WIDGETS)[number];
+
+/** Operators understood by the core pre-approval match evaluator (design §5.2). */
+export const MATCH_OPS = ['eq', 'in', 'prefix', 'range', 'bool'] as const;
+export type MatchOp = (typeof MATCH_OPS)[number];
+
+/** Sandbox globals owned by core; a plugin binding namespace may not shadow them. */
+export const RESERVED_NAMESPACES = ['catalog', 'registry', 'guides', 'console'] as const;
+
+const pluginId = z.string().regex(/^[a-z0-9][a-z0-9-]{1,62}$/, 'lowercase letters, digits and dashes');
+const jsIdentifier = z.string().regex(/^[A-Za-z_$][A-Za-z0-9_$]*$/, 'must be a JavaScript identifier');
+const jsonSchema = z.record(z.string(), z.unknown());
+
+const relativePath = z
+  .string()
+  .min(1)
+  .refine((p) => !p.startsWith('/') && !p.split(/[\\/]/).includes('..'), 'must be a relative path inside the package');
+
+export const UiHintSchema = z.object({
+  widget: z.enum(WIDGETS).optional(),
+  help: z.string().optional(),
+  placeholder: z.string().optional(),
+  optionsSource: z.string().optional(),
+});
+export type UiHint = z.infer<typeof UiHintSchema>;
+
+export const MatchFieldSchema = z
+  .object({
+    /** JSON pointer into the normalized params (`/name`), or `$targets` for the resolved-target selector. */
+    field: z.string().regex(/^(\$targets|\/.*)$/, 'must be a JSON pointer or $targets'),
+    label: z.string().min(1),
+    op: z.enum(MATCH_OPS).optional(),
+    widget: z.enum(WIDGETS),
+    options: z.record(z.string(), z.unknown()).optional(),
+    /** Source name passed to the plugin's `optionsFor` RPC to populate pickers. */
+    optionsSource: z.string().optional(),
+  })
+  .superRefine((f, ctx) => {
+    if (f.field === '$targets') {
+      if (f.widget !== 'registry-picker') {
+        ctx.addIssue({ code: 'custom', message: '$targets fields must use the registry-picker widget' });
+      }
+    } else if (!f.op) {
+      ctx.addIssue({ code: 'custom', message: 'param match fields must declare an op' });
+    }
+  });
+export type MatchField = z.infer<typeof MatchFieldSchema>;
+
+export const ManifestSchema = z
+  .object({
+    id: pluginId,
+    name: z.string().min(1),
+    version: z.string().refine((v) => semver.valid(v) !== null, 'must be a semver version'),
+    sdk: z.string().refine((r) => semver.validRange(r) !== null, 'must be a semver range'),
+    description: z.string().optional(),
+    entry: relativePath,
+    binding: z.object({
+      namespace: jsIdentifier,
+      functions: z.array(jsIdentifier).min(1),
+      searchApis: z.array(z.enum(['registry', 'guides'])).default([]),
+    }),
+    labels: z
+      .object({
+        operation: z.string().default('Operation'),
+        operations: z.string().default('Operations'),
+      })
+      .prefault({}),
+    capabilities: z
+      .object({
+        registry: z.boolean().default(false),
+        targets: z.boolean().default(false),
+        attestation: z.boolean().default(false),
+        configTransform: z.boolean().default(false),
+      })
+      .prefault({}),
+    connection: z.object({
+      schema: jsonSchema,
+      ui: z.record(z.string(), UiHintSchema).default({}),
+    }),
+    sensitiveKeys: z.array(z.string().min(1)).default([]),
+    network: z.object({ hosts: z.array(z.string()).default([]) }).prefault({}),
+    matchProfiles: z.record(z.string(), z.array(MatchFieldSchema)).default({}),
+  })
+  .superRefine((m, ctx) => {
+    if ((RESERVED_NAMESPACES as readonly string[]).includes(m.binding.namespace)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['binding', 'namespace'],
+        message: `"${m.binding.namespace}" is reserved by core`,
+      });
+    }
+    if (m.binding.searchApis.includes('registry') && !m.capabilities.registry) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['binding', 'searchApis'],
+        message: 'registry requires capabilities.registry',
+      });
+    }
+    if (m.binding.searchApis.includes('guides') && !m.capabilities.attestation) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['binding', 'searchApis'],
+        message: 'guides requires capabilities.attestation',
+      });
+    }
+    for (const [profile, fields] of Object.entries(m.matchProfiles)) {
+      if (fields.some((f) => f.field === '$targets') && !m.capabilities.targets) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['matchProfiles', profile],
+          message: '$targets match fields require capabilities.targets',
+        });
+      }
+    }
+  });
+export type Manifest = z.infer<typeof ManifestSchema>;
+
+/** Parses and validates a manifest. Throws a `ZodError` describing every problem found. */
+export function parseManifest(input: unknown): Manifest {
+  return ManifestSchema.parse(input);
+}
+
+/** Whether a manifest's `sdk` range accepts the contract version implemented by core. */
+export function isSdkCompatible(manifest: Pick<Manifest, 'sdk'>, sdkVersion: string = SDK_VERSION): boolean {
+  return semver.satisfies(sdkVersion, manifest.sdk);
+}

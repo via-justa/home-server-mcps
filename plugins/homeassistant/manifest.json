@@ -1,0 +1,46 @@
+{
+  "id": "homeassistant",
+  "name": "Home Assistant",
+  "version": "0.1.0",
+  "sdk": "^1.0.0",
+  "description": "Search/execute over Home Assistant services and config-entry-flow commands.",
+  "entry": "dist/index.js",
+  "binding": { "namespace": "ha", "functions": ["call"], "searchApis": ["registry", "guides"] },
+  "labels": { "operation": "Operation", "operations": "Operations" },
+  "capabilities": { "registry": true, "targets": true, "attestation": true, "configTransform": true },
+  "connection": {
+    "schema": {
+      "type": "object",
+      "required": ["baseUrl", "token"],
+      "properties": {
+        "baseUrl": { "type": "string", "format": "uri", "title": "Base URL" },
+        "token": { "type": "string", "title": "Long-lived access token", "writeOnly": true }
+      }
+    },
+    "ui": {
+      "baseUrl": { "widget": "url", "placeholder": "http://homeassistant.local:8123" },
+      "token": { "widget": "secret", "help": "Profile → Security → Long-lived access tokens (owner-level account)." }
+    }
+  },
+  "sensitiveKeys": ["access_token", "token", "webhook_id", "entity_picture", "password"],
+  "network": { "hosts": ["{{connection.baseUrl}}"] },
+  "matchProfiles": {
+    "targets": [
+      {
+        "field": "$targets",
+        "label": "Targets",
+        "widget": "registry-picker",
+        "options": { "kinds": ["area", "entity", "domain"] }
+      }
+    ],
+    "climate.set_temperature": [
+      {
+        "field": "$targets",
+        "label": "Targets",
+        "widget": "registry-picker",
+        "options": { "kinds": ["entity"], "domainFilter": "climate" }
+      },
+      { "field": "/temperature", "label": "Temperature", "op": "range", "widget": "range", "options": { "unit": "°F" } }
+    ]
+  }
+}

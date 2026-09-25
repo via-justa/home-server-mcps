@@ -1,0 +1,75 @@
+/* Tokens lifted from docs/reference/mockups/admin-portal/*.dc.html */
+:root {
+  --bg: #f7f7f5;
+  --surface: #fff;
+  --text: #1c1e21;
+  --muted: #6b6963;
+  --subtle: #8a8880;
+  --border: #e5e3de;
+  --border-strong: #d8d6cf;
+  --sidebar: #1c1e21;
+  --sidebar-active: #2a2d31;
+  --sidebar-text: #b7b5ac;
+  --accent: #2563eb;
+  --accent-soft: #60a5fa;
+  --danger: #dc2626;
+  --ok: #22c55e;
+  font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+
+body {
+  margin: 0;
+}
+
+.mono {
+  font-family: ui-monospace, monospace;
+}
+
+.btn {
+  padding: 9px 16px;
+  border-radius: 7px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-primary {
+  border: none;
+  background: var(--accent);
+  color: #fff;
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.field label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 5px;
+}
+
+.field input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  font-size: 13px;
+  background: #fbfbf9;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 22px 24px;
+}

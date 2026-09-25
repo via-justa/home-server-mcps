@@ -1,0 +1,41 @@
+{
+  "id": "seerr",
+  "name": "Seerr",
+  "version": "0.1.0",
+  "sdk": "^1.0.0",
+  "description": "Search/execute over the Seerr REST API, catalog from the seerr-api.yml OpenAPI spec.",
+  "entry": "dist/index.js",
+  "binding": { "namespace": "seerr", "functions": ["request"] },
+  "labels": { "operation": "Operation", "operations": "Operations" },
+  "connection": {
+    "schema": {
+      "type": "object",
+      "required": ["baseUrl", "apiKey"],
+      "properties": {
+        "baseUrl": { "type": "string", "format": "uri", "title": "Base URL" },
+        "apiKey": { "type": "string", "title": "API key", "writeOnly": true }
+      }
+    },
+    "ui": {
+      "baseUrl": { "widget": "url", "placeholder": "https://seerr.internal.lan" },
+      "apiKey": {
+        "widget": "secret",
+        "help": "Use a dedicated service account's key: POST /settings/main/regenerate rotates the main key and would break this connection."
+      }
+    }
+  },
+  "sensitiveKeys": ["apiKey", "plexToken", "jellyfinAuthToken", "password", "authPass", "webhookUrl"],
+  "network": { "hosts": ["{{connection.baseUrl}}", "https://raw.githubusercontent.com"] },
+  "matchProfiles": {
+    "media-request": [
+      { "field": "/body/is4k", "label": "4K request", "op": "bool", "widget": "bool" },
+      {
+        "field": "/body/mediaType",
+        "label": "Media type",
+        "op": "in",
+        "widget": "multiselect",
+        "options": { "choices": ["movie", "tv"] }
+      }
+    ]
+  }
+}
