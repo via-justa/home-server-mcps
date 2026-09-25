@@ -1,12 +1,15 @@
+import { randomUUID } from 'node:crypto';
 import { and, asc, eq } from 'drizzle-orm';
 import { writeAudit } from '../audit.js';
 import { listGroups } from '../catalog/groups.js';
+import { findRegistryEntries } from '../catalog/registry.js';
 import type { Db } from '../db/index.js';
-import { operationGroups, operations } from '../db/schema.js';
+import { guides, operationGroups, operations } from '../db/schema.js';
 import { effectiveAccess } from '../gate/access.js';
+import { currentGuide, issueAttestationKey } from '../gate/attestation.js';
 import { createGateBindings } from '../gate/pipeline.js';
 import type { CallerContext, GateDeps, InstanceRuntime } from '../gate/pipeline.js';
-import { runInSandbox } from '../sandbox/index.js';
+import { BindingError, runInSandbox } from '../sandbox/index.js';
 import type { Binding, SandboxResult } from '../sandbox/index.js';
 
 /**
@@ -123,6 +126,65 @@ function catalogBindings(db: Db, instanceId: string): Record<string, Binding> {
   };
 }
 
+/**
+ * `guides.get(key)`: fetches the plugin's current best-practice guide, records its version, and
+ * hands out the attestation key `execute` must present (HA §3.6). Revising a guide rotates the key.
+ */
+function guideBindings(deps: GateDeps, rt: InstanceRuntime): Record<string, Binding> {
+  return {
+    get: async ([key]) => {
+      const op = deps.db
+        .select()
+        .from(operations)
+        .where(
+          and(eq(operations.instanceId, rt.instanceId), eq(operations.key, String(key)), eq(operations.stale, false)),
+        )
+        .get();
+      if (!op) throw new BindingError('UNKNOWN_OPERATION', `${String(key)} is not in the catalog`);
+      if (!op.attestationRequired) return { key: op.key, required: false };
+      let guide;
+      try {
+        guide = await rt.plugin().call('getGuide', { key: op.key });
+      } catch {
+        throw new BindingError('PLUGIN_ERROR', `Could not load the guide for ${op.key}`);
+      }
+      const current = currentGuide(deps.db, rt.instanceId, op.id);
+      if (!current || current.version !== guide.version || current.content !== guide.content) {
+        deps.db
+          .insert(guides)
+          .values({
+            id: randomUUID(),
+            instanceId: rt.instanceId,
+            operationId: op.id,
+            version: guide.version,
+            content: guide.content,
+            fetchedAt: deps.now?.() ?? new Date(),
+          })
+          .run();
+      }
+      return {
+        key: op.key,
+        required: true,
+        version: guide.version,
+        content: guide.content,
+        best_practice_key: issueAttestationKey(deps.attestationKey, rt.instanceId, op.key, guide.version),
+      };
+    },
+  };
+}
+
+function searchBindings(deps: GateDeps, rt: InstanceRuntime): Record<string, Record<string, Binding>> {
+  const bindings: Record<string, Record<string, Binding>> = { catalog: catalogBindings(deps.db, rt.instanceId) };
+  if (rt.manifest.capabilities.registry) {
+    bindings.registry = {
+      find: async ([q]) =>
+        findRegistryEntries(deps.db, rt.instanceId, (q ?? {}) as Parameters<typeof findRegistryEntries>[2]),
+    };
+  }
+  if (rt.manifest.capabilities.attestation) bindings.guides = guideBindings(deps, rt);
+  return bindings;
+}
+
 export async function searchCode(
   deps: GateDeps,
   rt: InstanceRuntime,
@@ -131,7 +193,7 @@ export async function searchCode(
 ): Promise<SandboxResult> {
   const result = await runInSandbox({
     code,
-    bindings: { catalog: catalogBindings(deps.db, rt.instanceId) },
+    bindings: searchBindings(deps, rt),
     limits: rt.settings.sandbox,
   });
   writeAudit(
