@@ -1,0 +1,9 @@
+{
+  "id": "echo",
+  "name": "Echo (test fixture)",
+  "version": "1.0.0",
+  "sdk": "^1.0.0",
+  "entry": "index.mjs",
+  "binding": { "namespace": "echo", "functions": ["call"] },
+  "connection": { "schema": { "type": "object", "properties": { "mode": { "type": "string" } } } }
+}

@@ -337,7 +337,7 @@ The admin adds a repository by URL on the Plugins → Repositories page. The URL
 
 - The index is fetched when the repo is added, when someone clicks "Refresh", and daily. It is cached in `plugin_repos.index_cache`.
 - The Plugins page lists available plugins across all repos. It shows the installed version and whether an update is available. **There are no automatic updates.** Every install or update is an explicit admin action on a pinned version.
-- Tarballs contain a **prebuilt** package: `manifest.json`, `dist/`, and a vendored `node_modules/` if needed. The server never runs `npm install` or build scripts.
+- Tarballs contain a **prebuilt, self-contained** package: `manifest.json` plus the entry and everything it imports **inside the package directory**, typically a single bundle (`esbuild --bundle --platform=node`), which is how the core plugins are built. Under the permission model (§4.4) the child cannot read anything outside its directory, so an entry that imports from a shared `node_modules` fails to load. Discovery also rejects an entry whose real path (after symlinks) lies outside the directory. The server never runs `npm install` or build scripts.
 - Plugin ID conflicts: a repository plugin cannot use a core plugin's ID. Two repos offering the same ID must be disambiguated at install time, and the installed row records its `repo_id`.
 
 ### 4.3 Trust & signing (optional per repo)
@@ -353,7 +353,7 @@ Installation, update, removal, and repo add/remove/key-change are written to the
 
 **Every enabled instance runs in its own child process**, core plugins included, so there is a single code path. The child is spawned by `child_process.fork(entry)` with:
 
-- **Node permission model** (`--permission`), with `--allow-fs-read` limited to the plugin's package directory and the Node runtime. There is no `--allow-fs-write`, `--allow-child-process`, `--allow-worker`, or `--allow-addons`. This follows the Node 22 permission model. The allow-list is set by core and cannot be widened by a plugin.
+- **Node permission model** (`--permission`), with `--allow-fs-read` limited to the plugin's package directory (Node's own runtime needs no grant; verified on Node 22: reads outside the directory, any write, and spawning processes all fail with `ERR_ACCESS_DENIED`). There is no `--allow-fs-write`, `--allow-child-process`, `--allow-worker`, or `--allow-addons`. This follows the Node 22 permission model. The allow-list is set by core and cannot be widened by a plugin.
 - **Scrubbed environment.** Only `NODE_ENV` and a `PLUGIN_INSTANCE_ID` are passed. `MASTER_KEY`, DB paths, and admin config are never visible.
 - **Memory cap** via `--max-old-space-size` (default 256 MB, adjustable per instance).
 - **Secrets arrive only via `init`** over IPC, decrypted by core for **that instance only**.
@@ -849,6 +849,18 @@ Same discipline as TN §7: tests first, phase gates, no loosening tests to pass.
 | 17  | **Plugin: TrueNAS**                         | TN §7 phases 1, 3 and TN §9 against a fake WS server, then staging                                                                                                                                                                                                                                                                                                 |
 | 18  | **Plugin: Seerr**                           | SR §7 phases 1, 3, GET-as-action regression list, on-behalf-of key split, redaction of settings reads                                                                                                                                                                                                                                                              |
 | 19  | **Plugin: Home Assistant**                  | HA §7 phases 1, 3, 4, 6, 7, garage-door key split, registry picker options                                                                                                                                                                                                                                                                                         |
+
+**Progress** (updated as phases land):
+
+| Phase                           | State                                    | Where                                                                                                                                                                                  |
+| ------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0 Skeleton                      | done                                     | listeners, SPA shell, CI, Docker                                                                                                                                                       |
+| 1 Plugin SDK contracts          | done                                     | `plugin-sdk`: manifest schema (incl. `showWhen`/`connection.help`), RPC types, `runPlugin`, **`checkConformance()`** for plugin test suites                                            |
+| 2 Classification & group access | done (service layer)                     | `core/src/gate/access.ts`, `core/src/catalog/groups.ts`: levels, acknowledgement, bulk preview/apply with typed slug, merge/rename with aliases, exclude / locked opt-in / override    |
+| 3 DB, migrations, crypto        | done, except the `rotate-master-key` CLI | `core/src/db`, `core/src/crypto` (AES-256-GCM + AAD, HKDF subkeys, key file bootstrap)                                                                                                 |
+| 4 Plugin host                   | done                                     | `core/src/plugins`: discovery + registry upsert, `PluginProcess` (permission-confined fork, validated JSON-RPC, timeouts), `PluginSupervisor` (init, crash → backoff restart)          |
+| 6 Catalog sync                  | apply step done                          | `core/src/catalog/sync.ts`: validated diff upsert, stale marking, quarantine, locked → rules disabled, aliases. Scheduling (session-start debounce, version check, cron) is still open |
+| 5, 7–19                         | not started                              |                                                                                                                                                                                        |
 
 Plugins 17–19 can go in parallel once phase 14 is green. They are built against a shared **fake-plugin harness** that exercises the RPC contract without core, plus a **conformance test suite** exported from the SDK that every plugin (including third-party ones) can run.
 

@@ -4,3 +4,8 @@ packages:
 
 onlyBuiltDependencies:
   - esbuild
+
+# better-sqlite3 ships prebuilt N-API binaries for all supported platforms; skip its node-gyp fallback
+# (which would need Python and a compiler in the image).
+ignoredBuiltDependencies:
+  - better-sqlite3

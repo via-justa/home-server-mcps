@@ -16,6 +16,13 @@ export default tseslint.config(
     },
   },
   {
+    // Plain-JS Node files (test fixture plugins run as-is, without a build step).
+    files: ['**/*.mjs'],
+    languageOptions: {
+      globals: { process: 'readonly', URL: 'readonly', setImmediate: 'readonly', console: 'readonly' },
+    },
+  },
+  {
     rules: {
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
       'vue/multi-word-component-names': 'off',
