@@ -296,10 +296,10 @@ The last two rows show one general pattern: **when the risk of an operation depe
 
 ### 4.1 Sources
 
-| Source         | Location                                                                 | Trust                                            |
-| -------------- | ------------------------------------------------------------------------ | ------------------------------------------------ |
-| **Core**       | `plugins/*` in this repo, built into the image at `/app/plugins/<id>`    | Trusted (shipped with core, same review process) |
-| **Repository** | Installed from an added plugin repo into `/data/plugins/<id>/<version>/` | Per-repo signing mode (§4.3)                     |
+| Source         | Location                                                                                                   | Trust                                            |
+| -------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| **Core**       | `plugins/*` in this repo, built into the image at `/app/plugins/<id>`                                      | Trusted (shipped with core, same review process) |
+| **Repository** | Installed from an added plugin repo into `/data/plugins/<id>/` (one version at a time, swapped atomically) | Per-repo signing mode (§4.3)                     |
 
 At startup the plugin host scans both locations, validates every `manifest.json` against the SDK schema and the `sdk` range, and upserts a `plugins` row. An invalid manifest is recorded with `status = 'invalid'` and an error message, and it is shown in the UI. It is never loaded.
 
@@ -337,14 +337,14 @@ The admin adds a repository by URL on the Plugins → Repositories page. The URL
 
 - The index is fetched when the repo is added, when someone clicks "Refresh", and daily. It is cached in `plugin_repos.index_cache`.
 - The Plugins page lists available plugins across all repos. It shows the installed version and whether an update is available. **There are no automatic updates.** Every install or update is an explicit admin action on a pinned version.
-- Tarballs contain a **prebuilt, self-contained** package: `manifest.json` plus the entry and everything it imports **inside the package directory**, typically a single bundle (`esbuild --bundle --platform=node`), which is how the core plugins are built. Under the permission model (§4.4) the child cannot read anything outside its directory, so an entry that imports from a shared `node_modules` fails to load. Discovery also rejects an entry whose real path (after symlinks) lies outside the directory. The server never runs `npm install` or build scripts.
+- Tarballs contain a **prebuilt, self-contained** package: `manifest.json` plus the entry and everything it imports **inside the package directory**, typically a single bundle (`esbuild --bundle --platform=node`), which is how the core plugins are built. Under the permission model (§4.4) the child cannot read anything outside its directory, so an entry that imports from a shared `node_modules` fails to load. Discovery also rejects an entry whose real path (after symlinks) lies outside the directory. The server never runs `npm install` or build scripts. Archives may be flat or npm-pack style (one top-level `package/` directory). Extraction accepts only regular files and directories: links, devices, paths that escape the target, and archives over 50 MB compressed, 200 MB extracted or 5,000 entries all fail the install. The archive's manifest must name exactly the plugin id and version being installed.
 - Plugin ID conflicts: a repository plugin cannot use a core plugin's ID. Two repos offering the same ID must be disambiguated at install time, and the installed row records its `repo_id`.
 
 ### 4.3 Trust & signing (optional per repo)
 
 When the admin adds a repo, they choose a **signing mode**:
 
-- **Signed.** Core reads `publicKey` from the index and shows its fingerprint. The admin must confirm that the fingerprint matches what the publisher advertises out of band. The key is then **pinned** on the `plugin_repos` row. Every install requires the tarball to match `sha256` **and** carry a valid ed25519 (minisign-format) signature over the tarball bytes from the pinned key. If a later index fetch shows a different `publicKey`, the repo is marked `key_changed`: installs and updates are blocked until the admin re-confirms.
+- **Signed.** Core reads `publicKey` from the index and shows it with its key id. The admin must confirm it by pasting the **full public key** (`RW…`, or the whole `.pub` file) exactly as the publisher advertises it out of band. A key id alone is not enough, because the key's owner chooses it: a hijacked index could publish a different key under the same id. The key is then **pinned** on the `plugin_repos` row. Every install requires the tarball to match `sha256` **and** carry a valid ed25519 (minisign-format) signature over the tarball bytes from the pinned key. If a later index fetch shows a different `publicKey` (compared byte for byte, not by id), the repo is marked `key_changed`: installs and updates are blocked until the admin re-confirms with the new full key. Both minisign algorithms are accepted (`ED`, prehashed with BLAKE2b-512 and the default since minisign 0.8, and legacy `Ed`), and the global signature over the trusted comment is always checked.
 - **Unsigned.** Only `sha256` is verified. Every install from an unsigned repo shows a warning and requires typing the plugin ID to confirm. The plugin is badged "unsigned" everywhere it appears.
 
 Installation, update, removal, and repo add/remove/key-change are written to the audit log as `config` events.
@@ -718,7 +718,7 @@ POST   /auth/login | /auth/totp | /auth/logout      GET /auth/oidc/start | /auth
 GET    /api/session                                  POST /api/setup (only while no users)
 GET    /api/overview
 GET    /api/plugins            PATCH /api/plugins/:id {enabled}        DELETE /api/plugins/:id
-GET/POST/DELETE /api/plugin-repos    POST /api/plugin-repos/:id/refresh | /confirm-key
+GET/POST/DELETE /api/plugin-repos    POST /api/plugin-repos/:id/refresh | /confirm-key {publicKey}
 GET    /api/plugin-repos/available   POST /api/plugins/install {repoId, pluginId, version, confirm}
 GET/POST /api/instances      GET/PATCH/DELETE /api/instances/:id
 GET/PUT  /api/instances/:id/connection   POST /api/instances/:id/connection/test

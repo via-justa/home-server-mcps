@@ -102,6 +102,9 @@ importers:
       openid-client:
         specifier: ^6.8.8
         version: 6.8.8
+      semver:
+        specifier: ^7.8.5
+        version: 7.8.5
       tar:
         specifier: ^7.5.22
         version: 7.5.22
@@ -112,6 +115,9 @@ importers:
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0
+      '@types/semver':
+        specifier: ^7.8.0
+        version: 7.8.0
       drizzle-kit:
         specifier: ^0.31.11
         version: 0.31.11

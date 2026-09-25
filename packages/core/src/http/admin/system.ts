@@ -88,6 +88,30 @@ export function registerSystemRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
   });
 
   app.post('/api/plugins/rescan', (c) => c.json(ctx.discoverPlugins()));
+  app.post('/api/plugins/install', async (c) =>
+    c.json(await ctx.repos.install(await readJson(c, z.unknown()), actor(c)), 201),
+  );
+  app.delete('/api/plugins/:id', (c) => {
+    ctx.repos.uninstall(c.req.param('id'), actor(c));
+    return c.body(null, 204);
+  });
+
+  // ── plugin repositories (design §4.2–4.3) ──
+
+  app.get('/api/plugin-repos', (c) => c.json(ctx.repos.list()));
+  app.get('/api/plugin-repos/available', (c) => c.json(ctx.repos.available()));
+  app.post('/api/plugin-repos', async (c) =>
+    c.json(await ctx.repos.add(await readJson(c, z.unknown()), actor(c)), 201),
+  );
+  app.post('/api/plugin-repos/:id/refresh', async (c) => c.json(await ctx.repos.refresh(c.req.param('id'))));
+  app.post('/api/plugin-repos/:id/confirm-key', async (c) => {
+    const { publicKey } = await readJson(c, z.object({ publicKey: z.string() }));
+    return c.json(ctx.repos.confirmKey(c.req.param('id'), publicKey, actor(c)));
+  });
+  app.delete('/api/plugin-repos/:id', (c) => {
+    ctx.repos.remove(c.req.param('id'), actor(c));
+    return c.body(null, 204);
+  });
 
   // ── approvals (design §5.3) ──
 

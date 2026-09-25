@@ -24,11 +24,13 @@
     "isolated-vm": "~6.2.0",
     "jose": "^6.2.12",
     "openid-client": "^6.8.8",
+    "semver": "^7.8.5",
     "tar": "^7.5.22",
     "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
+    "@types/semver": "^7.8.0",
     "drizzle-kit": "^0.31.11"
   }
 }

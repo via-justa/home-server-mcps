@@ -421,6 +421,26 @@ export class InstanceManager {
     }
   }
 
+  /** Stops every running instance of a plugin (before its files are replaced). */
+  async stopPlugin(pluginRowId: string) {
+    const instances = this.db.select().from(pluginInstances).where(eq(pluginInstances.pluginId, pluginRowId)).all();
+    for (const i of instances) {
+      await this.stop(i.id);
+      this.setStatus(i.id, 'stopped');
+    }
+  }
+
+  /** Starts every servable instance of a plugin and resyncs its catalog (after an install or update). */
+  async startPlugin(pluginRowId: string) {
+    const plugin = this.pluginByAnyId(pluginRowId);
+    const instances = this.db.select().from(pluginInstances).where(eq(pluginInstances.pluginId, plugin.id)).all();
+    for (const i of instances) {
+      if (!this.isServing(i, plugin)) continue;
+      await this.start(i.id);
+      void this.syncNow(i.id).catch(() => undefined);
+    }
+  }
+
   // ── processes ──────────────────────────────────────────────────────────────────────────────────
 
   async startAll() {

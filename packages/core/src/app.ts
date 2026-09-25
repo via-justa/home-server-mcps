@@ -19,6 +19,8 @@ import { ApprovalLinkService } from './notify/links.js';
 import { NotifierService } from './notify/service.js';
 import type { FetchLike } from './notify/service.js';
 import { discoverPlugins, syncPluginRegistry } from './plugins/discovery.js';
+import { PluginRepoService } from './plugins/repos.js';
+import type { FetchBytes } from './plugins/repos.js';
 
 /**
  * Wires every core service together once (design §2). Both listeners, the scheduler and tests use
@@ -41,6 +43,7 @@ export interface AppContext {
   limiter: SlidingWindowLimiter;
   links: ApprovalLinkService;
   notifier: NotifierService;
+  repos: PluginRepoService;
   keys: { attestation: Buffer; state: Buffer };
   warnings: string[];
   now: () => Date;
@@ -63,6 +66,9 @@ export interface AppOptions {
   /** Outbound HTTP for notifications (tests). */
   notifyFetch?: FetchLike;
   notifyRetryDelaysMs?: number[];
+  /** Outbound HTTP for plugin repositories (tests). */
+  repoFetch?: FetchBytes;
+  repoAllowHttp?: boolean;
 }
 
 export async function createAppContext(config: Config, opts: AppOptions = {}): Promise<AppContext> {
@@ -139,6 +145,16 @@ export async function createAppContext(config: Config, opts: AppOptions = {}): P
       { autoEnableCore: config.CORE_PLUGINS_AUTOENABLE },
     );
   const registered = discover();
+  const repos = new PluginRepoService({
+    db,
+    dataDir: config.DATA_DIR,
+    fetch: opts.repoFetch,
+    allowHttp: opts.repoAllowHttp,
+    now,
+    discover,
+    stopPlugin: (id) => instances.stopPlugin(id),
+    startPlugin: (id) => instances.startPlugin(id),
+  });
   for (const id of registered.rejected) warnings.push(`Plugin ${id} was ignored: its id is already taken`);
 
   const timers: NodeJS.Timeout[] = [];
@@ -159,6 +175,7 @@ export async function createAppContext(config: Config, opts: AppOptions = {}): P
     limiter,
     links,
     notifier,
+    repos,
     keys,
     warnings,
     now,
