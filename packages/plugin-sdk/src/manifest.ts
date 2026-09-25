@@ -42,6 +42,13 @@ export const UiHintSchema = z.object({
   help: z.string().optional(),
   placeholder: z.string().optional(),
   optionsSource: z.string().optional(),
+  /** Show the field only while another connection field has one of these values (e.g. an auth-method select). */
+  showWhen: z
+    .object({
+      field: z.string().min(1),
+      in: z.array(z.union([z.string(), z.number(), z.boolean()])).min(1),
+    })
+    .optional(),
 });
 export type UiHint = z.infer<typeof UiHintSchema>;
 
@@ -97,6 +104,8 @@ export const ManifestSchema = z
     connection: z.object({
       schema: jsonSchema,
       ui: z.record(z.string(), UiHintSchema).default({}),
+      /** Setup instructions shown on the Connection page (Markdown). */
+      help: z.string().optional(),
     }),
     sensitiveKeys: z.array(z.string().min(1)).default([]),
     network: z.object({ hosts: z.array(z.string()).default([]) }).prefault({}),
@@ -123,6 +132,22 @@ export const ManifestSchema = z
         path: ['binding', 'searchApis'],
         message: 'guides requires capabilities.attestation',
       });
+    }
+    const properties = m.connection.schema.properties;
+    const fieldNames = new Set(
+      typeof properties === 'object' && properties !== null ? Object.keys(properties as object) : [],
+    );
+    for (const [name, hint] of Object.entries(m.connection.ui)) {
+      if (!fieldNames.has(name)) {
+        ctx.addIssue({ code: 'custom', path: ['connection', 'ui', name], message: 'no such connection field' });
+      }
+      if (hint.showWhen && (hint.showWhen.field === name || !fieldNames.has(hint.showWhen.field))) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['connection', 'ui', name, 'showWhen', 'field'],
+          message: 'must reference another connection field',
+        });
+      }
     }
     for (const [profile, fields] of Object.entries(m.matchProfiles)) {
       if (fields.some((f) => f.field === '$targets') && !m.capabilities.targets) {
