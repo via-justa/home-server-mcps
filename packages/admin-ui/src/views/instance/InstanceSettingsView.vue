@@ -1,0 +1,203 @@
+<script setup lang="ts">
+import { ref } from 'vue';
+import { useRouter } from 'vue-router';
+import { errorText, http } from '../../api';
+import ChipsInput from '../../components/ChipsInput.vue';
+import ModalDialog from '../../components/ModalDialog.vue';
+import { AUTH_MODE_LABELS } from '../../format';
+import { useAppStore } from '../../stores/app';
+import { AUTH_MODES } from '../../types';
+import type { AuthMode, Instance } from '../../types';
+
+const props = defineProps<{ instance: Instance }>();
+const app = useAppStore();
+const router = useRouter();
+
+const s = props.instance.settings;
+const form = ref({
+  displayName: props.instance.displayName,
+  slug: props.instance.slug,
+  enabled: props.instance.enabled,
+  authMode: (props.instance.authMode ?? '') as AuthMode | '',
+  approvalTimeoutMin: s.approvalTimeoutMs / 60_000,
+  allowPortalOnlyApprovals: s.allowPortalOnlyApprovals,
+  executePerMinute: s.executePerMinute,
+  writesPerMinute: s.writesPerMinute,
+  sandboxTimeoutS: s.sandbox.timeoutMs / 1000,
+  sandboxMemoryMb: s.sandbox.memoryMb,
+  maxResultKb: s.sandbox.maxResultBytes / 1024,
+  extraRedactKeys: [...s.extraRedactKeys],
+  syncMaxAgeMin: s.syncMaxAgeMs / 60_000,
+  memoryMb: s.memoryMb,
+});
+const message = ref<{ kind: 'ok' | 'error'; text: string }>();
+const deleting = ref<{ confirm: string; note?: string }>();
+
+async function save() {
+  message.value = undefined;
+  const f = form.value;
+  try {
+    const updated = await http.patch<Instance>(`/api/instances/${props.instance.id}`, {
+      displayName: f.displayName,
+      slug: f.slug !== props.instance.slug ? f.slug : undefined,
+      enabled: f.enabled,
+      authMode: f.authMode || null,
+      settings: {
+        approvalTimeoutMs: Math.round(f.approvalTimeoutMin * 60_000),
+        allowPortalOnlyApprovals: f.allowPortalOnlyApprovals,
+        executePerMinute: f.executePerMinute,
+        writesPerMinute: f.writesPerMinute,
+        sandbox: {
+          timeoutMs: Math.round(f.sandboxTimeoutS * 1000),
+          memoryMb: f.sandboxMemoryMb,
+          maxResultBytes: Math.round(f.maxResultKb * 1024),
+        },
+        extraRedactKeys: f.extraRedactKeys,
+        syncMaxAgeMs: Math.round(f.syncMaxAgeMin * 60_000),
+        memoryMb: f.memoryMb,
+      },
+    });
+    await app.refresh();
+    if (updated.slug !== props.instance.slug) await router.replace(`/endpoints/${updated.slug}/settings`);
+    message.value = { kind: 'ok', text: 'Saved.' };
+  } catch (err) {
+    message.value = { kind: 'error', text: errorText(err) };
+  }
+}
+
+async function remove() {
+  const d = deleting.value;
+  if (!d) return;
+  try {
+    await http.del(`/api/instances/${props.instance.id}`, { confirm: d.confirm });
+    await app.refresh();
+    await router.replace('/');
+  } catch (err) {
+    deleting.value = { ...d, note: errorText(err) };
+  }
+}
+</script>
+
+<template>
+  <form class="stack" @submit.prevent="save">
+    <section class="card">
+      <h2>General</h2>
+      <div class="form-grid">
+        <div class="field">
+          <label for="s-name">Display name</label>
+          <input id="s-name" v-model="form.displayName" />
+        </div>
+        <div class="field">
+          <label for="s-slug">Path</label>
+          <input id="s-slug" v-model.trim="form.slug" />
+          <p v-if="form.slug !== instance.slug" class="help warn">
+            Clients using /{{ instance.slug }} will stop working.
+          </p>
+        </div>
+        <div class="field">
+          <label for="s-auth">Client authentication</label>
+          <select id="s-auth" v-model="form.authMode">
+            <option value="">Global default</option>
+            <option v-for="m in AUTH_MODES" :key="m" :value="m">{{ AUTH_MODE_LABELS[m] }}</option>
+          </select>
+        </div>
+      </div>
+      <div class="field check">
+        <label><input v-model="form.enabled" type="checkbox" /> Endpoint enabled</label>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Approvals & limits</h2>
+      <div class="form-grid">
+        <div class="field">
+          <label for="s-timeout">Approval timeout (minutes)</label>
+          <input id="s-timeout" v-model.number="form.approvalTimeoutMin" type="number" min="1" max="1440" />
+        </div>
+        <div class="field">
+          <label for="s-exec">Executions per minute</label>
+          <input id="s-exec" v-model.number="form.executePerMinute" type="number" min="1" />
+        </div>
+        <div class="field">
+          <label for="s-writes">Writes per minute</label>
+          <input id="s-writes" v-model.number="form.writesPerMinute" type="number" min="1" />
+        </div>
+      </div>
+      <div class="field check">
+        <label>
+          <input v-model="form.allowPortalOnlyApprovals" type="checkbox" />
+          When the client can't show an approval prompt, wait for a decision in the portal or a notification link
+        </label>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Sandbox, sync & redaction</h2>
+      <div class="form-grid">
+        <div class="field">
+          <label for="s-sto">Script timeout (seconds)</label>
+          <input id="s-sto" v-model.number="form.sandboxTimeoutS" type="number" min="0.1" max="120" step="0.1" />
+        </div>
+        <div class="field">
+          <label for="s-smem">Script memory (MB)</label>
+          <input id="s-smem" v-model.number="form.sandboxMemoryMb" type="number" min="8" max="1024" />
+        </div>
+        <div class="field">
+          <label for="s-res">Max result size (KB)</label>
+          <input id="s-res" v-model.number="form.maxResultKb" type="number" min="1" max="4096" />
+        </div>
+        <div class="field">
+          <label for="s-sync">Re-sync when older than (minutes)</label>
+          <input id="s-sync" v-model.number="form.syncMaxAgeMin" type="number" min="1" />
+        </div>
+        <div class="field">
+          <label for="s-pmem">Plugin process memory (MB)</label>
+          <input id="s-pmem" v-model.number="form.memoryMb" type="number" min="64" max="4096" />
+        </div>
+      </div>
+      <div class="field">
+        <label>Extra keys to redact</label>
+        <ChipsInput v-model="form.extraRedactKeys" placeholder="api_key" />
+        <p class="help">Added to the plugin's own sensitive keys in audit logs, approvals and results.</p>
+      </div>
+    </section>
+
+    <p v-if="message" class="alert" :class="message.kind" role="status">{{ message.text }}</p>
+    <div class="actions">
+      <button class="btn btn-primary" type="submit">Save settings</button>
+      <span class="grow" />
+      <button class="btn btn-danger" type="button" @click="deleting = { confirm: '' }">Delete endpoint…</button>
+    </div>
+
+    <ModalDialog v-if="deleting" :title="`Delete /${instance.slug}?`" @close="deleting = undefined">
+      <p class="small">
+        This removes the endpoint, its catalog, access levels and rules. The audit log is kept. Clients using this path
+        stop working.
+      </p>
+      <div class="field">
+        <label for="del-confirm"
+          >Type <code>{{ instance.slug }}</code> to confirm</label
+        >
+        <input id="del-confirm" v-model="deleting.confirm" autocomplete="off" />
+      </div>
+      <p v-if="deleting.note" class="alert error">{{ deleting.note }}</p>
+      <template #footer>
+        <button class="btn" type="button" @click="deleting = undefined">Cancel</button>
+        <button
+          class="btn btn-danger-solid"
+          type="button"
+          :disabled="deleting.confirm !== instance.slug"
+          @click="remove"
+        >
+          Delete
+        </button>
+      </template>
+    </ModalDialog>
+  </form>
+</template>
+
+<style scoped>
+.warn {
+  color: var(--warn) !important;
+}
+</style>

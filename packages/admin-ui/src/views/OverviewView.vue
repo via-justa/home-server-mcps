@@ -1,0 +1,112 @@
+<script setup lang="ts">
+import { computed, onMounted, ref } from 'vue';
+import { errorText } from '../api';
+import PageHeader from '../components/PageHeader.vue';
+import { AUTH_MODE_LABELS, ago } from '../format';
+import { useAppStore } from '../stores/app';
+
+const app = useAppStore();
+const error = ref<string>();
+
+onMounted(async () => {
+  try {
+    await app.refresh();
+  } catch (err) {
+    error.value = errorText(err);
+  }
+});
+
+const unhealthyPlugins = computed(() => (app.overview?.plugins ?? []).filter((p) => p.status !== 'ok'));
+const copied = ref<string>();
+async function copy(url: string) {
+  await navigator.clipboard?.writeText(url).catch(() => undefined);
+  copied.value = url;
+  setTimeout(() => (copied.value = undefined), 1500);
+}
+</script>
+
+<template>
+  <div class="page">
+    <PageHeader title="Overview" subtitle="Endpoints, their health and anything waiting on you">
+      <RouterLink class="btn btn-primary" to="/endpoints/new">New endpoint</RouterLink>
+    </PageHeader>
+
+    <div class="stack">
+      <p v-if="error" class="alert error" role="alert">{{ error }}</p>
+      <div v-for="w in app.overview?.warnings ?? []" :key="w" class="alert warn">{{ w }}</div>
+      <div v-if="unhealthyPlugins.length" class="alert warn">
+        Plugin problems:
+        <span v-for="p in unhealthyPlugins" :key="p.id" class="mono"> {{ p.pluginId }} ({{ p.status }}) </span>
+        — see <RouterLink to="/plugins">Plugins</RouterLink>.
+      </div>
+      <RouterLink v-if="app.pendingCount" to="/approvals" class="alert warn pending">
+        {{ app.pendingCount }} call{{ app.pendingCount === 1 ? ' is' : 's are' }} waiting for approval →
+      </RouterLink>
+
+      <div class="table-card">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Endpoint</th>
+              <th>Plugin</th>
+              <th>Status</th>
+              <th>Auth</th>
+              <th>Last sync</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="i in app.instances" :key="i.id">
+              <td>
+                <RouterLink :to="`/endpoints/${i.slug}/connection`" class="mono">/{{ i.slug }}</RouterLink>
+                <div class="small muted">{{ i.displayName }}</div>
+              </td>
+              <td>{{ i.plugin.name }}</td>
+              <td>
+                <span class="row">
+                  <span class="dot" :class="i.status" />
+                  {{ i.enabled ? i.status : 'disabled' }}
+                </span>
+                <div v-if="i.statusError" class="small err">{{ i.statusError }}</div>
+              </td>
+              <td>{{ AUTH_MODE_LABELS[i.effectiveAuthMode ?? ''] ?? i.effectiveAuthMode }}</td>
+              <td>
+                {{ ago(i.lastSyncedAt) }}
+                <span v-if="i.lastSyncStatus === 'error'" class="pill danger">failed</span>
+              </td>
+              <td class="right">
+                <span v-if="i.pendingApprovals" class="pill warn">{{ i.pendingApprovals }} pending</span>
+                <button v-if="i.endpointUrl" class="btn btn-sm" type="button" @click="copy(i.endpointUrl)">
+                  {{ copied === i.endpointUrl ? 'Copied' : 'Copy URL' }}
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-if="app.overview && !app.instances.length" class="empty">
+          No endpoints yet. <RouterLink to="/endpoints/new">Create one</RouterLink> from an enabled plugin.
+        </div>
+      </div>
+      <p v-if="app.overview && !app.overview.publicMcpUrl" class="small muted">
+        Set <code>PUBLIC_MCP_URL</code> so endpoint URLs and approval links point at your public MCP address.
+      </p>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.pending {
+  text-decoration: none;
+  font-weight: 600;
+}
+.err {
+  color: var(--danger);
+}
+.right {
+  text-align: right;
+  white-space: nowrap;
+}
+.right > * + * {
+  margin-left: 8px;
+}
+</style>

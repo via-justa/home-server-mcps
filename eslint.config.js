@@ -14,6 +14,8 @@ export default tseslint.config(
     languageOptions: {
       parserOptions: { parser: tseslint.parser },
     },
+    // TypeScript (vue-tsc) already checks identifiers; no-undef doesn't know DOM globals in SFCs.
+    rules: { 'no-undef': 'off' },
   },
   {
     // Plain-JS Node files (test fixture plugins run as-is, without a build step).
@@ -29,6 +31,10 @@ export default tseslint.config(
       'vue/max-attributes-per-line': 'off',
       'vue/singleline-html-element-content-newline': 'off',
       'vue/html-self-closing': 'off',
+      // Template layout is Prettier's job; these rules fight its output.
+      'vue/html-indent': 'off',
+      'vue/html-closing-bracket-newline': 'off',
+      'vue/multiline-html-element-content-newline': 'off',
     },
   },
 );

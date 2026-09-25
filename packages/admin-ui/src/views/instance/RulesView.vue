@@ -1,0 +1,425 @@
+<script setup lang="ts">
+import { computed, onMounted, ref, watch } from 'vue';
+import { errorText, http } from '../../api';
+import ChipsInput from '../../components/ChipsInput.vue';
+import ModalDialog from '../../components/ModalDialog.vue';
+import RegistryPicker from '../../components/RegistryPicker.vue';
+import { REASON_LABELS, formatDate } from '../../format';
+import type { Instance, MatchCondition, MatchField, Operation, PluginRow, Rule } from '../../types';
+
+/**
+ * Pre-approval rules (design §5.2): an operation picked from the catalog (never locked), a structured
+ * match built only from the fields the plugin declared for it, a required reason, optional rate
+ * limit and expiry.
+ */
+const props = defineProps<{ instance: Instance }>();
+const base = computed(() => `/api/instances/${props.instance.id}`);
+
+const rules = ref<Rule[]>([]);
+const ops = ref<Operation[]>([]);
+const profiles = ref<Record<string, MatchField[]>>({});
+const error = ref<string>();
+
+async function load() {
+  try {
+    const [r, o, plugins] = await Promise.all([
+      http.get<Rule[]>(`${base.value}/rules`),
+      http.get<Operation[]>(`${base.value}/operations`),
+      http.get<PluginRow[]>('/api/plugins'),
+    ]);
+    rules.value = r;
+    ops.value = o;
+    profiles.value = plugins.find((p) => p.id === props.instance.plugin.id)?.manifest.matchProfiles ?? {};
+  } catch (err) {
+    error.value = errorText(err);
+  }
+}
+onMounted(load);
+
+const eligible = computed(() => ops.value.filter((o) => o.classification === 'write' && !o.locked));
+
+// ── editor ──
+
+interface FieldValue {
+  text: string;
+  list: string[];
+  min: string;
+  max: string;
+  bool: boolean | null;
+  targets: { areas: string[]; entities: string[]; domains: string[] };
+}
+interface Draft {
+  id?: string;
+  operationId: string;
+  values: Record<string, FieldValue>;
+  rateLimit: string;
+  windowMinutes: string;
+  expiresAt: string;
+  reason: string;
+  enabled: boolean;
+  note?: string;
+}
+const draft = ref<Draft>();
+const options = ref<Record<string, { value: string; label: string }[]>>({});
+
+const emptyValue = (): FieldValue => ({
+  text: '',
+  list: [],
+  min: '',
+  max: '',
+  bool: null,
+  targets: { areas: [], entities: [], domains: [] },
+});
+const draftOp = computed(() => ops.value.find((o) => o.id === draft.value?.operationId));
+const fields = computed<MatchField[]>(() =>
+  draftOp.value?.matchProfile ? (profiles.value[draftOp.value.matchProfile] ?? []) : [],
+);
+
+watch(fields, async (fs) => {
+  for (const f of fs) {
+    if (f.optionsSource && !options.value[f.optionsSource]) {
+      const opts = await http
+        .get<{ value: string; label: string }[]>(`${base.value}/options/${f.optionsSource}`)
+        .catch(() => []);
+      options.value = { ...options.value, [f.optionsSource]: opts };
+    }
+  }
+});
+
+function localDateTime(iso: string | null) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
+
+function edit(rule?: Rule) {
+  const values: Record<string, FieldValue> = {};
+  for (const c of rule?.match ?? []) {
+    const v = emptyValue();
+    if (c.field === '$targets') {
+      const t = c as { areas?: string[]; entities?: string[]; domains?: string[] };
+      v.targets = { areas: t.areas ?? [], entities: t.entities ?? [], domains: t.domains ?? [] };
+    } else {
+      const pc = c as { op: string; value: unknown };
+      if (pc.op === 'in') v.list = (pc.value as unknown[]).map(String);
+      else if (pc.op === 'range') {
+        const r = pc.value as { min?: number; max?: number };
+        v.min = r.min?.toString() ?? '';
+        v.max = r.max?.toString() ?? '';
+      } else if (pc.op === 'bool') v.bool = pc.value as boolean;
+      else v.text = String(pc.value ?? '');
+    }
+    values[c.field] = v;
+  }
+  draft.value = {
+    id: rule?.id,
+    operationId: rule?.operationId ?? '',
+    values,
+    rateLimit: rule?.rateLimit?.toString() ?? '',
+    windowMinutes: rule?.windowSeconds ? String(rule.windowSeconds / 60) : '',
+    expiresAt: localDateTime(rule?.expiresAt ?? null),
+    reason: rule?.reason ?? '',
+    enabled: rule?.enabled ?? true,
+  };
+}
+const valueOf = (f: MatchField) => {
+  const d = draft.value!;
+  if (!d.values[f.field]) d.values[f.field] = emptyValue();
+  return d.values[f.field]!;
+};
+
+function buildMatch(): MatchCondition[] {
+  const out: MatchCondition[] = [];
+  for (const f of fields.value) {
+    const v = draft.value!.values[f.field];
+    if (!v) continue;
+    if (f.field === '$targets') {
+      const t = v.targets;
+      if (t.areas.length || t.entities.length || t.domains.length) {
+        out.push({
+          field: '$targets',
+          ...(t.areas.length ? { areas: t.areas } : {}),
+          ...(t.entities.length ? { entities: t.entities } : {}),
+          ...(t.domains.length ? { domains: t.domains } : {}),
+        });
+      }
+      continue;
+    }
+    const op = f.op!;
+    if (op === 'in' && v.list.length) out.push({ field: f.field, op, value: v.list });
+    else if (op === 'range' && (v.min !== '' || v.max !== '')) {
+      out.push({
+        field: f.field,
+        op,
+        value: { ...(v.min !== '' ? { min: Number(v.min) } : {}), ...(v.max !== '' ? { max: Number(v.max) } : {}) },
+      });
+    } else if (op === 'bool' && v.bool !== null) out.push({ field: f.field, op, value: v.bool });
+    else if ((op === 'eq' || op === 'prefix') && v.text !== '') {
+      out.push({ field: f.field, op, value: f.widget === 'number' ? Number(v.text) : v.text });
+    }
+  }
+  return out;
+}
+
+async function save() {
+  const d = draft.value;
+  if (!d) return;
+  const body = {
+    operationId: d.operationId,
+    match: buildMatch(),
+    rateLimit: d.rateLimit ? Number(d.rateLimit) : null,
+    windowSeconds: d.rateLimit && d.windowMinutes ? Number(d.windowMinutes) * 60 : null,
+    expiresAt: d.expiresAt ? new Date(d.expiresAt).toISOString() : null,
+    reason: d.reason,
+    enabled: d.enabled,
+  };
+  try {
+    if (d.id) await http.patch(`${base.value}/rules/${d.id}`, body);
+    else await http.post(`${base.value}/rules`, body);
+    draft.value = undefined;
+    await load();
+  } catch (err) {
+    draft.value = { ...d, note: errorText(err) };
+  }
+}
+
+async function toggle(rule: Rule) {
+  try {
+    await http.patch(`${base.value}/rules/${rule.id}`, { enabled: !rule.enabled });
+    await load();
+  } catch (err) {
+    error.value = errorText(err);
+  }
+}
+async function remove(rule: Rule) {
+  if (!window.confirm(`Delete the rule for ${rule.operation.key}?`)) return;
+  try {
+    await http.del(`${base.value}/rules/${rule.id}`);
+    await load();
+  } catch (err) {
+    error.value = errorText(err);
+  }
+}
+
+function describe(c: MatchCondition, rule: Rule): string {
+  const profile = rule.operation.matchProfile ? (profiles.value[rule.operation.matchProfile] ?? []) : [];
+  const label = (field: string) => profile.find((f) => f.field === field)?.label ?? field;
+  if (c.field === '$targets') {
+    const t = c as { areas?: string[]; entities?: string[]; domains?: string[] };
+    return [
+      t.areas?.length ? `area ∈ {${t.areas.join(', ')}}` : '',
+      t.entities?.length ? `entity ∈ {${t.entities.join(', ')}}` : '',
+      t.domains?.length ? `domain ∈ {${t.domains.join(', ')}}` : '',
+    ]
+      .filter(Boolean)
+      .join(' and ');
+  }
+  const pc = c as { field: string; op: string; value: unknown };
+  const v = pc.value;
+  switch (pc.op) {
+    case 'prefix':
+      return `${label(pc.field)} starts with "${String(v)}"`;
+    case 'in':
+      return `${label(pc.field)} ∈ {${(v as unknown[]).join(', ')}}`;
+    case 'range': {
+      const r = v as { min?: number; max?: number };
+      return `${r.min ?? '−∞'} ≤ ${label(pc.field)} ≤ ${r.max ?? '∞'}`;
+    }
+    default:
+      return `${label(pc.field)} = ${JSON.stringify(v)}`;
+  }
+}
+const reasonText = (r: string) => REASON_LABELS[r] ?? r;
+const opSearch = ref('');
+const pickable = computed(() => {
+  const q = opSearch.value.trim().toLowerCase();
+  return eligible.value.filter((o) => !q || o.key.toLowerCase().includes(q) || o.id === draft.value?.operationId);
+});
+watch(draft, (d) => {
+  if (!d) opSearch.value = '';
+});
+</script>
+
+<template>
+  <div class="stack">
+    <div class="row">
+      <p class="small muted grow">
+        A matching call runs without asking a person. Rules never apply to locked operations, and a rule on an operation
+        that is not reachable does nothing.
+      </p>
+      <button class="btn btn-primary" type="button" :disabled="!eligible.length" @click="edit()">New rule</button>
+    </div>
+    <p v-if="error" class="alert error" role="alert">{{ error }}</p>
+
+    <div class="table-card">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Operation</th>
+            <th>When</th>
+            <th>Limits</th>
+            <th>Reason</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="r in rules" :key="r.id" :class="{ off: !r.enabled }">
+            <td>
+              <span class="mono">{{ r.operation.key }}</span>
+              <div v-if="r.inert" class="pill warn">inert: {{ reasonText(r.inert) }}</div>
+            </td>
+            <td class="small">
+              <template v-if="r.match.length">
+                <div v-for="(c, i) in r.match" :key="i">{{ describe(c, r) }}</div>
+              </template>
+              <span v-else class="muted">any parameters</span>
+            </td>
+            <td class="small">
+              <div v-if="r.rateLimit">{{ r.rateLimit }} per {{ (r.windowSeconds ?? 3600) / 60 }} min</div>
+              <div v-if="r.expiresAt">until {{ formatDate(r.expiresAt) }}</div>
+              <span v-if="!r.rateLimit && !r.expiresAt" class="muted">none</span>
+            </td>
+            <td class="small">{{ r.reason }}</td>
+            <td class="right">
+              <button class="btn btn-sm" type="button" @click="toggle(r)">
+                {{ r.enabled ? 'Disable' : 'Enable' }}
+              </button>
+              <button class="btn btn-sm" type="button" @click="edit(r)">Edit</button>
+              <button class="btn btn-sm btn-danger" type="button" @click="remove(r)">Delete</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-if="!rules.length" class="empty">No pre-approval rules. Every write asks a person.</div>
+    </div>
+
+    <ModalDialog v-if="draft" :title="draft.id ? 'Edit rule' : 'New pre-approval rule'" wide @close="draft = undefined">
+      <div class="field">
+        <label for="r-op">Operation</label>
+        <input
+          v-if="!draft.id"
+          v-model="opSearch"
+          class="op-search"
+          placeholder="Filter operations…"
+          aria-label="Filter operations"
+        />
+        <select id="r-op" v-model="draft.operationId" :disabled="!!draft.id" size="6">
+          <option v-for="o in pickable" :key="o.id" :value="o.id">
+            {{ o.key }}{{ o.reachable ? '' : ` — ${reasonText(o.reason ?? '')}` }}
+          </option>
+        </select>
+        <p class="help">Only non-locked writes can be pre-approved.</p>
+      </div>
+
+      <template v-if="draftOp">
+        <h2>Only when</h2>
+        <p v-if="!fields.length" class="small muted">
+          The plugin declares no match fields for this operation, so the rule would allow every call to it.
+        </p>
+        <div v-for="f in fields" :key="f.field" class="field">
+          <label
+            >{{ f.label }} <span class="mono muted small">{{ f.field }}{{ f.op ? ` · ${f.op}` : '' }}</span></label
+          >
+          <RegistryPicker v-if="f.field === '$targets'" v-model="valueOf(f).targets" :instance-id="instance.id" />
+          <ChipsInput
+            v-else-if="f.op === 'in'"
+            v-model="valueOf(f).list"
+            :suggestions="f.optionsSource ? options[f.optionsSource] : undefined"
+            placeholder="Add a value"
+          />
+          <div v-else-if="f.op === 'range'" class="row">
+            <input v-model="valueOf(f).min" type="number" placeholder="min" aria-label="Minimum" class="grow" />
+            <input v-model="valueOf(f).max" type="number" placeholder="max" aria-label="Maximum" class="grow" />
+          </div>
+          <select
+            v-else-if="f.op === 'bool'"
+            :value="valueOf(f).bool === null ? '' : String(valueOf(f).bool)"
+            @change="
+              valueOf(f).bool =
+                ($event.target as HTMLSelectElement).value === ''
+                  ? null
+                  : ($event.target as HTMLSelectElement).value === 'true'
+            "
+          >
+            <option value="">any</option>
+            <option value="true">true</option>
+            <option value="false">false</option>
+          </select>
+          <select v-else-if="f.optionsSource && options[f.optionsSource]?.length" v-model="valueOf(f).text">
+            <option value="">any</option>
+            <option v-for="o in options[f.optionsSource]" :key="o.value" :value="o.value">{{ o.label }}</option>
+          </select>
+          <input
+            v-else
+            v-model="valueOf(f).text"
+            :type="f.widget === 'number' ? 'number' : 'text'"
+            :placeholder="f.op === 'prefix' ? 'tank/media/' : ''"
+          />
+        </div>
+      </template>
+
+      <div class="form-grid">
+        <div class="field">
+          <label for="r-rate">Rate limit (calls)</label>
+          <input id="r-rate" v-model="draft.rateLimit" type="number" min="1" placeholder="unlimited" />
+        </div>
+        <div class="field">
+          <label for="r-win">Per (minutes)</label>
+          <input
+            id="r-win"
+            v-model="draft.windowMinutes"
+            type="number"
+            min="1"
+            placeholder="60"
+            :disabled="!draft.rateLimit"
+          />
+        </div>
+        <div class="field">
+          <label for="r-exp">Expires</label>
+          <input id="r-exp" v-model="draft.expiresAt" type="datetime-local" />
+        </div>
+      </div>
+      <div class="field">
+        <label for="r-reason">Reason (required, shown in the audit log)</label>
+        <input id="r-reason" v-model="draft.reason" placeholder="Nightly media dataset snapshots" />
+      </div>
+      <div class="field check">
+        <label><input v-model="draft.enabled" type="checkbox" /> Enabled</label>
+      </div>
+      <p v-if="draft.note" class="alert error" role="alert">{{ draft.note }}</p>
+      <template #footer>
+        <button class="btn" type="button" @click="draft = undefined">Cancel</button>
+        <button
+          class="btn btn-primary"
+          type="button"
+          :disabled="!draft.operationId || draft.reason.trim().length < 3"
+          @click="save"
+        >
+          Save rule
+        </button>
+      </template>
+    </ModalDialog>
+  </div>
+</template>
+
+<style scoped>
+.off td {
+  opacity: 0.55;
+}
+.right {
+  text-align: right;
+  white-space: nowrap;
+}
+.right > * + * {
+  margin-left: 6px;
+}
+.op-search {
+  margin-bottom: 6px;
+}
+select[size] {
+  font-family: ui-monospace, monospace;
+}
+h2 {
+  margin-top: 14px;
+}
+</style>

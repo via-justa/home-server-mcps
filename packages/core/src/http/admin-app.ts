@@ -22,6 +22,19 @@ export function createAdminApp(ctx: AppContext, { uiDir }: AdminAppOptions = {})
   const app = new Hono<AdminEnv>();
   app.onError(errorResponse);
 
+  // The SPA loads only its own bundle; nothing may frame the portal (clickjacking on approvals).
+  app.use('*', async (c, next) => {
+    await next();
+    c.header(
+      'Content-Security-Policy',
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; " +
+        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+    );
+    c.header('X-Frame-Options', 'DENY');
+    c.header('X-Content-Type-Options', 'nosniff');
+    c.header('Referrer-Policy', 'same-origin');
+  });
+
   app.get('/healthz', (c) => c.json({ status: 'ok' }));
 
   app.use('/api/*', csrfGuard(ctx));
