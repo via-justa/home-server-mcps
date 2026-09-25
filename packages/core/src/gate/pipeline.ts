@@ -1,0 +1,326 @@
+import { randomUUID } from 'node:crypto';
+import type { Manifest, ResolvedTarget } from '@home-server-mcps/plugin-sdk';
+import { and, eq } from 'drizzle-orm';
+import type { ApprovalService, Decision, ElicitFn } from '../approvals/service.js';
+import { writeAudit } from '../audit.js';
+import type { AuditEvent } from '../audit.js';
+import { resolveAccess } from '../catalog/groups.js';
+import type { Db } from '../db/index.js';
+import { operations } from '../db/schema.js';
+import type { InstanceSettings } from '../instances/settings.js';
+import { PluginProtocolError, PluginRpcError, PluginTimeoutError, PluginUnavailableError } from '../plugins/process.js';
+import type { PluginProcess } from '../plugins/process.js';
+import { BindingError } from '../sandbox/index.js';
+import type { Binding, BudgetControl } from '../sandbox/index.js';
+import { verifyAttestationKey } from './attestation.js';
+import { canonicalJson, sha256Hex } from './canonical.js';
+import { evaluatePreApproval } from './preapproval.js';
+import type { SlidingWindowLimiter } from './rate-limit.js';
+import type { Redactor } from './redact.js';
+
+/**
+ * The permission gate (design §5.2): the only path from sandboxed code to a plugin's `invoke`.
+ *
+ *   resolveOperation → attestation → access → resolveTargets → prepareWrite → classification
+ *   → pre-approval (never for locked) → human approval → invoke → redact → audit
+ *
+ * Every branch, including every rejection, writes one `call` audit event. Calls within one
+ * `execute` run strictly one at a time, so a pending approval blocks the whole script (TN §3.1).
+ */
+
+export interface GateDeps {
+  db: Db;
+  approvals: ApprovalService;
+  limiter: SlidingWindowLimiter;
+  attestationKey: Buffer;
+  now?: () => Date;
+}
+
+export interface InstanceRuntime {
+  instanceId: string;
+  slug: string;
+  manifest: Manifest;
+  settings: InstanceSettings;
+  redact: Redactor;
+  /** The live plugin process; throws PluginUnavailableError while it is down. */
+  plugin: () => PluginProcess;
+}
+
+export interface CallerContext {
+  client: { kind: 'mcp_client'; id?: string };
+  mcpSessionId?: string;
+  /** Present only when the MCP client supports elicitation and the session is live. */
+  elicit?: ElicitFn;
+}
+
+type OperationRow = typeof operations.$inferSelect;
+
+const MAX_ERROR_MESSAGE = 500;
+const PASSTHROUGH_PLUGIN_CODES = new Set([
+  'UNKNOWN_OPERATION',
+  'INVALID_PARAMS',
+  'TARGET_RESOLUTION_FAILED',
+  'CONFIG_CONFLICT',
+  'UPSTREAM_DENIED',
+  'UPSTREAM_ERROR',
+]);
+
+function toBindingError(err: unknown): BindingError {
+  if (err instanceof BindingError) return err;
+  if (err instanceof PluginRpcError) {
+    const code = PASSTHROUGH_PLUGIN_CODES.has(err.code) ? err.code : 'PLUGIN_ERROR';
+    return new BindingError(code, err.message.slice(0, MAX_ERROR_MESSAGE));
+  }
+  if (err instanceof PluginUnavailableError)
+    return new BindingError('PLUGIN_UNAVAILABLE', 'The plugin is not running; try again shortly');
+  if (err instanceof PluginTimeoutError) return new BindingError('UPSTREAM_TIMEOUT', err.message);
+  if (err instanceof PluginProtocolError)
+    return new BindingError('PLUGIN_ERROR', 'The plugin returned an invalid response');
+  return new BindingError('INTERNAL', 'Internal error');
+}
+
+const DISABLED_MESSAGES: Record<string, string> = {
+  group_missing: 'is not available on this endpoint',
+  group_none: 'is disabled on this endpoint (its group is set to None)',
+  group_read_only: 'is a write, and its group is read-only on this endpoint',
+  excluded: 'has been excluded by the administrator',
+  locked_not_opted_in: 'is a protected operation that the administrator has not enabled',
+  pending_review: 'is new and waiting for administrator review',
+  unknown_operation: 'is not in the current catalog',
+};
+
+export function createGateBindings(
+  deps: GateDeps,
+  rt: InstanceRuntime,
+  caller: CallerContext,
+): Record<string, Record<string, Binding>> {
+  const now = deps.now ?? (() => new Date());
+  const executionId = randomUUID();
+  let queue: Promise<unknown> = Promise.resolve();
+
+  const serialized =
+    (fn: string): Binding =>
+    (args, budget) => {
+      const run = queue.then(() => gatedCall(fn, args, budget));
+      queue = run.catch(() => undefined);
+      return run;
+    };
+
+  async function gatedCall(fn: string, args: unknown[], budget: BudgetControl): Promise<unknown> {
+    const started = Date.now();
+    const audit: AuditEvent & { detail: Record<string, unknown> } = {
+      kind: 'call',
+      instanceId: rt.instanceId,
+      actorKind: 'mcp_client',
+      actorId: caller.client.id,
+      detail: { executionId, fn },
+    };
+    let audited = false;
+    const finish = (decision: string, extra: { resultStatus?: string; detail?: Record<string, unknown> } = {}) => {
+      audited = true;
+      writeAudit(
+        deps.db,
+        {
+          ...audit,
+          decision,
+          resultStatus: extra.resultStatus ?? null,
+          durationMs: Date.now() - started,
+          detail: { ...audit.detail, ...extra.detail },
+        },
+        now(),
+      );
+    };
+    const reject = (decision: string, err: BindingError): never => {
+      finish(decision, { resultStatus: 'rejected', detail: { error: err.code } });
+      throw err;
+    };
+
+    try {
+      if (!deps.limiter.take(`exec:${rt.instanceId}`, rt.settings.executePerMinute, 60_000)) {
+        reject('rejected:rate_limited', new BindingError('RATE_LIMITED', 'Too many calls on this endpoint; slow down'));
+      }
+
+      // 0. Map the raw binding call onto a catalog key (Seerr path templates, HA garage-door split…).
+      const resolved = await rt.plugin().call('resolveOperation', { fn, args });
+      audit.operationKey = resolved.key;
+      const op = deps.db
+        .select()
+        .from(operations)
+        .where(and(eq(operations.instanceId, rt.instanceId), eq(operations.key, resolved.key)))
+        .get() as OperationRow | undefined;
+      audit.params = rt.redact(resolved.params);
+
+      // 1. Attestation, before anything else about the op is revealed (HA §3.6).
+      if (op && !op.stale && op.attestationRequired) {
+        const presented = (resolved.params as { best_practice_key?: unknown } | null)?.best_practice_key;
+        if (
+          !verifyAttestationKey(deps.db, deps.attestationKey, {
+            instanceId: rt.instanceId,
+            operationId: op.id,
+            opKey: op.key,
+            presented,
+          })
+        ) {
+          reject(
+            'rejected:attestation_required',
+            new BindingError(
+              'ATTESTATION_REQUIRED',
+              `Call search() for the ${op.key} guide first and pass its best_practice_key`,
+            ),
+          );
+        }
+      }
+
+      // 2. Access: group level + per-op state. Unknown/stale ops fail here too.
+      const access = resolveAccess(deps.db, rt.instanceId, resolved.key);
+      if (!access.reachable || !op) {
+        const reason = access.reachable ? 'unknown_operation' : access.reason;
+        reject(
+          `rejected:${reason}`,
+          Object.assign(
+            new BindingError(
+              'OPERATION_DISABLED',
+              `${resolved.key} ${DISABLED_MESSAGES[reason] ?? 'is not available'}`,
+            ),
+            { reason },
+          ),
+        );
+      }
+      const operation = op!;
+      const isWrite = operation.locked || operation.classification === 'write';
+      audit.classification = operation.locked ? 'locked' : operation.classification;
+
+      // 3. Concrete targets, so rules and approvers see exactly what will be touched. Fails closed.
+      let targets: ResolvedTarget[] = [];
+      if (rt.manifest.capabilities.targets) {
+        targets = await rt.plugin().call('resolveTargets', { key: operation.key, params: resolved.params });
+        audit.resolvedTargets = targets;
+      }
+
+      // 4. Config transforms: compute the real diff against the live object (HA §2.8).
+      let params = resolved.params;
+      let diff: unknown;
+      let expectedHash: string | undefined;
+      if (isWrite && rt.manifest.capabilities.configTransform && operation.kind === 'config') {
+        const prepared = await rt.plugin().call('prepareWrite', { key: operation.key, params });
+        params = prepared.params;
+        diff = prepared.diff;
+        expectedHash = prepared.expectedHash;
+      }
+
+      // 5. Reads run straight away.
+      let decision = 'auto-executed';
+      let approval: Decision | undefined;
+      if (isWrite) {
+        if (!deps.limiter.take(`write:${rt.instanceId}`, rt.settings.writesPerMinute, 60_000)) {
+          reject(
+            'rejected:rate_limited',
+            new BindingError('RATE_LIMITED', 'Too many write calls on this endpoint; slow down'),
+          );
+        }
+
+        // 6. Pre-approval rules; locked ops always need a live human (TN §3.4).
+        let preapproved = false;
+        if (!operation.locked) {
+          const outcome = evaluatePreApproval(
+            deps.db,
+            { instanceId: rt.instanceId, operationId: operation.id, params, targets },
+            now(),
+          );
+          if (outcome.kind === 'auto_approved') {
+            preapproved = true;
+            decision = `auto-approved:rule:${outcome.ruleId}`;
+          } else if (outcome.kind === 'rate_limited') {
+            audit.detail.rateLimitedRules = outcome.ruleIds;
+          }
+        }
+
+        // 7. Human approval, scoped to exactly these params and targets.
+        if (!preapproved) {
+          // The plugin only sees redacted params here: summaries and confirmation literals end up in
+          // prompts, the DB and notifications, and never need a secret.
+          const summary = await rt
+            .plugin()
+            .call('summarize', { key: operation.key, params: rt.redact(params), targets });
+          if (operation.typedConfirmation && !summary.confirmLiteral) {
+            reject(
+              'rejected:missing_confirmation_literal',
+              new BindingError('PLUGIN_ERROR', `The plugin did not provide a confirmation value for ${operation.key}`),
+            );
+          }
+          const paramsHash = sha256Hex(
+            canonicalJson({ key: operation.key, params, targets, expectedHash: expectedHash ?? null }),
+          );
+          const request = deps.approvals.request({
+            instanceId: rt.instanceId,
+            operationId: operation.id,
+            operationKey: operation.key,
+            classification: audit.classification,
+            paramsDisplay: rt.redact(params),
+            paramsHash,
+            resolvedTargets: targets,
+            summary: summary.text,
+            confirmLiteral: operation.typedConfirmation ? summary.confirmLiteral : undefined,
+            diff,
+            expectedHash,
+            client: caller.client,
+            mcpSessionId: caller.mcpSessionId,
+            timeoutMs: rt.settings.approvalTimeoutMs,
+            elicit: caller.elicit,
+            allowPortalOnly: rt.settings.allowPortalOnlyApprovals,
+          });
+          audit.detail.approvalId = request.id;
+          budget.pause();
+          try {
+            approval = await request.decision;
+          } finally {
+            budget.resume();
+          }
+          audit.decidedBy = approval.decidedBy;
+          audit.decidedVia = approval.via;
+          if (approval.outcome !== 'approved') {
+            const label = approval.outcome === 'timed_out' ? 'timed-out' : 'denied';
+            reject(
+              label,
+              new BindingError(
+                'PERMISSION_DENIED',
+                approval.outcome === 'timed_out'
+                  ? `Approval for ${operation.key} timed out and was denied`
+                  : `${operation.key} was denied${approval.reason ? ` (${approval.reason})` : ''}`,
+              ),
+            );
+          }
+          decision = 'human-approved';
+        }
+      }
+
+      // 8. The real upstream call, within what's left of the sandbox budget.
+      const remaining = Math.max(1, budget.remainingMs());
+      const result = await rt
+        .plugin()
+        .call(
+          'invoke',
+          { key: operation.key, params, context: { callId: randomUUID(), expectedHash, deadlineMs: remaining } },
+          remaining,
+        );
+
+      // 9–10. Redact, audit, hand back.
+      finish(decision, { resultStatus: 'ok' });
+      return rt.redact(result);
+    } catch (err) {
+      const mapped = toBindingError(err);
+      // Gate rejections were audited where they were raised; plugin/upstream failures are audited here.
+      if (!audited) {
+        const decision = audit.classification ? `error:${mapped.code}` : `rejected:${mapped.code.toLowerCase()}`;
+        finish(decision, { resultStatus: 'error', detail: { error: mapped.code } });
+      }
+      throw mapped;
+    }
+  }
+
+  return {
+    [rt.manifest.binding.namespace]: Object.fromEntries(
+      rt.manifest.binding.functions.map((fn) => [fn, serialized(fn)]),
+    ),
+  };
+}

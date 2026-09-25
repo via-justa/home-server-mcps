@@ -43,6 +43,7 @@ export interface PluginHandlers {
   syncRegistry?(): MaybePromise<RegistryEntry[]>;
   resolveOperation(params: { fn: string; args: unknown[] }): MaybePromise<ResolveOperationResult>;
   resolveTargets?(params: { key: string; params: unknown }): MaybePromise<ResolvedTarget[]>;
+  /** `params` arrive redacted (sensitive keys replaced): summaries end up in prompts, the DB and notifications. */
   summarize(params: { key: string; params: unknown; targets: ResolvedTarget[] }): MaybePromise<SummarizeResult>;
   prepareWrite?(params: { key: string; params: unknown }): MaybePromise<PrepareWriteResult>;
   invoke(params: { key: string; params: unknown; context: InvokeContext }): MaybePromise<unknown>;

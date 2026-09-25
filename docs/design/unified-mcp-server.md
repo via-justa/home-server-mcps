@@ -397,7 +397,8 @@ binding(args)
   └─ 10. audit (every branch above, including rejections)
 ```
 
-- Errors are thrown **into** the sandbox as catchable `Error`s with a `code` property. They never crash the host (TN §3.1.6).
+- Errors are thrown **into** the sandbox as catchable `Error`s with a `code` property. They never crash the host (TN §3.1.6). Codes: `UNKNOWN_OPERATION`, `ATTESTATION_REQUIRED`, `OPERATION_DISABLED` (message says why: group none/read-only, excluded, locked not opted in, pending review), `TARGET_RESOLUTION_FAILED`, `CONFIG_CONFLICT`, `PERMISSION_DENIED` (denied, timed out, no approval path), `RATE_LIMITED`, `UPSTREAM_DENIED`, `UPSTREAM_ERROR`, `UPSTREAM_TIMEOUT`, `PLUGIN_UNAVAILABLE`, `PLUGIN_ERROR`.
+- `prepareWrite` (step 4) runs for write operations whose descriptor `kind` is `config`, on plugins that declare `configTransform`.
 - Calls are serialized within one `execute` by default. While one call waits for approval, the whole `execute` blocks (TN §3.1.4). Per-instance setting: `concurrentReadsDuringApproval` (default `false`).
 - **Rate limiting.** Per-instance `execute` calls per minute (default 30) and upstream write calls per minute (default 10). Exceeding a limit throws `RateLimited`. This is separate from pre-approval rule rate limits.
 - **Pre-approval match evaluator** (generic, core). A rule's `match` is a list of conditions. Every condition must hold (AND):
@@ -461,10 +462,10 @@ reachable(op, group):
 
 1. Core creates a `pending_approvals` row containing: instance, operation key, normalized params (redacted copy for display), `params_hash` (SHA-256 over canonical JSON of key + params + resolved targets + expected hash), summary, `confirm_literal`, diff, the requesting client identity, the MCP session, `expires_at` (default now + 15 min, set per instance).
 2. **Delivery channels, all at once.** The first decision to arrive wins; the rest are cancelled.
-   - **Elicitation.** Used if the session's client advertised `elicitation` and the session is live. Core calls `server.elicitInput({ message, requestedSchema })`. The schema contains an `approve` boolean, plus a `confirm` string when typed confirmation is required. The message includes the summary, key, params, and diff.
+   - **Elicitation.** Used if the session's client advertised `elicitation` and the session is live. Core calls `server.elicitInput({ message, requestedSchema })`. The schema contains an `approve` boolean, plus a `confirm` string when typed confirmation is required. The message includes the summary, key, redacted params, and diff. `decline` (or `approve: false`) denies. `cancel` (dismissed without deciding) leaves the request open for the portal, links or the timeout.
    - **Portal inbox.** Always on. The Pending Approvals page on the admin port.
    - **Notifiers.** ntfy and webhook channels subscribed to `approval.pending` (§9), carrying approve/deny links to the MCP-port approval page.
-3. **Typed confirmation.** For `typedConfirmation` operations, an approval only counts if the approver typed `confirm_literal` exactly. This applies on every channel. An elicitation answer with a mismatched literal counts as a denial.
+3. **Typed confirmation.** For `typedConfirmation` operations, an approval only counts if the approver typed `confirm_literal` exactly. This applies on every channel. An elicitation answer with a mismatched literal counts as a denial. In the portal, a mismatched literal is rejected (400) and the admin can retry. The literal comes from the plugin's `summarize`, which receives **redacted** params, so neither the summary nor the literal can carry a secret. If a typed-confirmation operation gets no literal, the call is refused.
 4. **Single use.** An approval authorizes exactly one `invoke` of exactly the `params_hash` it was created for (TN §3.3). A re-submitted call creates a new approval.
 5. **No channel available.** If the client lacks elicitation and the instance has `allowPortalOnlyApprovals = false`, the call is denied immediately and logged `denied: no_approval_path` (TN §3.3). The default is `true`, because the portal inbox always exists.
 6. **Timeout** → auto-deny, logged `timed-out`. It is never auto-allowed.
@@ -472,9 +473,11 @@ reachable(op, group):
 ### 5.4 Sandbox
 
 - `isolated-vm`. **One isolate per `execute`/`search` invocation**, disposed afterwards. It is never reused across requests (TN §4).
-- Limits per call (instance-overridable): wall-clock 10 s _excluding time blocked on human approval_ (approval wait is bounded separately by the approval timeout), CPU time 5 s, memory 64 MB, result size 64 KB.
+- Runtime: `isolated-vm` **6.2** (7.x requires Node 24; the image runs Node 22), loaded from its shipped prebuilds, with `node --no-node-snapshot` as isolated-vm requires on Node ≥ 20.
+- `code` is the **body of an async function**: it can `await` bindings and `return` a JSON-serializable result. Everything crosses the boundary as JSON. Errors thrown inside the isolate, including binding errors, come back as `{ code, message }`, and a binding error is a real `Error` with `err.code` inside the sandbox so the model's code can catch it.
+- Limits per call (instance-overridable): wall-clock 10 s _excluding time blocked on human approval_ (the binding pauses the budget while waiting; the approval timeout bounds the wait), memory 64 MB, result size 64 KB (larger results come back as `{ truncated, bytes, preview }`), logs 16 KB. The budget covers both synchronous loops (V8 timeout) and async loops (the isolate is disposed when it runs out).
 - Injected: the binding functions (`ivm.Reference` with promise results), `catalog`/`registry`/`guides` (search only), and `console.log` (captured and returned as a `logs` array, size-capped).
-- Not available: `require`, `import`, `process`, `fetch`, timers beyond a capped `setTimeout`, and `eval` of fetched strings. This follows from the isolate having no Node APIs. An optional static pre-scan (TN §3.2) rejects obvious escape attempts early as defense in depth.
+- Not available: `require`, `import`, `process`, `fetch`, timers (`setTimeout` is not provided), and host objects. Binding namespaces are frozen, and the host call/log references are removed from the global scope before user code runs. This follows from the isolate having no Node APIs. An optional static pre-scan (TN §3.2) rejects obvious escape attempts early as defense in depth.
 
 ### 5.5 Redaction
 
@@ -860,7 +863,10 @@ Same discipline as TN §7: tests first, phase gates, no loosening tests to pass.
 | 3 DB, migrations, crypto        | done, except the `rotate-master-key` CLI | `core/src/db`, `core/src/crypto` (AES-256-GCM + AAD, HKDF subkeys, key file bootstrap)                                                                                                 |
 | 4 Plugin host                   | done                                     | `core/src/plugins`: discovery + registry upsert, `PluginProcess` (permission-confined fork, validated JSON-RPC, timeouts), `PluginSupervisor` (init, crash → backoff restart)          |
 | 6 Catalog sync                  | apply step done                          | `core/src/catalog/sync.ts`: validated diff upsert, stale marking, quarantine, locked → rules disabled, aliases. Scheduling (session-start debounce, version check, cron) is still open |
-| 5, 7–19                         | not started                              |                                                                                                                                                                                        |
+| 7 Sandbox                       | done                                     | `core/src/sandbox`: fresh isolate per call, frozen bindings, JSON envelope, pausable budget, memory/result/log caps                                                                    |
+| 8 Gate & pre-approval           | done                                     | `core/src/gate/pipeline.ts` (+ `match`, `redact`, `preapproval`, `attestation`, `rate-limit`), `core/src/runtime` (`executeCode`, `searchCode` with `catalog.find/get/groups`)         |
+| 9 Approval service              | done                                     | `core/src/approvals/service.ts`: elicitation / portal / link race, timeout, typed confirmation, orphan denial at startup. Notifier delivery lands in phase 15                          |
+| 5, 10–19                        | not started                              | `search` still lacks `registry.find` and `guides.get` (they need registry sync and guide fetching)                                                                                     |
 
 Plugins 17–19 can go in parallel once phase 14 is green. They are built against a shared **fake-plugin harness** that exercises the RPC contract without core, plus a **conformance test suite** exported from the SDK that every plugin (including third-party ones) can run.
 

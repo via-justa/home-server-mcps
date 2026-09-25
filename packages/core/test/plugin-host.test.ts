@@ -50,9 +50,7 @@ describe('PluginProcess', () => {
   it('speaks JSON-RPC over IPC and validates results', async () => {
     const proc = await startEcho();
     await expect(proc.call('getUpstreamVersion')).resolves.toBe('1.0');
-    await expect(proc.call('syncCatalog')).resolves.toMatchObject({
-      operations: [{ key: 'echo.query', locked: false }],
-    });
+    expect((await proc.call('syncCatalog')).operations[0]).toMatchObject({ key: 'echo.query', locked: false });
     await expect(
       proc.call('invoke', { key: 'k', params: { a: 1 }, context: { callId: 'c', deadlineMs: 1000 } }),
     ).resolves.toEqual({ a: 1 });

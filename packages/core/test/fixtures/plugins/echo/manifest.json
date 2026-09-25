@@ -4,6 +4,32 @@
   "version": "1.0.0",
   "sdk": "^1.0.0",
   "entry": "index.mjs",
-  "binding": { "namespace": "echo", "functions": ["call"] },
-  "connection": { "schema": { "type": "object", "properties": { "mode": { "type": "string" } } } }
+  "binding": {
+    "namespace": "echo",
+    "functions": ["call"]
+  },
+  "connection": {
+    "schema": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "capabilities": {
+    "attestation": true
+  },
+  "sensitiveKeys": ["password"],
+  "matchProfiles": {
+    "name-prefix": [
+      {
+        "field": "/name",
+        "label": "Name prefix",
+        "op": "prefix",
+        "widget": "prefix"
+      }
+    ]
+  }
 }

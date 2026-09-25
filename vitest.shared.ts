@@ -7,5 +7,6 @@ const conditions = ['source', 'module', 'node', 'development|production'];
 export default defineConfig({
   resolve: { conditions },
   ssr: { resolve: { conditions } },
-  test: { include: ['test/**/*.test.ts'] },
+  // isolated-vm requires --no-node-snapshot on Node >= 20.
+  test: { include: ['test/**/*.test.ts'], execArgv: ['--no-node-snapshot'] },
 });

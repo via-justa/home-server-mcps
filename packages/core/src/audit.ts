@@ -1,18 +1,7 @@
 import type { DbLike } from './db/index.js';
 import { auditLog } from './db/schema.js';
 
-type AuditInsert = typeof auditLog.$inferInsert;
-
-export interface AuditEvent {
-  kind: AuditInsert['kind'];
-  instanceId?: string;
-  operationKey?: string;
-  classification?: string;
-  decision?: string;
-  actorKind: AuditInsert['actorKind'];
-  actorId?: string;
-  detail?: unknown;
-}
+export type AuditEvent = Omit<typeof auditLog.$inferInsert, 'id' | 'at'>;
 
 /** Append-only (design §7.3): this module only ever inserts. */
 export function writeAudit(db: DbLike, event: AuditEvent, at: Date = new Date()): void {

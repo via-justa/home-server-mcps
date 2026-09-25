@@ -13,7 +13,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "start": "node packages/core/dist/main.js"
+    "start": "node --no-node-snapshot packages/core/dist/main.js"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
