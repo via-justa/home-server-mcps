@@ -2,6 +2,22 @@
 // because under the permission model it may only read its own directory.
 import fs from 'node:fs';
 
+const op = (key, classification, extra = {}) => ({
+  key,
+  kind: 'method',
+  group: 'echo',
+  classification,
+  classificationReason: 'fixture',
+  ...extra,
+});
+const CATALOG = [
+  op('echo.query', 'read'),
+  op('echo.set', 'write', { matchProfile: 'name-prefix' }),
+  op('echo.delete', 'write', { locked: true }),
+  op('echo.nolit', 'write', { locked: true }),
+  op('echo.guided', 'write', { attestationRequired: true }),
+];
+
 let config = {};
 let secrets = {};
 const reply = (id, result) => process.send({ jsonrpc: '2.0', id, result: result ?? null });
@@ -20,14 +36,19 @@ const handlers = {
   getUpstreamVersion: (id) => reply(id, '1.0'),
   syncCatalog(id) {
     if (config.mode === 'bad-output') return reply(id, { upstreamVersion: '1.0', operations: 'nope' });
-    reply(id, {
-      upstreamVersion: '1.0',
-      operations: [
-        { key: 'echo.query', kind: 'method', group: 'echo', classification: 'read', classificationReason: 'fixture' },
-      ],
-    });
+    reply(id, { upstreamVersion: '1.0', operations: CATALOG });
   },
-  invoke(id, { params }) {
+  resolveOperation(id, { args }) {
+    const [key, params = {}] = args;
+    if (!CATALOG.some((o) => o.key === key)) return fail(id, 'UNKNOWN_OPERATION', `unknown operation: ${key}`);
+    reply(id, { key, params });
+  },
+  summarize(id, { key, params }) {
+    const confirmLiteral = key === 'echo.delete' ? params.name : undefined;
+    reply(id, { text: `${key} ${JSON.stringify(params)}`, ...(confirmLiteral ? { confirmLiteral } : {}) });
+  },
+  getGuide: (id) => reply(id, { version: 'v1', content: 'Read me first.' }),
+  invoke(id, { key, params }) {
     const tryFs = (fn) => {
       try {
         fn();
@@ -60,8 +81,10 @@ const handlers = {
         return process.exit(1);
       case 'hang':
         return;
+      case 'upstream-denied':
+        return fail(id, 'UPSTREAM_DENIED', 'insufficient permission');
       default:
-        return reply(id, params);
+        return reply(id, key.startsWith('echo.') ? { key, params, password: 'hunter2' } : params);
     }
   },
   shutdown(id) {

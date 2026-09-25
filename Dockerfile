@@ -54,4 +54,5 @@ VOLUME ["/data"]
 EXPOSE 8080 8081
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.MCP_PORT||8080)+'/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
-CMD ["node", "packages/core/dist/main.js"]
+# isolated-vm requires --no-node-snapshot on Node >= 20.
+CMD ["node", "--no-node-snapshot", "packages/core/dist/main.js"]

@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { ApprovalService } from './approvals/service.js';
 import type { Config } from './config/env.js';
 import { loadMasterKey, SecretBox } from './crypto/index.js';
 import { openDatabase } from './db/index.js';
@@ -22,6 +23,8 @@ export function bootstrap(config: Config): Core {
   if (master.warning) warnings.push(master.warning);
 
   const db = openDatabase({ dataDir: config.DATA_DIR });
+  const orphans = ApprovalService.denyOrphans(db);
+  if (orphans > 0) warnings.push(`Denied ${orphans} approval(s) left pending by the previous run`);
   const discovered = discoverPlugins([
     { dir: config.CORE_PLUGINS_DIR, source: 'core' },
     { dir: path.join(config.DATA_DIR, 'plugins'), source: 'repo' },

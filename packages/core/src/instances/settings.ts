@@ -1,0 +1,37 @@
+import { z } from 'zod';
+
+/** Per-instance runtime settings (design §8.2 "Instance Settings"), stored as JSON on `plugin_instances.settings`. */
+export const InstanceSettingsSchema = z
+  .object({
+    /** Unanswered approvals are auto-denied after this long (TN §3.3). */
+    approvalTimeoutMs: z
+      .number()
+      .int()
+      .min(10_000)
+      .max(24 * 60 * 60_000)
+      .default(15 * 60_000),
+    /** When the client can't elicit, still wait for a portal/link decision instead of denying at once. */
+    allowPortalOnlyApprovals: z.boolean().default(true),
+    executePerMinute: z.number().int().min(1).max(10_000).default(30),
+    writesPerMinute: z.number().int().min(1).max(10_000).default(10),
+    sandbox: z
+      .object({
+        timeoutMs: z.number().int().min(100).max(120_000).default(10_000),
+        memoryMb: z.number().int().min(8).max(1024).default(64),
+        maxResultBytes: z
+          .number()
+          .int()
+          .min(1024)
+          .max(4 * 1024 * 1024)
+          .default(64 * 1024),
+      })
+      .prefault({}),
+    extraRedactKeys: z.array(z.string().min(1)).default([]),
+  })
+  .prefault({});
+
+export type InstanceSettings = z.infer<typeof InstanceSettingsSchema>;
+
+export function parseInstanceSettings(raw: unknown): InstanceSettings {
+  return InstanceSettingsSchema.parse(raw ?? {});
+}

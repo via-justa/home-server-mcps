@@ -9,7 +9,11 @@ export const OperationDescriptorSchema = z.object({
   /** Stable catalog key, unique per instance: `pool.query`, `POST /request`, `light.turn_on`. */
   key: z.string().min(1).max(512),
   displayName: z.string().optional(),
-  /** Plugin-defined kind: 'method' | 'rest' | 'service' | 'ws_command' … */
+  /**
+   * Plugin-defined kind: 'method' | 'rest' | 'service' | 'ws_command' … The kind `config` is reserved:
+   * writes of that kind go through `prepareWrite` (diff + optimistic lock) when the plugin declares
+   * `capabilities.configTransform`.
+   */
   kind: z.string().min(1),
   /**
    * Access group: admins set one none/read/write level per group instead of toggling each operation

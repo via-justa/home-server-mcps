@@ -1,0 +1,226 @@
+import ivm from 'isolated-vm';
+
+/**
+ * Runs model-authored code in a fresh V8 isolate (design §5.4). The isolate has no Node APIs at all:
+ * the only way out is the host functions passed in `bindings`. Values cross the boundary as JSON.
+ *
+ * `code` is the body of an async function: it may `await` bindings and should `return` its result.
+ */
+
+export interface SandboxLimits {
+  /** Wall-clock budget for sandbox activity. Time a binding spends paused (human approval) is excluded. */
+  timeoutMs: number;
+  memoryMb: number;
+  /** Maximum size of the JSON-encoded result; larger results are truncated with a marker. */
+  maxResultBytes: number;
+  maxLogBytes: number;
+}
+
+export const DEFAULT_LIMITS: SandboxLimits = {
+  timeoutMs: 10_000,
+  memoryMb: 64,
+  maxResultBytes: 64 * 1024,
+  maxLogBytes: 16 * 1024,
+};
+
+/** Thrown by a binding to surface a structured error (`err.code`) inside the sandbox. */
+export class BindingError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'BindingError';
+  }
+}
+
+/** Lets a binding stop the sandbox clock while it waits on something slow and human, like approval. */
+export interface BudgetControl {
+  pause(): void;
+  resume(): void;
+  /** Milliseconds of sandbox budget left. */
+  remainingMs(): number;
+}
+
+export type Binding = (args: unknown[], budget: BudgetControl) => Promise<unknown>;
+
+export interface SandboxRun {
+  code: string;
+  /** `{ truenas: { call: fn } }` becomes `truenas.call(...)` inside the sandbox. */
+  bindings: Record<string, Record<string, Binding>>;
+  limits?: Partial<SandboxLimits>;
+}
+
+export type SandboxResult =
+  | { ok: true; value: unknown; truncated: boolean; logs: string[] }
+  | { ok: false; error: { code: string; message: string }; logs: string[] };
+
+const RESERVED = new Set(['console', 'globalThis', '__hsm']);
+
+/** Wall-clock budget that can be paused; fires `onExpire` once when it runs out. */
+class Budget implements BudgetControl {
+  private remaining: number;
+  private startedAt = 0;
+  private paused = 0;
+  private timer?: NodeJS.Timeout;
+  expired = false;
+
+  constructor(
+    totalMs: number,
+    private readonly onExpire: () => void,
+  ) {
+    this.remaining = totalMs;
+  }
+
+  start() {
+    this.startedAt = Date.now();
+    this.timer = setTimeout(() => {
+      this.expired = true;
+      this.onExpire();
+    }, this.remaining);
+  }
+
+  pause() {
+    if (this.paused++ > 0 || this.expired) return;
+    clearTimeout(this.timer);
+    this.remaining -= Date.now() - this.startedAt;
+  }
+
+  resume() {
+    if (--this.paused > 0 || this.expired) return;
+    this.start();
+  }
+
+  remainingMs() {
+    return this.paused > 0 ? this.remaining : Math.max(0, this.remaining - (Date.now() - this.startedAt));
+  }
+
+  stop() {
+    clearTimeout(this.timer);
+  }
+}
+
+// Runs inside the isolate. Wraps each host reference so errors come back as real Errors with `code`,
+// then runs the user code as an async function body and JSON-encodes what it returns.
+const PRELUDE = `
+const __hsm_call = __hsm.call;
+const __hsm_log = __hsm.log;
+delete globalThis.__hsm;
+globalThis.console = Object.freeze({
+  log: (...a) => __hsm_log.applyIgnored(undefined, [a.map((x) => typeof x === 'string' ? x : JSON.stringify(x)).join(' ')]),
+});
+function __hsm_bind(ns, fn) {
+  return async (...args) => {
+    const raw = await __hsm_call.apply(undefined, [ns, fn, JSON.stringify(args)], { result: { promise: true } });
+    const res = JSON.parse(raw);
+    if (res.ok) return res.value;
+    const err = new Error(res.error.message);
+    err.code = res.error.code;
+    throw err;
+  };
+}
+`;
+
+function toJson(value: unknown): string {
+  return JSON.stringify(value === undefined ? null : value);
+}
+
+export async function runInSandbox(run: SandboxRun): Promise<SandboxResult> {
+  const limits = { ...DEFAULT_LIMITS, ...run.limits };
+  const logs: string[] = [];
+  let logBytes = 0;
+  const isolate = new ivm.Isolate({ memoryLimit: limits.memoryMb });
+  const budget = new Budget(limits.timeoutMs, () => {
+    if (!isolate.isDisposed) isolate.dispose();
+  });
+
+  try {
+    const context = await isolate.createContext();
+    const jail = context.global;
+    await jail.set('globalThis', jail.derefInto());
+
+    const hostCall = async (ns: string, fn: string, argsJson: string): Promise<string> => {
+      const binding = run.bindings[ns]?.[fn];
+      if (!binding)
+        return toJson({ ok: false, error: { code: 'NOT_A_BINDING', message: `${ns}.${fn} is not available` } });
+      try {
+        const args = JSON.parse(argsJson) as unknown[];
+        return toJson({ ok: true, value: await binding(args, budget) });
+      } catch (err) {
+        const code = err instanceof BindingError ? err.code : 'INTERNAL';
+        const message = err instanceof BindingError ? err.message : 'Internal error in binding';
+        return toJson({ ok: false, error: { code, message } });
+      }
+    };
+    const hostLog = (line: string) => {
+      if (logBytes >= limits.maxLogBytes) return;
+      const text = String(line).slice(0, limits.maxLogBytes - logBytes);
+      logBytes += text.length;
+      logs.push(text);
+    };
+    await jail.set('__hsm', new ivm.ExternalCopy({}).copyInto());
+    const hsm = (await jail.get('__hsm')) as ivm.Reference<Record<string, unknown>>;
+    await hsm.set('call', new ivm.Reference(hostCall));
+    await hsm.set('log', new ivm.Reference(hostLog));
+
+    const namespaces = Object.entries(run.bindings)
+      .filter(([ns]) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(ns) && !RESERVED.has(ns))
+      .map(
+        ([ns, fns]) =>
+          `globalThis[${JSON.stringify(ns)}] = Object.freeze({ ${Object.keys(fns)
+            .filter((fn) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(fn))
+            .map((fn) => `${JSON.stringify(fn)}: __hsm_bind(${JSON.stringify(ns)}, ${JSON.stringify(fn)})`)
+            .join(', ')} });`,
+      )
+      .join('\n');
+
+    // Always settle with a JSON envelope so thrown errors keep their \`code\` across the boundary.
+    const source = `${PRELUDE}\n${namespaces}\n(async () => {\n${run.code}\n})().then(
+  (v) => JSON.stringify({ ok: true, value: v === undefined ? null : v }),
+  (e) => JSON.stringify({ ok: false, error: { code: typeof e?.code === 'string' ? e.code : 'CODE_ERROR', message: String(e?.message ?? e) } }),
+)`;
+    const script = await isolate.compileScript(source).catch((err: Error) => {
+      throw new SandboxFailure('SYNTAX_ERROR', err.message);
+    });
+
+    budget.start();
+    const json = (await script.run(context, { promise: true, timeout: limits.timeoutMs })) as string;
+    budget.stop();
+
+    const envelope = JSON.parse(json) as
+      { ok: true; value: unknown } | { ok: false; error: { code: string; message: string } };
+    if (!envelope.ok) return { ok: false, error: envelope.error, logs };
+    const valueJson = JSON.stringify(envelope.value);
+    const bytes = Buffer.byteLength(valueJson);
+    if (bytes > limits.maxResultBytes) {
+      const preview = Buffer.from(valueJson).subarray(0, limits.maxResultBytes).toString('utf8');
+      return { ok: true, value: { truncated: true, bytes, preview }, truncated: true, logs };
+    }
+    return { ok: true, value: envelope.value, truncated: false, logs };
+  } catch (err) {
+    budget.stop();
+    return { ok: false, error: classify(err, budget.expired, isolate), logs };
+  } finally {
+    if (!isolate.isDisposed) isolate.dispose();
+  }
+}
+
+class SandboxFailure extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+function classify(err: unknown, expired: boolean, isolate: ivm.Isolate): { code: string; message: string } {
+  if (err instanceof SandboxFailure) return { code: err.code, message: err.message };
+  const message = err instanceof Error ? err.message : String(err);
+  if (expired || /timed out/i.test(message)) return { code: 'TIMEOUT', message: 'Sandbox time limit exceeded' };
+  if (/memory limit/i.test(message) || isolate.isDisposed) {
+    return { code: 'MEMORY_LIMIT', message: 'Sandbox memory limit exceeded' };
+  }
+  // A synchronous throw at top level (the envelope catches everything asynchronous).
+  return { code: 'CODE_ERROR', message };
+}

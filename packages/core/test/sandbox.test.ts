@@ -1,0 +1,150 @@
+import { describe, expect, it } from 'vitest';
+import { BindingError, runInSandbox } from '../src/sandbox/index.js';
+import type { Binding } from '../src/sandbox/index.js';
+
+const echo: Binding = async (args) => ({ echoed: args });
+const run = (code: string, bindings: Record<string, Record<string, Binding>> = { t: { call: echo } }, limits = {}) =>
+  runInSandbox({ code, bindings, limits });
+
+describe('runInSandbox', () => {
+  it('runs async code against bindings and returns JSON values', async () => {
+    const r = await run(
+      `const a = await t.call('x', { n: 1 }); console.log('hi', { n: 2 }); return { a, sum: 1 + 2 };`,
+    );
+    expect(r).toEqual({
+      ok: true,
+      value: { a: { echoed: ['x', { n: 1 }] }, sum: 3 },
+      truncated: false,
+      logs: ['hi {"n":2}'],
+    });
+  });
+
+  it('returns null for undefined results', async () => {
+    await expect(run('const x = 1;')).resolves.toMatchObject({ ok: true, value: null });
+  });
+
+  it('exposes no Node or network APIs', async () => {
+    const r = await run(
+      `return [typeof require, typeof process, typeof fetch, typeof import.meta, typeof setTimeout, typeof __hsm, typeof __hsm_call].join(',')`,
+    );
+    // `import.meta` is a syntax error in a script, so check it separately below.
+    expect(r.ok).toBe(false);
+    const r2 = await run(
+      `return [typeof require, typeof process, typeof fetch, typeof setTimeout, typeof __hsm].join(',')`,
+    );
+    expect(r2).toMatchObject({ ok: true, value: 'undefined,undefined,undefined,undefined,undefined' });
+  });
+
+  it('cannot reach the host through binding functions or the constructor chain', async () => {
+    const r = await run(`
+      const probes = [
+        () => t.call.constructor('return typeof process')(),
+        () => t.call.constructor.constructor('return typeof require')(),
+        () => Object.getPrototypeOf(async () => {}).constructor('return typeof globalThis.process')(),
+        () => (function () { return this; })().process,
+        () => typeof t.call.apply === 'function' && t.call.apply(null, []) && 'no-host-apply',
+      ];
+      const out = [];
+      for (const p of probes) {
+        try { out.push(String(await p())); } catch (e) { out.push('threw'); }
+      }
+      return out;
+    `);
+    expect(r).toMatchObject({ ok: true, value: ['undefined', 'undefined', 'undefined', 'undefined', 'no-host-apply'] });
+  });
+
+  it('keeps binding namespaces frozen', async () => {
+    const r = await run(
+      `'use strict'; try { t.call = () => 'pwned'; } catch (e) { return 'frozen'; } return 'mutable';`,
+    );
+    expect(r).toMatchObject({ ok: true, value: 'frozen' });
+  });
+
+  it('surfaces binding errors as catchable Errors with a code', async () => {
+    const bindings = {
+      t: {
+        call: async () => {
+          throw new BindingError('OPERATION_DISABLED', 'app.upgrade is read-only here');
+        },
+        crash: async () => {
+          throw new Error('secret internal detail');
+        },
+      },
+    };
+    const caught = await run(
+      `try { await t.call(); } catch (e) { return [e instanceof Error, e.code, e.message]; }`,
+      bindings,
+    );
+    expect(caught).toMatchObject({ ok: true, value: [true, 'OPERATION_DISABLED', 'app.upgrade is read-only here'] });
+
+    const uncaught = await run(`await t.call();`, bindings);
+    expect(uncaught).toMatchObject({ ok: false, error: { code: 'OPERATION_DISABLED' } });
+
+    const internal = await run(`await t.crash();`, bindings);
+    expect(internal).toMatchObject({ ok: false, error: { code: 'INTERNAL', message: 'Internal error in binding' } });
+  });
+
+  it('reports thrown user errors and syntax errors', async () => {
+    await expect(run(`throw new Error('nope')`)).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'CODE_ERROR', message: 'nope' },
+    });
+    await expect(run(`return (`)).resolves.toMatchObject({ ok: false, error: { code: 'SYNTAX_ERROR' } });
+  });
+
+  it('kills synchronous infinite loops', async () => {
+    const r = await run('while (true) {}', undefined, { timeoutMs: 100 });
+    expect(r).toMatchObject({ ok: false, error: { code: 'TIMEOUT' } });
+  });
+
+  it('kills asynchronous busy loops', async () => {
+    const r = await run('for (;;) { await t.call(); }', undefined, { timeoutMs: 150 });
+    expect(r).toMatchObject({ ok: false, error: { code: 'TIMEOUT' } });
+  });
+
+  it('enforces the memory limit', async () => {
+    const r = await run('const a = []; for (;;) a.push(new Array(1e6).fill(1));', undefined, {
+      memoryMb: 16,
+      timeoutMs: 5000,
+    });
+    expect(r).toMatchObject({ ok: false, error: { code: 'MEMORY_LIMIT' } });
+  });
+
+  it('excludes paused binding time (human approval) from the budget', async () => {
+    const slowApproval: Binding = async (_args, budget) => {
+      budget.pause();
+      await new Promise((r) => setTimeout(r, 300));
+      budget.resume();
+      return 'approved';
+    };
+    const r = await run(`return await t.call();`, { t: { call: slowApproval } }, { timeoutMs: 150 });
+    expect(r).toMatchObject({ ok: true, value: 'approved' });
+
+    const unpaused: Binding = async () => new Promise((r) => setTimeout(() => r('late'), 300));
+    const r2 = await run(`return await t.call();`, { t: { call: unpaused } }, { timeoutMs: 150 });
+    expect(r2).toMatchObject({ ok: false, error: { code: 'TIMEOUT' } });
+  });
+
+  it('truncates oversized results and caps logs', async () => {
+    const r = await run(
+      `for (let i = 0; i < 100; i++) console.log('x'.repeat(100)); return 'y'.repeat(5000);`,
+      undefined,
+      {
+        maxResultBytes: 1000,
+        maxLogBytes: 250,
+      },
+    );
+    expect(r).toMatchObject({ ok: true, truncated: true, value: { truncated: true, bytes: 5002 } });
+    expect((r as { logs: string[] }).logs.join('').length).toBe(250);
+  });
+
+  it('isolates runs from each other', async () => {
+    await run('globalThis.leak = 42;');
+    await expect(run('return typeof leak')).resolves.toMatchObject({ ok: true, value: 'undefined' });
+  });
+
+  it('rejects calls to functions that are not bindings', async () => {
+    const r = await run(`return Object.keys(t);`);
+    expect(r).toMatchObject({ ok: true, value: ['call'] });
+  });
+});

@@ -17,7 +17,7 @@ Each endpoint exposes two MCP tools, `search(code)` and `execute(code)`. Model-a
 
 **Design:** [`docs/design/unified-mcp-server.md`](docs/design/unified-mcp-server.md). The original per-server designs and UI mockups it builds on are in [`docs/reference/`](docs/reference/).
 
-> **Status:** core foundations (design §13, phases 0–4): database + encryption, catalog sync with group-level access, and the sandboxed plugin host. Not yet: sandbox, approval gate, auth, Admin API, MCP endpoints, real plugin logic. See the progress table in design §13.
+> **Status:** core engine (design §13, phases 0–4 and 7–9): database + encryption, catalog sync with group-level access, the sandboxed plugin host, the `isolated-vm` code sandbox, and the permission gate with pre-approval rules and human approval. Not yet: auth, Admin API, MCP endpoints, notifications, real plugin logic. See the progress table in design §13.
 
 ## Layout
 
