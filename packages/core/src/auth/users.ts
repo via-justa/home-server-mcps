@@ -86,7 +86,11 @@ export class UserService {
       .get();
   }
 
-  async create(input: { username: string; password?: string }, actor: { userId?: string } = {}): Promise<PublicUser> {
+  async create(
+    input: { username: string; password?: string },
+    actor: { userId?: string } = {},
+    opts: { onlyIfFirst?: boolean } = {},
+  ): Promise<PublicUser> {
     const username = input.username.trim();
     if (!USERNAME.test(username)) {
       throw new ValidationError(
@@ -103,6 +107,12 @@ export class UserService {
       createdAt: new Date(),
     };
     this.db.transaction((tx) => {
+      // Re-checked after the (slow) hash, in the same transaction as the insert: of two concurrent
+      // first-run setups only one creates a user.
+      if (opts.onlyIfFirst && (tx.select({ n: count() }).from(users).get()?.n ?? 0) > 0)
+        throw new ConflictError('setup_done', 'Setup has already been completed');
+      if (tx.select({ id: users.id }).from(users).where(eq(users.username, username)).get())
+        throw new ConflictError('username_taken', 'That username is taken');
       tx.insert(users).values(row).run();
       writeAudit(tx, {
         kind: 'auth',
@@ -118,14 +128,14 @@ export class UserService {
   /** First-run setup: only while no users exist (design §6.1). */
   async setupFirstUser(username: string, password: string): Promise<PublicUser> {
     if (this.count() > 0) throw new ConflictError('setup_done', 'Setup has already been completed');
-    return this.create({ username, password });
+    return this.create({ username, password }, {}, { onlyIfFirst: true });
   }
 
   /** `ADMIN_BOOTSTRAP_*`: create the first user on boot if none exist; ignored afterwards. */
   async bootstrap(username?: string, password?: string): Promise<'created' | 'ignored' | 'not_configured'> {
     if (!username || !password) return 'not_configured';
     if (this.count() > 0) return 'ignored';
-    await this.create({ username, password });
+    await this.create({ username, password }, {}, { onlyIfFirst: true });
     return 'created';
   }
 

@@ -73,6 +73,17 @@ describe('UserService', () => {
     expect(hash).toMatch(/^\$argon2id\$v=19\$m=65536,t=3,p=1\$/);
   });
 
+  it('lets only one of two concurrent first-run setups create a user (review L3)', async () => {
+    const t = setup();
+    const results = await Promise.allSettled([
+      t.users.setupFirstUser('operator', PASSWORD),
+      t.users.setupFirstUser('intruder', PASSWORD),
+    ]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.find((r) => r.status === 'rejected')).toMatchObject({ reason: expect.any(ConflictError) });
+    expect(t.users.count()).toBe(1);
+  });
+
   it('verifies passwords without revealing which usernames exist', async () => {
     const t = setup();
     await t.users.create({ username: 'admin', password: PASSWORD });
