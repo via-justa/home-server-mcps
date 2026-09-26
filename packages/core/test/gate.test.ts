@@ -562,6 +562,22 @@ describe('execute → gate → plugin', () => {
       })
       .run();
     await expect(call(v1)).resolves.toMatchObject({ ok: false, error: { code: 'ATTESTATION_REQUIRED' } });
+
+    // The key is bound to the MCP session that read the guide (review M17).
+    const inSession = (sessionId: string, key: string) =>
+      executeCode(
+        t.deps,
+        t.rt,
+        { ...t.caller(), mcpSessionId: sessionId },
+        `return (await echo.call('echo.guided', ${JSON.stringify({ best_practice_key: key })})).key;`,
+      );
+    const s1 = issueAttestationKey(t.deps.attestationKey, t.instanceId, 'echo.guided', 'v2', 'session-1');
+    await expect(inSession('session-1', s1)).resolves.toMatchObject({ ok: true, value: 'echo.guided' });
+    await expect(inSession('session-2', s1)).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'ATTESTATION_REQUIRED' },
+    });
+    await expect(call(s1)).resolves.toMatchObject({ ok: false, error: { code: 'ATTESTATION_REQUIRED' } });
   });
 
   it('limits execute and search runs per principal, not binding calls', async () => {

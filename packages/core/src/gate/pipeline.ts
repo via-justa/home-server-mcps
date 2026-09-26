@@ -190,6 +190,7 @@ export function createGateBindings(
             instanceId: rt.instanceId,
             operationId: op.id,
             opKey: op.key,
+            mcpSessionId: caller.mcpSessionId,
             presented,
           })
         ) {

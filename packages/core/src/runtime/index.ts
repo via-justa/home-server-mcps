@@ -172,9 +172,10 @@ function catalogBindings(db: Db, instanceId: string, principal: AccessPrincipal)
 
 /**
  * `guides.get(key)`: fetches the plugin's current best-practice guide, records its version, and
- * hands out the attestation key `execute` must present (HA §3.6). Revising a guide rotates the key.
+ * hands out the attestation key `execute` must present from the same MCP session (HA §3.6). Revising
+ * a guide rotates the key. Every read is audited: the key attests that this session was shown it.
  */
-function guideBindings(deps: GateDeps, rt: InstanceRuntime): Record<string, Binding> {
+function guideBindings(deps: GateDeps, rt: InstanceRuntime, caller: CallerContext): Record<string, Binding> {
   return {
     get: async ([key]) => {
       const op = deps.db
@@ -206,12 +207,31 @@ function guideBindings(deps: GateDeps, rt: InstanceRuntime): Record<string, Bind
           })
           .run();
       }
+      writeAudit(
+        deps.db,
+        {
+          kind: 'search',
+          instanceId: rt.instanceId,
+          operationKey: op.key,
+          decision: 'guide_read',
+          actorKind: 'mcp_client',
+          actorId: caller.client.id ?? null,
+          detail: { guideVersion: guide.version, mcpSessionId: caller.mcpSessionId ?? null },
+        },
+        deps.now?.() ?? new Date(),
+      );
       return {
         key: op.key,
         required: true,
         version: guide.version,
         content: guide.content,
-        best_practice_key: issueAttestationKey(deps.attestationKey, rt.instanceId, op.key, guide.version),
+        best_practice_key: issueAttestationKey(
+          deps.attestationKey,
+          rt.instanceId,
+          op.key,
+          guide.version,
+          caller.mcpSessionId,
+        ),
       };
     },
   };
@@ -232,7 +252,7 @@ function searchBindings(
         rt.redact(findRegistryEntries(deps.db, rt.instanceId, (q ?? {}) as Parameters<typeof findRegistryEntries>[2])),
     };
   }
-  if (rt.manifest.capabilities.attestation) bindings.guides = guideBindings(deps, rt);
+  if (rt.manifest.capabilities.attestation) bindings.guides = guideBindings(deps, rt, caller);
   return bindings;
 }
 

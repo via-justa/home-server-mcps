@@ -8,7 +8,7 @@ import { ApprovalService } from '../src/approvals/service.js';
 import { setGroupLevel } from '../src/catalog/groups.js';
 import { SecretBox } from '../src/crypto/index.js';
 import { openDatabase } from '../src/db/index.js';
-import { operations, pluginInstances, plugins } from '../src/db/schema.js';
+import { auditLog, operations, pluginInstances, plugins } from '../src/db/schema.js';
 import { ConflictError, ValidationError } from '../src/errors.js';
 import { CoreEvents } from '../src/events.js';
 import { SlidingWindowLimiter } from '../src/gate/rate-limit.js';
@@ -206,6 +206,19 @@ describe('InstanceManager', () => {
       `return (await ha_or_echo()).key; async function ha_or_echo() { return echo.call('echo.guided', { best_practice_key: ${JSON.stringify(key)} }); }`,
     );
     expect(r).toMatchObject({ ok: true, value: 'echo.guided' });
+    // Reading the guide is audited (review M17).
+    expect(
+      t.db
+        .select()
+        .from(auditLog)
+        .all()
+        .find((a) => a.decision === 'guide_read'),
+    ).toMatchObject({
+      kind: 'search',
+      operationKey: 'echo.guided',
+      actorId: 'c',
+      detail: { guideVersion: 'v1' },
+    });
     await expect(searchCode(deps, rt, caller, `return typeof registry`)).resolves.toMatchObject({ value: 'undefined' });
   });
 });
