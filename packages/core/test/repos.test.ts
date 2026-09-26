@@ -1,6 +1,6 @@
 import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import type { KeyObject } from 'node:crypto';
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,7 @@ import { loadConfig } from '../src/config/env.js';
 import { auditLog, plugins } from '../src/db/schema.js';
 import { createAdminApp } from '../src/http/admin-app.js';
 import { parsePublicKey, verifySignature } from '../src/plugins/minisign.js';
+import { swapDirectory } from '../src/plugins/repos.js';
 import { browser } from './admin-client.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -462,5 +463,29 @@ describe('plugin repositories', () => {
     ).toMatchObject({
       error: 'fetch_failed',
     });
+  });
+});
+
+describe('swapDirectory (review L5)', () => {
+  it('replaces the directory, or puts the old one back when the new one cannot be moved in', () => {
+    const root = tmp('hsm-swap-');
+    const target = path.join(root, 'plugins/echo');
+    const next = path.join(root, 'staging/new');
+    mkdirSync(target, { recursive: true });
+    mkdirSync(next, { recursive: true });
+    writeFileSync(path.join(target, 'v'), '1');
+    writeFileSync(path.join(next, 'v'), '2');
+
+    const failing = (from: string, to: string) => {
+      if (from === next) throw new Error('disk full');
+      renameSync(from, to);
+    };
+    expect(() => swapDirectory(next, target, path.join(root, 'staging/old-1'), failing)).toThrow('disk full');
+    expect(readFileSync(path.join(target, 'v'), 'utf8')).toBe('1');
+    expect(existsSync(path.join(root, 'staging/old-1'))).toBe(false);
+
+    swapDirectory(next, target, path.join(root, 'staging/old-2'));
+    expect(readFileSync(path.join(target, 'v'), 'utf8')).toBe('2');
+    expect(existsSync(path.join(root, 'staging/old-2'))).toBe(false);
   });
 });

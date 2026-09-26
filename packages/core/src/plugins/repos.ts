@@ -96,6 +96,27 @@ export interface RepoServiceOptions {
   startPlugin: (pluginRowId: string) => Promise<void>;
 }
 
+/**
+ * Replaces `target` with `next`, keeping the previous copy at `backup` until the swap succeeded. If
+ * moving `next` in fails, the previous copy is moved back, so a failed update never leaves no plugin.
+ */
+export function swapDirectory(
+  next: string,
+  target: string,
+  backup: string,
+  rename: (from: string, to: string) => void = renameSync,
+) {
+  const hadOld = existsSync(target);
+  if (hadOld) rename(target, backup);
+  try {
+    rename(next, target);
+  } catch (err) {
+    if (hadOld) rename(backup, target);
+    throw err;
+  }
+  rmSync(backup, { recursive: true, force: true });
+}
+
 export class PluginRepoService {
   private readonly installing = new Set<string>();
 
@@ -557,10 +578,13 @@ export class PluginRepoService {
       if (current) await this.opts.stopPlugin(current.id);
       mkdirSync(this.pluginsDir, { recursive: true });
       const target = path.join(this.pluginsDir, input.pluginId);
-      const old = path.join(this.stagingDir, `${randomUUID()}-old`);
-      if (existsSync(target)) renameSync(target, old);
-      renameSync(root, target);
-      rmSync(old, { recursive: true, force: true });
+      try {
+        swapDirectory(root, target, path.join(this.stagingDir, `${randomUUID()}-old`));
+      } catch (err) {
+        // The old version is back in place: bring its instances back up before reporting the failure.
+        if (current) await this.opts.startPlugin(current.id);
+        throw err;
+      }
       this.opts.discover();
 
       const row = this.db.select().from(plugins).where(eq(plugins.pluginId, input.pluginId)).get()!;
