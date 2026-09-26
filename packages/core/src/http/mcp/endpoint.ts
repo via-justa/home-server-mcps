@@ -262,6 +262,13 @@ export class McpEndpoints {
     return server;
   }
 
+  /** The request carries a bearer or OAuth access token that is live somewhere on this server. */
+  private holdsLiveCredential(c: Context): boolean {
+    const token = c.req.header('authorization')?.match(/^Bearer\s+(\S+)$/i)?.[1];
+    if (!token) return false;
+    return !!this.ctx.tokens.verify(token) || !!this.oauth.verifyAccess(token, '');
+  }
+
   async handle(c: Context, slug: string): Promise<Response> {
     if (
       !hostAllowed(this.ctx.config, c.req.header('host')) ||
@@ -269,17 +276,23 @@ export class McpEndpoints {
     ) {
       return c.json(jsonRpcError(-32003, 'Host or Origin not allowed; set PUBLIC_MCP_URL or MCP_ALLOWED_HOSTS'), 403);
     }
+    // Before authentication, an unknown slug looks like any endpoint that needs credentials, and a
+    // disabled one answers like an enabled one: neither existence nor state is told to strangers.
     const found = this.ctx.instances.bySlug(slug);
-    if (!found) return c.json(jsonRpcError(-32001, 'Unknown MCP endpoint'), 404);
+    if (!found) {
+      if (this.holdsLiveCredential(c)) return c.json(jsonRpcError(-32001, 'Unknown MCP endpoint'), 404);
+      c.header('WWW-Authenticate', 'Bearer');
+      return c.json({ error: 'unauthorized', error_description: 'Authentication required' }, 401);
+    }
     const { instance, plugin } = found;
-    if (!this.ctx.instances.isServing(instance, plugin))
-      return c.json(jsonRpcError(-32002, 'This endpoint is disabled'), 503);
 
     const auth = await authenticateMcp(this.ctx, this.oauth, c, instance);
     if (!auth.ok) {
       if (auth.wwwAuthenticate) c.header('WWW-Authenticate', auth.wwwAuthenticate);
       return c.json({ error: auth.error, error_description: auth.message }, auth.status);
     }
+    if (!this.ctx.instances.isServing(instance, plugin))
+      return c.json(jsonRpcError(-32002, 'This endpoint is disabled'), 503);
 
     const sessionId = c.req.header('mcp-session-id');
     if (sessionId) {

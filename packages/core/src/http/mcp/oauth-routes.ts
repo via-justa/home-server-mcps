@@ -212,7 +212,7 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
       authorization_servers: [issuer(c)],
       bearer_methods_supported: ['header'],
       scopes_supported: ['mcp'],
-      resource_name: endpoint.instance.displayName,
+      // No resource_name: the endpoint's display name is not for unauthenticated callers.
     });
   });
 

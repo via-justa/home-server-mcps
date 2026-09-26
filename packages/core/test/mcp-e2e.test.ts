@@ -318,6 +318,35 @@ describe('MCP endpoint with bearer tokens', () => {
     expect(hostAllowed(ctx.config, '[::1]:8080')).toBe(true);
   });
 
+  it('tells strangers nothing about which slugs exist or are disabled (review L16)', async () => {
+    const post = (slug: string, token?: string) =>
+      fetch(`${base}/${slug}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+        body: '{}',
+      });
+    const { token } = ctx.tokens.create({ name: 'l16', scope: ['*'] });
+    await ctx.instances.update(otherInstanceId, { enabled: false });
+    try {
+      for (const slug of ['echo-two', 'no-such-endpoint', 'echo']) {
+        const res = await post(slug);
+        expect({ slug, status: res.status }).toEqual({ slug, status: 401 });
+        expect((await res.json()) as object).toMatchObject({ error: 'unauthorized' });
+      }
+      expect((await post('echo-two', 'hsm_wrong')).status).toBe(401);
+      expect((await post('no-such-endpoint', 'hsm_wrong')).status).toBe(401);
+      // Holders of a live credential learn what is wrong.
+      expect((await post('echo-two', token)).status).toBe(503);
+      expect((await post('no-such-endpoint', token)).status).toBe(404);
+    } finally {
+      await ctx.instances.update(otherInstanceId, { enabled: true });
+    }
+  });
+
   it('binds sessions to the principal that created them', async () => {
     const a = ctx.tokens.create({ name: 'a', scope: ['*'] });
     const b = ctx.tokens.create({ name: 'b', scope: ['*'] });
@@ -457,6 +486,7 @@ describe('OAuth 2.1 authorization server', () => {
     });
     const pr = await (await fetch(`${base}/.well-known/oauth-protected-resource/echo`)).json();
     expect(pr).toMatchObject({ resource: `${base}/echo`, authorization_servers: [base] });
+    expect(pr).not.toHaveProperty('resource_name');
   });
 
   it('stays off until PUBLIC_MCP_URL is set: no discovery from the Host header', async () => {
@@ -633,7 +663,8 @@ describe('OAuth 2.1 authorization server', () => {
     // Deleting the endpoint revokes a grant that covered nothing else.
     await ctx.instances.remove(moved.id, 'moved');
     ctx.oauth.forgetInstance(moved.id);
-    expect((await init('moved')).status).toBe(404);
+    // The revoked token is no credential at all, so the gone slug answers like any other (review L16).
+    expect((await init('moved')).status).toBe(401);
     expect((await init('movable')).status).toBe(401);
     await ctx.instances.remove(squatter.id, 'movable');
   });
