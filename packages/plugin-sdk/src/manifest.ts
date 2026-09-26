@@ -62,12 +62,20 @@ export const MatchFieldSchema = z
     options: z.record(z.string(), z.unknown()).optional(),
     /** Source name passed to the plugin's `optionsFor` RPC to populate pickers. */
     optionsSource: z.string().optional(),
+    /**
+     * `$targets` only: the params subtree the target selector stands for (e.g. `/target`). A rule with a
+     * `$targets` condition already checks every resolved target, so core lets it cover that subtree
+     * under strict matching instead of requiring an "any value" condition on it.
+     */
+    covers: z.string().regex(/^\/.+/, 'must be a JSON pointer').optional(),
   })
   .superRefine((f, ctx) => {
     if (f.field === '$targets') {
       if (f.widget !== 'registry-picker') {
         ctx.addIssue({ code: 'custom', message: '$targets fields must use the registry-picker widget' });
       }
+    } else if (f.covers) {
+      ctx.addIssue({ code: 'custom', message: 'only $targets fields can declare covers' });
     } else if (!f.op) {
       ctx.addIssue({ code: 'custom', message: 'param match fields must declare an op' });
     }

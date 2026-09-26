@@ -54,6 +54,17 @@ describe('parseManifest', () => {
     expect(() => parseManifest({ ...minimal, capabilities: { targets: true }, matchProfiles: profile })).not.toThrow();
   });
 
+  it('accepts covers only on $targets fields, as a JSON pointer', () => {
+    const withCovers = (field: Record<string, unknown>) =>
+      parseManifest({ ...minimal, capabilities: { targets: true }, matchProfiles: { p: [field] } });
+    const targets = { field: '$targets', label: 'Targets', widget: 'registry-picker' };
+    expect(withCovers({ ...targets, covers: '/target' }).matchProfiles.p![0]).toMatchObject({ covers: '/target' });
+    expect(() => withCovers({ ...targets, covers: 'target' })).toThrow(/JSON pointer/);
+    expect(() => withCovers({ field: '/name', label: 'Name', op: 'eq', widget: 'text', covers: '/x' })).toThrow(
+      /only \$targets/,
+    );
+  });
+
   it('requires matching capabilities for extra search APIs', () => {
     const binding = { namespace: 'x', functions: ['call'], searchApis: ['registry'] };
     expect(() => parseManifest({ ...minimal, binding })).toThrow(/capabilities.registry/);
