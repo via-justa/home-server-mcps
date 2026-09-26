@@ -9,7 +9,7 @@ import type { SessionLimits, ValidSession } from '../../auth/sessions.js';
 import { randomToken, safeEqual, sha256, signPayload, verifyPayload } from '../../auth/tokens.js';
 import { ServiceError } from '../../errors.js';
 import { getSettings } from '../../settings.js';
-import { localLoginEnabled } from '../admin/auth.js';
+import { localLoginEnabled, mustEnrollTotp } from '../admin/auth.js';
 import { clientIp, isSecure } from '../common.js';
 import { consentPage, errorPage, loginPage, totpPage } from './pages.js';
 
@@ -24,6 +24,8 @@ const UI_CSRF_COOKIE = 'hsm_mcp_csrf';
 const OIDC_COOKIE = 'hsm_mcp_oidc';
 export const UI_LIMITS: SessionLimits = { idleMs: 15 * 60_000, absoluteMs: 60 * 60_000 };
 const FORM_TTL_MS = 10 * 60_000;
+const NEEDS_TOTP =
+  'This server requires two-factor authentication. Set up your authenticator app in the admin portal (Profile) first.';
 
 /** Where a sign-in may continue to: only our own consent and approval pages. */
 export const safeContinue = (v: unknown) =>
@@ -103,7 +105,7 @@ export function renderLogin(
   continueTo: string,
   purpose: string,
   error?: string,
-  status: 200 | 401 | 429 = 200,
+  status: 200 | 401 | 403 | 429 = 200,
 ) {
   const oidc = ctx.oidc.getSettings();
   return loginPage(
@@ -345,6 +347,10 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
       });
       return renderLogin(ctx, c, continueTo, 'Sign in', 'Invalid username or password.', 401);
     }
+    if (mustEnrollTotp(ctx, user)) {
+      // The portal would force enrollment first; the internet-facing sign-in must not skip it.
+      return renderLogin(ctx, c, continueTo, 'Sign in', NEEDS_TOTP, 403);
+    }
     if (user.totpEnabled) {
       return totpPage(c, {
         mfa: signPayload(ctx.keys.state, { mfaUser: user.id }, 5 * 60_000),
@@ -403,6 +409,7 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
       if (state.purpose !== 'mcp_login') return errorPage(c, 'Sign-in failed', 'Unexpected sign-in flow.');
       const user = await ctx.oidc.resolveUser(ctx.users, identity);
       if (!user) return errorPage(c, 'Not allowed', 'Your account is not allowed to sign in here.', 403);
+      if (mustEnrollTotp(ctx, user)) return errorPage(c, 'Two-factor authentication required', NEEDS_TOTP, 403);
       startUiSession(ctx, c, user.id, 'oidc');
       return c.redirect(safeContinue(state.returnTo));
     } catch (err) {

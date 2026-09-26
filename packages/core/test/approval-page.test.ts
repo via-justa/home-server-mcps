@@ -10,6 +10,7 @@ import type { UrlPromptRequest } from '../src/approvals/service.js';
 import { currentStep, totpAt } from '../src/auth/totp.js';
 import { setGroupLevel, updateOperation } from '../src/catalog/groups.js';
 import { loadConfig } from '../src/config/env.js';
+import { updateSettings } from '../src/settings.js';
 import { auditLog, operations } from '../src/db/schema.js';
 import { createMcpApp } from '../src/http/mcp-app.js';
 import { executeCode } from '../src/runtime/index.js';
@@ -187,6 +188,18 @@ describe('approval page', () => {
     const res = await t.browse(t.page);
     expect(res.status).toBe(403);
     expect(await res.text()).toContain('Two-factor authentication required');
+    t.ctx.approvals.cancelAll();
+    await t.run;
+  });
+
+  it('enforces "require two-factor" on the MCP-port sign-in (it faces the internet)', async () => {
+    const t = await withPendingCall(`await echo.call('echo.set', { name: 'x' });`, { totp: false });
+    updateSettings(t.ctx.db, 'security', { requireTotp: true });
+    const res = await t.signIn(t.page);
+    expect(res.status).toBe(403);
+    expect(await res.text()).toContain('requires two-factor authentication');
+    // No session was started: the page still asks to sign in.
+    expect(await (await t.browse(t.page)).text()).toContain('Sign in to review this approval request');
     t.ctx.approvals.cancelAll();
     await t.run;
   });

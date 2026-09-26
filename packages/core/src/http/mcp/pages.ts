@@ -78,7 +78,7 @@ export interface LoginView {
   oidc?: { label: string };
 }
 
-export function loginPage(c: Context, v: LoginView, status: 200 | 401 | 429 = 200) {
+export function loginPage(c: Context, v: LoginView, status: 200 | 401 | 403 | 429 = 200) {
   return page(
     c,
     'Sign in',
