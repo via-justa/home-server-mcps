@@ -131,6 +131,7 @@ async function setup(opts: { coreDir?: string } = {}) {
   const dataDir = tmp('hsm-repos-');
   const files = new Map<string, Buffer>();
   const fetched: string[] = [];
+  const redirects = new Map<string, string>();
   const ctx = await createAppContext(
     loadConfig({
       DATA_DIR: dataDir,
@@ -140,8 +141,14 @@ async function setup(opts: { coreDir?: string } = {}) {
     {
       memoryDb: true,
       supervisor: { backoff: { initialMs: 20, maxMs: 100 }, initTimeoutMs: 3000, rpcTimeoutMs: 5000 },
-      repoFetch: async (url) => {
+      repoFetch: async (url, init) => {
         fetched.push(url);
+        const to = redirects.get(url);
+        if (to) {
+          // Real fetch would follow on its own; the service must ask to see redirects itself.
+          expect(init?.redirect).toBe('manual');
+          return new Response(null, { status: 302, headers: { location: to } });
+        }
         const body = files.get(url);
         return body ? new Response(new Uint8Array(body)) : new Response('missing', { status: 404 });
       },
@@ -152,7 +159,7 @@ async function setup(opts: { coreDir?: string } = {}) {
   const b = await browser(app).init();
   await b.post('/api/setup', { username: 'admin', password: PASSWORD });
   const publish = (index: unknown) => files.set(INDEX_URL, Buffer.from(JSON.stringify(index)));
-  return { ctx, b, files, fetched, publish, dataDir };
+  return { ctx, b, files, fetched, redirects, publish, dataDir };
 }
 
 function indexFor(
@@ -353,6 +360,29 @@ describe('plugin repositories', () => {
       version: '2.0.0',
       signatureVerified: false,
     });
+  });
+
+  it('checks every redirect hop: https → https is followed, a downgrade to http is refused (review L4)', async () => {
+    const t = await setup();
+    t.files.set(INDEX_URL, Buffer.from(JSON.stringify({ schema: 1, name: 'Moved', plugins: [] })));
+    t.redirects.set('https://old.example.com/index.json', INDEX_URL);
+    const moved = await t.b.post('/api/plugin-repos', {
+      url: 'https://old.example.com/index.json',
+      signingMode: 'unsigned',
+    });
+    expect(moved.status).toBe(201);
+
+    t.redirects.set('https://evil.example.com/index.json', 'http://10.0.0.1:8080/admin');
+    const res = await t.b.post('/api/plugin-repos', {
+      url: 'https://evil.example.com/index.json',
+      signingMode: 'unsigned',
+    });
+    expect(await res.json()).toMatchObject({ error: 'insecure_url' });
+    expect(t.fetched).not.toContain('http://10.0.0.1:8080/admin');
+
+    for (let i = 0; i < 7; i++) t.redirects.set(`https://loop.example.com/${i}`, `https://loop.example.com/${i + 1}`);
+    const loop = await t.b.post('/api/plugin-repos', { url: 'https://loop.example.com/0', signingMode: 'unsigned' });
+    expect(await loop.json()).toMatchObject({ error: 'fetch_failed' });
   });
 
   it('rejects archives with links, escaping paths, a wrong manifest, and insecure or invalid indexes', async () => {

@@ -74,7 +74,9 @@ export const InstallSchema = z.object({
   confirm: z.string().optional(),
 });
 
-export type FetchBytes = (url: string, init?: { signal?: AbortSignal }) => Promise<Response>;
+const MAX_REDIRECTS = 5;
+
+export type FetchBytes = (url: string, init?: { signal?: AbortSignal; redirect?: 'manual' }) => Promise<Response>;
 
 type RepoRow = typeof pluginRepos.$inferSelect;
 type Actor = { userId?: string };
@@ -122,16 +124,25 @@ export class PluginRepoService {
   }
 
   private async download(url: string, max: number): Promise<Buffer> {
-    const doFetch = this.opts.fetch ?? ((u: string, init?: { signal?: AbortSignal }) => fetch(u, init));
+    const doFetch: FetchBytes = this.opts.fetch ?? ((u, init) => fetch(u, init));
+    const signal = AbortSignal.timeout(60_000);
     let res: Response;
-    try {
-      res = await doFetch(url, { signal: AbortSignal.timeout(60_000) });
-    } catch (err) {
-      throw new ServiceError(
-        400,
-        'fetch_failed',
-        `Could not fetch ${url}: ${err instanceof Error ? err.message : err}`,
-      );
+    // Redirects are followed by hand, so every hop passes the same URL check (no https → http downgrade).
+    for (let hop = 0; ; hop++) {
+      try {
+        res = await doFetch(url, { signal, redirect: 'manual' });
+      } catch (err) {
+        throw new ServiceError(
+          400,
+          'fetch_failed',
+          `Could not fetch ${url}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+      const location = res.status >= 300 && res.status < 400 ? res.headers.get('location') : null;
+      if (!location) break;
+      if (hop >= MAX_REDIRECTS) throw new ServiceError(400, 'fetch_failed', `Too many redirects from ${url}`);
+      await res.body?.cancel().catch(() => undefined);
+      url = this.checkUrl(location, url);
     }
     if (!res.ok) throw new ServiceError(400, 'fetch_failed', `Could not fetch ${url}: HTTP ${res.status}`);
     if (Number(res.headers.get('content-length') ?? 0) > max)
