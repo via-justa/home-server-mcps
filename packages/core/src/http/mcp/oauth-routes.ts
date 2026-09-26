@@ -139,7 +139,7 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
         const mode = effectiveAuthMode(ctx, i.authMode);
         return mode === 'oauth' || mode === 'bearer+oauth';
       })
-      .map((i) => ({ resource: resourceUrl(issuer(c), i.slug), slug: i.slug, name: i.displayName }));
+      .map((i) => ({ resource: resourceUrl(issuer(c), i.slug), slug: i.slug, name: i.displayName, id: i.id }));
 
   // ── metadata ──
 
@@ -290,7 +290,11 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
       return back({ error: 'access_denied' });
     }
     const chosen = ([] as unknown[]).concat(body.resource ?? []).filter((r): r is string => typeof r === 'string');
-    const resources = [...new Set(chosen.map(canonicalResource))].filter((r) => form.offered.includes(r));
+    // Bind each resource to the instance it names right now; one renamed since the form was shown drops out.
+    const current = new Map(oauthEndpoints(c).map((e) => [e.resource, e.id]));
+    const resources = [...new Set(chosen.map(canonicalResource))].filter(
+      (r) => form.offered.includes(r) && current.has(r),
+    );
     if (resources.length === 0) {
       return consentPage(c, {
         clientName: client.name,
@@ -308,6 +312,7 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
       client,
       userId: session.user.id,
       resources,
+      instanceIds: resources.map((r) => current.get(r)!),
       // Anything but an explicit "Read & write" choice is read-only (design §6.3).
       access: body.access === 'write' ? 'write' : 'read',
       codeChallenge: form.codeChallenge,

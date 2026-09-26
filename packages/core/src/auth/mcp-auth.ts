@@ -138,7 +138,7 @@ export async function authenticateMcp(
   }
 
   if (allowOauth && token.startsWith(ACCESS_PREFIX)) {
-    const found = oauth.verifyAccess(token, resourceUrl(base, instance.slug));
+    const found = oauth.verifyAccess(token, instance.id);
     if (!found)
       return {
         ok: false,

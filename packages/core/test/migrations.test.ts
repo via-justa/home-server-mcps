@@ -92,3 +92,27 @@ describe('0002 access levels migration', () => {
     expect(db.select().from(schema.pendingApprovals).get()?.decidedVia).toBe('url');
   });
 });
+
+describe('grant instance binding backfill', () => {
+  it('maps each resource of an old grant to the instance that has its slug now', async () => {
+    const { OAuthService } = await import('../src/auth/oauth.js');
+    const { seedInstance } = await import('./helpers.js');
+    const { db, instanceId } = seedInstance(openDatabase(':memory:'), 'nas');
+    db.insert(schema.users).values({ id: 'u1', username: 'admin' }).run();
+    db.insert(schema.oauthClients)
+      .values({ id: 'c1', clientId: 'cid', name: 'x', redirectUris: [], registeredVia: 'dcr' })
+      .run();
+    db.insert(schema.oauthGrants)
+      .values({
+        id: 'g1',
+        clientId: 'c1',
+        userId: 'u1',
+        resources: ['https://mcp.example/nas', 'https://mcp.example/gone'],
+      })
+      .run();
+    const oauth = new OAuthService(db);
+    expect(oauth.backfillInstanceIds([{ id: instanceId, slug: 'nas' }])).toBe(1);
+    expect(db.select().from(schema.oauthGrants).get()?.instanceIds).toEqual([instanceId, '']);
+    expect(oauth.backfillInstanceIds([{ id: instanceId, slug: 'nas' }])).toBe(0); // only once
+  });
+});

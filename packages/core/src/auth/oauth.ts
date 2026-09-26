@@ -210,6 +210,8 @@ export class OAuthService {
     client: ClientRow;
     userId: string;
     resources: string[];
+    /** The instance each resource names, in the same order. */
+    instanceIds: string[];
     /** Chosen on the consent page; carried by every token issued from this grant, refreshes included. */
     access: AccessCeiling;
     codeChallenge: string;
@@ -225,6 +227,7 @@ export class OAuthService {
           clientId: input.client.id,
           userId: input.userId,
           resources: input.resources,
+          instanceIds: input.instanceIds,
           access: input.access,
           createdAt: now,
         })
@@ -400,8 +403,11 @@ export class OAuthService {
     });
   }
 
-  /** Validates an access token for an MCP request to `resource`. */
-  verifyAccess(token: string, resource: string) {
+  /**
+   * Validates an access token for an MCP request to one instance. The token's resources are mapped to
+   * the instance ids recorded at consent, so a slug that was renamed or re-used matches nothing new.
+   */
+  verifyAccess(token: string, instanceId: string) {
     if (!token.startsWith(ACCESS_PREFIX)) return null;
     const found = this.db
       .select({ token: oauthTokens, grant: oauthGrants, client: oauthClients, user: users })
@@ -415,13 +421,43 @@ export class OAuthService {
     const { token: t, grant, client, user } = found;
     if (t.revokedAt || grant.revokedAt || client.revokedAt || user.disabled) return null;
     if (t.expiresAt.getTime() <= this.now().getTime()) return null;
+    const ids = grant.instanceIds ?? [];
+    const granted = t.resources.map((r) => ids[grant.resources.indexOf(r)]).filter((id) => id !== undefined);
     return {
-      inAudience: t.resources.includes(canonicalResource(resource)),
+      inAudience: granted.includes(instanceId),
       client,
       user,
       grantId: grant.id,
       access: grant.access,
     };
+  }
+
+  /** An instance was deleted: grants left with no other instance are revoked with their tokens. */
+  forgetInstance(instanceId: string) {
+    const now = this.now();
+    this.db.transaction((tx) => {
+      for (const g of tx.select().from(oauthGrants).where(isNull(oauthGrants.revokedAt)).all()) {
+        if (!g.instanceIds?.includes(instanceId)) continue;
+        if (g.instanceIds.some((id) => id !== instanceId)) continue;
+        tx.update(oauthGrants).set({ revokedAt: now }).where(eq(oauthGrants.id, g.id)).run();
+        tx.update(oauthTokens).set({ revokedAt: now }).where(eq(oauthTokens.grantId, g.id)).run();
+      }
+    });
+  }
+
+  /**
+   * One-time upgrade for grants from before `instance_ids`: map each resource URL's slug to the
+   * instance that has it now (what those grants effectively meant). Unmatched resources map to nothing.
+   */
+  backfillInstanceIds(instances: { id: string; slug: string }[]): number {
+    const bySlug = new Map(instances.map((i) => [i.slug, i.id]));
+    let n = 0;
+    for (const g of this.db.select().from(oauthGrants).where(isNull(oauthGrants.instanceIds)).all()) {
+      const ids = g.resources.map((r) => bySlug.get(new URL(r).pathname.replace(/^\/+/, '')) ?? '');
+      this.db.update(oauthGrants).set({ instanceIds: ids }).where(eq(oauthGrants.id, g.id)).run();
+      n++;
+    }
+    return n;
   }
 
   purgeExpired(): number {

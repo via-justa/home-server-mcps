@@ -179,5 +179,7 @@ export async function createAppContext(config: Config, opts: AppOptions = {}): P
       db.$client.close();
     },
   };
+  // Grants from before instance binding (design §6.2) get the ids their slugs name today.
+  ctx.oauth.backfillInstanceIds(instances.list());
   return ctx;
 }

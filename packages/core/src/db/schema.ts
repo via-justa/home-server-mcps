@@ -363,6 +363,12 @@ export const oauthGrants = sqliteTable('oauth_grants', {
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
   resources: json('resources').$type<string[]>().notNull(),
+  /**
+   * The instance each consented resource URL named at consent time (same order as `resources`).
+   * Tokens are checked against these ids, so renaming a slug or re-using it for another instance
+   * never carries a grant over (design §6.2). NULL only for grants from before this column.
+   */
+  instanceIds: json('instance_ids').$type<string[]>(),
   /** Chosen on the consent page (design §6.3); `read` hides and blocks every write. */
   access: text('access', { enum: ['read', 'write'] })
     .notNull()

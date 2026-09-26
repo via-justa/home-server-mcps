@@ -381,7 +381,7 @@ describe('OAuth 2.1 authorization server', () => {
     expect(afterLogin.status).toBe(303);
     const consent = await (await browse(afterLogin.headers.get('location')!)).text();
     expect(consent).toContain('Authorize Claude');
-    expect(consent).toContain('/echo');
+    expect(consent).toContain(resources.length ? new URL(resources[0]!).pathname : '/echo');
     expect(consent).toMatch(/name="access" value="read" checked/);
     const approved = await browse(
       '/oauth/consent',
@@ -526,6 +526,52 @@ describe('OAuth 2.1 authorization server', () => {
 
     const readWrite = await exchange('write');
     expect(await writesVisible(readWrite.access_token)).toBe(true);
+  });
+
+  it('binds grants to the endpoint, not its slug: rename keeps access, a re-used slug gets none', async () => {
+    const moved = await ctx.instances.create({ pluginId: 'echo', slug: 'movable', connection: {} });
+    await ctx.instances.syncNow(moved.id);
+    const { clientId, code, verifier } = await authorize([`${base}/movable`]);
+    const { access_token } = (await (
+      await token({
+        grant_type: 'authorization_code',
+        client_id: clientId,
+        code,
+        redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
+        code_verifier: verifier,
+      })
+    ).json()) as { access_token: string };
+    const init = (slug: string) =>
+      fetch(`${base}/${slug}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          authorization: `Bearer ${access_token}`,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'x', version: '1' } },
+        }),
+      });
+    expect((await init('movable')).status).toBe(200);
+
+    // The endpoint the user consented to keeps working under its new slug…
+    await ctx.instances.update(moved.id, { slug: 'moved' });
+    expect((await init('moved')).status).toBe(200);
+    // …and a new endpoint that takes over the old slug is not covered by the grant.
+    const squatter = await ctx.instances.create({ pluginId: 'echo', slug: 'movable', connection: {} });
+    await ctx.instances.syncNow(squatter.id);
+    expect((await init('movable')).status).toBe(403);
+
+    // Deleting the endpoint revokes a grant that covered nothing else.
+    await ctx.instances.remove(moved.id, 'moved');
+    ctx.oauth.forgetInstance(moved.id);
+    expect((await init('moved')).status).toBe(404);
+    expect((await init('movable')).status).toBe(401);
+    await ctx.instances.remove(squatter.id, 'movable');
   });
 
   it('rotates refresh tokens and revokes the family on reuse', async () => {

@@ -68,6 +68,7 @@ export function registerInstanceRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
   app.delete('/api/instances/:id', async (c) => {
     const { confirm } = await readJson(c, z.object({ confirm: z.string() }));
     await ctx.instances.remove(c.req.param('id'), confirm, actor(c));
+    ctx.oauth.forgetInstance(c.req.param('id'));
     return c.body(null, 204);
   });
 
