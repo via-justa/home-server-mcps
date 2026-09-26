@@ -8,7 +8,7 @@ import { guides, operationGroups, operations } from '../db/schema.js';
 import { effectiveAccess } from '../gate/access.js';
 import type { AccessPrincipal } from '../gate/access.js';
 import { currentGuide, issueAttestationKey } from '../gate/attestation.js';
-import { createGateBindings } from '../gate/pipeline.js';
+import { createGateBindings, principalKey } from '../gate/pipeline.js';
 import type { CallerContext, GateDeps, InstanceRuntime } from '../gate/pipeline.js';
 import { BindingError, runInSandbox } from '../sandbox/index.js';
 import type { Binding, SandboxResult } from '../sandbox/index.js';
@@ -31,7 +31,7 @@ let runningTotal = 0;
 export const sandboxesRunning = () => runningTotal;
 
 function admit(deps: GateDeps, rt: InstanceRuntime, caller: CallerContext): SandboxResult | (() => void) {
-  const who = caller.client.id ?? 'anonymous';
+  const who = principalKey(caller);
   if (!deps.limiter.take(`run:${rt.instanceId}:${who}`, rt.settings.executePerMinute, 60_000)) {
     return {
       ok: false,

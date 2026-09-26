@@ -50,7 +50,12 @@ export interface InstanceRuntime {
 }
 
 export interface CallerContext {
-  client: { kind: 'mcp_client'; id?: string };
+  /**
+   * `id` is the readable label recorded in the audit log (`token:Claude`); `key` is the stable
+   * principal (token id, grant id, external identity) that per-principal limits are keyed on, since
+   * two tokens may share a name.
+   */
+  client: { kind: 'mcp_client'; id?: string; key?: string };
   mcpSessionId?: string;
   /** The authenticated principal's access ceiling (consent page / bearer token). */
   principal: AccessPrincipal;
@@ -59,6 +64,9 @@ export interface CallerContext {
 }
 
 type OperationRow = typeof operations.$inferSelect;
+
+/** What per-principal limits are keyed on: the stable principal, never the display name. */
+export const principalKey = (caller: CallerContext) => caller.client.key ?? caller.client.id ?? 'anonymous';
 
 const MAX_ERROR_MESSAGE = 500;
 const PASSTHROUGH_PLUGIN_CODES = new Set([
@@ -249,7 +257,7 @@ export function createGateBindings(
       let approval: Decision | undefined;
       // Each principal has its own write budget, charged only for writes that actually run (step 9):
       // a noisy, denied or timed-out client doesn't use up anyone else's.
-      const writeBucket = `write:${rt.instanceId}:${caller.client.id ?? 'anonymous'}`;
+      const writeBucket = `write:${rt.instanceId}:${principalKey(caller)}`;
       const overWriteBudget = () =>
         reject('rejected:rate_limited', new BindingError('RATE_LIMITED', 'Too many write calls; slow down'));
       if (isWrite) {

@@ -210,7 +210,7 @@ export class McpEndpoints {
     };
 
     const caller = (sessionId: string | undefined): CallerContext => ({
-      client: { kind: 'mcp_client', id: identity.label },
+      client: { kind: 'mcp_client', id: identity.label, key: identity.principal },
       mcpSessionId: sessionId,
       principal: { ceiling: identity.access },
       prompts: prompts(),

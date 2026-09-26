@@ -310,6 +310,25 @@ describe('MCP endpoint with bearer tokens', () => {
     expect((await init(`Bearer ${other.token}`)).status).toBe(401);
   });
 
+  it('keys rate limits on the token, not its name: two tokens called "Claude" have separate budgets', async () => {
+    await ctx.instances.update(instanceId, { settings: { executePerMinute: 1 } });
+    try {
+      const run = async (token: string) => {
+        const client = await connect('echo', token);
+        const res = parse(await client.callTool({ name: 'search', arguments: { code: 'return 1' } }));
+        await client.close();
+        return res;
+      };
+      const a = ctx.tokens.create({ name: 'Claude', scope: [instanceId] }).token;
+      const b = ctx.tokens.create({ name: 'Claude', scope: [instanceId] }).token;
+      expect(await run(a)).toEqual({ result: 1 });
+      expect(await run(a)).toMatchObject({ error: 'RATE_LIMITED' });
+      expect(await run(b)).toEqual({ result: 1 });
+    } finally {
+      await ctx.instances.update(instanceId, { settings: { executePerMinute: 30 } });
+    }
+  });
+
   it('caps open sessions per principal, closing the least recently used', async () => {
     const { token } = ctx.tokens.create({ name: 'many', scope: [instanceId] });
     const clients = [];
