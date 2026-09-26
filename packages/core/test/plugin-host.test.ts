@@ -277,6 +277,31 @@ describe('discovery', () => {
     expect(db.select().from(plugins).get()).toMatchObject({ status: 'invalid', enabled: true });
   });
 
+  it('keeps a repo plugin row when a later core release claims its id (review L6)', () => {
+    const db = openDatabase(':memory:');
+    const repoRoot = tmp();
+    cpSync(FIXTURE, path.join(repoRoot, 'echo'), { recursive: true });
+    syncPluginRegistry(db, discoverPlugins([{ dir: repoRoot, source: 'repo' }]), { autoEnableCore: true });
+    const before = db.select().from(plugins).get()!;
+    expect(before).toMatchObject({ source: 'repo', status: 'ok' });
+
+    const coreRoot = tmp();
+    cpSync(FIXTURE, path.join(coreRoot, 'echo'), { recursive: true });
+    const found = discoverPlugins([
+      { dir: coreRoot, source: 'core' },
+      { dir: repoRoot, source: 'repo' },
+    ]);
+    const out = syncPluginRegistry(db, found, { autoEnableCore: true });
+    expect(out.rejected).toContain('echo');
+    const after = db.select().from(plugins).get()!;
+    expect(after).toMatchObject({ id: before.id, source: 'repo', path: before.path, status: 'invalid' });
+    expect(after.statusError).toMatch(/core plugin now uses/);
+    // Re-running discovery doesn't flip it either.
+    syncPluginRegistry(db, found, { autoEnableCore: true });
+    expect(db.select().from(plugins).all()).toHaveLength(1);
+    expect(db.select().from(plugins).get()).toMatchObject({ source: 'repo', status: 'invalid' });
+  });
+
   it.skipIf(!existsSync(path.join(REPO_PLUGINS, 'truenas', 'dist', 'index.js')))(
     'discovers the built core plugins and runs their bundles under the permission model',
     async () => {

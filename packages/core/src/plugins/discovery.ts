@@ -92,7 +92,8 @@ export const pluginIdOf = (p: DiscoveredPlugin) => (p.status === 'ok' ? p.manife
 
 /**
  * Upserts discovery results into `plugins`. New core plugins start disabled unless `autoEnableCore`.
- * A repository plugin may not shadow a core plugin id. Plugins no longer on disk are marked invalid,
+ * A repository plugin may not shadow a core plugin id; a core plugin that arrives later with a repo
+ * plugin's id doesn't take its row over either (that row is marked invalid until an admin resolves it). Plugins no longer on disk are marked invalid,
  * never deleted, so their instances and history remain.
  */
 export function syncPluginRegistry(
@@ -133,6 +134,26 @@ export function syncPluginRegistry(
         statusError: p.status === 'ok' ? null : p.error,
       };
       const prev = existing.get(pluginId);
+      if (prev?.source === 'repo' && p.source === 'core') {
+        // A core release now ships this id. Its instances must not silently switch to different code
+        // with the same secrets: the repo row stays as it was, unusable, until an admin resolves it.
+        const statusError = `A core plugin now uses the id "${pluginId}". Uninstall this repository plugin (after moving its endpoints) to use the core one.`;
+        if (prev.status !== 'invalid' || prev.statusError !== statusError) {
+          tx.update(plugins).set({ status: 'invalid', statusError }).where(eq(plugins.id, prev.id)).run();
+          writeAudit(
+            tx,
+            {
+              kind: 'plugin',
+              decision: 'plugin_id_conflict',
+              actorKind: 'system',
+              detail: { pluginId, repoVersion: prev.version, coreVersion: fields.version },
+            },
+            now,
+          );
+        }
+        out.rejected.push(pluginId);
+        continue;
+      }
       if (!prev) {
         const enabled = p.status === 'ok' && p.source === 'core' && opts.autoEnableCore;
         tx.insert(plugins)
