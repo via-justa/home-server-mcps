@@ -44,7 +44,7 @@ Every operation is classified when the catalog syncs. Admins can override a clas
   - `DELETE /settings/radarr/{radarrId}` and `/sonarr/{sonarrId}` (the instance name), `DELETE /settings/discover/{sliderId}` (the slider title);
   - `POST /settings/initialize`, `POST /settings/main/regenerate`, `GET /settings/discover/reset` (the application title);
   - approving or declining a request **someone else filed** (`POST /request/{requestId}/{status}#on-behalf`, the requester's name). If the requester can't be checked, the call counts as someone else's;
-  - starting a full Plex or Jellyfin library scan (`POST /settings/{plex,jellyfin}/sync#start`, with `start: true`).
+  - starting a full Plex or Jellyfin library scan: `POST /settings/{plex,jellyfin}/sync#start` whenever `start` could be truthy (the application title), and `POST /settings/jobs/{jobId}/run#start` for any scheduled job not on the known-cheap list: the full scans, `availability-sync`, `download-sync-reset`, `process-blocklisted-tags` and any unknown job (the job id). Cheap jobs (recently added scans, Radarr/Sonarr scans, watchlist sync, download sync, token refresh, image cache cleanup) use the ordinary key.
 - **By verb:** `GET` is a read; `POST`, `PUT`, `PATCH` and `DELETE` are writes.
 - **GET as action:** a `GET` whose summary reads like an action (reset, regenerate, sync, flush, run, cancel, invoke) is flagged for review and counts as a write until reviewed here. The flagged list for the pinned spec is a regression test.
 

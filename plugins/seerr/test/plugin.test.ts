@@ -79,6 +79,11 @@ describe('Seerr plugin', () => {
           args: [{ method: 'POST', path: '/settings/plex/sync', body: { cancel: true } }],
           expectKey: 'POST /settings/plex/sync',
         },
+        {
+          fn: 'request',
+          args: [{ method: 'POST', path: '/settings/jobs/plex-full-scan/run' }],
+          expectKey: 'POST /settings/jobs/{jobId}/run#start',
+        },
       ],
       rejects: [
         { fn: 'request', args: [{ method: 'GET', path: '/nope' }] },
@@ -97,7 +102,7 @@ describe('Seerr plugin', () => {
     const { plugin, fake } = await setup();
     const result = await plugin.syncCatalog();
     expect(result).toMatchObject({ upstreamVersion: '3.4.1', sourceRef: 'v3.4.1' });
-    expect(result.operations.length).toBe(215);
+    expect(result.operations.length).toBe(216);
     fake.version = '3.5.0-develop';
     expect((await plugin.syncCatalog()).sourceRef).toBe('develop');
   });
@@ -186,6 +191,22 @@ describe('Seerr plugin', () => {
       expect(await key(body), JSON.stringify(body)).toBe('POST /settings/jellyfin/sync');
   });
 
+  it('locks running a full scan, or any heavy or unknown job, through the jobs endpoint', async () => {
+    const { plugin } = await setup();
+    const key = async (jobId: string) =>
+      (await resolve(plugin, { method: 'POST', path: `/settings/jobs/${jobId}/run` })).key;
+    for (const job of [
+      'plex-full-scan',
+      'jellyfin-full-scan',
+      'availability-sync',
+      'download-sync-reset',
+      'some-future-job',
+    ])
+      expect(await key(job), job).toBe('POST /settings/jobs/{jobId}/run#start');
+    for (const job of ['radarr-scan', 'plex-recently-added-scan', 'download-sync'])
+      expect(await key(job), job).toBe('POST /settings/jobs/{jobId}/run');
+  });
+
   it('locks approving a request someone else filed, and fails closed when that is unknown', async () => {
     const { plugin, fake } = await setup();
     // Request 8 was filed by the plugin's own user; 7 by Alex.
@@ -222,6 +243,7 @@ describe('Seerr plugin', () => {
     expect(await literal({ method: 'POST', path: '/settings/main/regenerate' })).toBe('Home Seerr');
     expect(await literal({ method: 'GET', path: '/settings/discover/reset' })).toBe('Home Seerr');
     expect(await literal({ method: 'POST', path: '/settings/plex/sync', body: { start: true } })).toBe('Home Seerr');
+    expect(await literal({ method: 'POST', path: '/settings/jobs/plex-full-scan/run' })).toBe('plex-full-scan');
     expect(
       await literal({ method: 'POST', path: '/request', body: { mediaType: 'movie', mediaId: 1 } }),
     ).toBeUndefined();

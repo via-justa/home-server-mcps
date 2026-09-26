@@ -27,13 +27,31 @@ export const LOCKED = new Set([
  * Operations whose risk depends on the call (design §3.4): each gets a second, locked key that
  * `resolveOperation` picks when the condition holds.
  * - `#on-behalf`: approving or declining a request someone else filed (SR §3.4).
- * - `#start`: starting a full library scan (SR §2.3), as opposed to reading or cancelling one.
+ * - `#start`: starting a full library scan (SR §2.3), as opposed to reading or cancelling one, and
+ *   running any scheduled job not in `CHEAP_JOBS` (`plex-full-scan` starts the same scan).
  */
 export const SPLITS: Record<string, string> = {
   'POST /request/{requestId}/{status}': '#on-behalf',
   'POST /settings/plex/sync': '#start',
   'POST /settings/jellyfin/sync': '#start',
+  'POST /settings/jobs/{jobId}/run': '#start',
 };
+
+/**
+ * Scheduled jobs (Seerr `server/job/schedule.ts`) that are cheap to run on demand. Running any other
+ * job, including one a future Seerr adds, takes the locked `#start` key: the full library scans,
+ * `availability-sync` (can mark media unavailable), `download-sync-reset`, `process-blocklisted-tags`.
+ */
+export const CHEAP_JOBS = new Set([
+  'plex-recently-added-scan',
+  'jellyfin-recently-added-scan',
+  'plex-refresh-token',
+  'plex-watchlist-sync',
+  'radarr-scan',
+  'sonarr-scan',
+  'download-sync',
+  'image-cache-cleanup',
+]);
 
 /** SR §2.3 "GET as action": summary/description words that suggest a GET changes something. */
 const ACTION_WORDS = /\b(reset\w*|regenerat\w*|sync\w*|flush\w*|run|runs|cancel\w*|invok\w*)\b/i;
@@ -181,7 +199,10 @@ function paramsSchema(spec: Record<string, unknown>, pathParams: unknown[], op: 
 
 const MATCH_PROFILES: Record<string, string> = { 'POST /request': 'media-request' };
 
+/** Descriptions for split keys, by full key (checked first) or by suffix. */
 const SPLIT_DESCRIPTIONS: Record<string, string> = {
+  'POST /settings/jobs/{jobId}/run#start':
+    'Running a full library scan or another heavy or unknown scheduled job: locked. Cheap jobs (recently added scans, Radarr/Sonarr scans, download sync, …) use the ordinary key.',
   '#on-behalf': 'Approving or declining a request filed by another Seerr user: locked.',
   '#start': 'Starting a full library scan: locked.',
 };
@@ -208,7 +229,8 @@ export function buildCatalog(specText: string): Catalog {
         const { classification, reason, locked, needsReview } = classify(k, text);
         const suffix = k.slice(key.length);
         const summary = op.summary?.trim().slice(0, 500);
-        const description = SPLIT_DESCRIPTIONS[suffix] ?? op.description?.trim().slice(0, 2000);
+        const description =
+          SPLIT_DESCRIPTIONS[k] ?? SPLIT_DESCRIPTIONS[suffix] ?? op.description?.trim().slice(0, 2000);
         return {
           key: k,
           kind: 'rest',

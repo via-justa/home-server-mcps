@@ -83,7 +83,7 @@ function run(code: string, decide?: (approvalId: string, message: string) => voi
 describe.skipIf(!BUILT)('Seerr plugin end to end (fake Seerr)', () => {
   it('syncs the spec for the instance version into groups that start at Read', () => {
     const rows = ctx.db.select().from(operations).where(eq(operations.instanceId, instanceId)).all();
-    expect(rows.length).toBe(215);
+    expect(rows.length).toBe(216);
     expect(rows.find((o) => o.key === 'GET /settings/discover/reset')).toMatchObject({ locked: true });
     expect(rows.find((o) => o.key === 'POST /request/{requestId}/{status}#on-behalf')).toMatchObject({
       locked: true,

@@ -77,7 +77,7 @@ describe('GET-as-action regression (SR §9)', () => {
 
 describe('buildCatalog', () => {
   it('produces a valid descriptor for every operation in the real spec', () => {
-    expect(catalog.operations.length).toBe(215); // 212 operations + 3 split keys
+    expect(catalog.operations.length).toBe(216); // 212 operations + 4 split keys
     for (const d of catalog.operations) expect(() => OperationDescriptorSchema.parse(d), d.key).not.toThrow();
   });
 
@@ -110,6 +110,11 @@ describe('buildCatalog', () => {
     });
     expect(op('POST /settings/plex/sync#start')).toMatchObject({ locked: true });
     expect(op('POST /settings/jellyfin/sync#start')).toMatchObject({ locked: true });
+    expect(op('POST /settings/jobs/{jobId}/run')).toMatchObject({ locked: false, classification: 'write' });
+    expect(op('POST /settings/jobs/{jobId}/run#start')).toMatchObject({
+      locked: true,
+      docs: { description: expect.stringContaining('heavy or unknown scheduled job') },
+    });
   });
 
   it('rejects a spec that is not OpenAPI 3.0, is not YAML, or is suspiciously small', () => {

@@ -1,6 +1,6 @@
 import { ErrorCodes, PluginError } from '@home-server-mcps/plugin-sdk';
 import type { InitParams, PluginHandlers } from '@home-server-mcps/plugin-sdk';
-import { buildCatalog, fillTemplate, LOCKED, matchPath, SpecError, SPLITS, VERBS } from './catalog.js';
+import { buildCatalog, CHEAP_JOBS, fillTemplate, LOCKED, matchPath, SpecError, SPLITS, VERBS } from './catalog.js';
 import type { Catalog, Verb } from './catalog.js';
 import { queryString, SeerrClient } from './client.js';
 import type { SeerrAuth } from './client.js';
@@ -121,6 +121,7 @@ export function createSeerrPlugin(): PluginHandlers {
       case 'DELETE /settings/discover/{sliderId}':
         return named('/settings/discover', path.sliderId);
       default:
+        if (key === 'POST /settings/jobs/{jobId}/run#start') return path.jobId;
         return LOCKED.has(key) || key.endsWith('#start') ? appTitle() : undefined;
     }
   };
@@ -204,7 +205,9 @@ export function createSeerrPlugin(): PluginHandlers {
       if (split === '#on-behalf' && (await onBehalf(match.pathParams.requestId!))) key += split;
       // Seerr starts the scan on any truthy `start`, so only a body that clearly doesn't ask for one
       // (none, or `start` absent or exactly false) keeps the ordinary key.
-      if (split === '#start' && startsScan(req.body)) key += split;
+      if (split === '#start' && key === 'POST /settings/jobs/{jobId}/run') {
+        if (!CHEAP_JOBS.has(match.pathParams.jobId!)) key += split;
+      } else if (split === '#start' && startsScan(req.body)) key += split;
       return { key, params };
     },
 
@@ -220,7 +223,7 @@ export function createSeerrPlugin(): PluginHandlers {
       const body = p.body === undefined ? '' : JSON.stringify(p.body);
       const text = `Seerr ${method} ${path}${queryString(p.query)}${
         body ? ` ${body.length > MAX_SUMMARY_BODY ? `${body.slice(0, MAX_SUMMARY_BODY)}…` : body}` : ''
-      }${key.endsWith('#on-behalf') ? " (another user's request)" : ''}${key.endsWith('#start') ? ' (starts a full library scan)' : ''}`;
+      }${key.endsWith('#on-behalf') ? " (another user's request)" : ''}${key.endsWith('#start') ? ' (starts a full library scan or another heavy job)' : ''}`;
       const literal = await confirmLiteral(key, p);
       return literal ? { text, confirmLiteral: literal } : { text };
     },
