@@ -321,6 +321,18 @@ describe('discovery', () => {
         });
         proc.start();
         cleanup.push(() => proc.stop(500));
+        if (p.manifest.id === 'truenas') {
+          // A real plugin: it loads, takes its config and reports an unreachable upstream cleanly
+          // (its bundled WebSocket client works with no access outside its own directory).
+          await proc.call('init', {
+            instanceId: 'i',
+            config: { baseUrl: 'http://127.0.0.1:1' },
+            secrets: { apiKey: 'k' },
+            sdkVersion: '1.0.0',
+          });
+          await expect(proc.call('testConnection')).resolves.toMatchObject({ ok: false });
+          continue;
+        }
         // The skeleton plugins answer NOT_IMPLEMENTED — which proves the bundle loaded with no
         // access outside its own directory.
         await expect(proc.call('getUpstreamVersion')).rejects.toMatchObject({ code: 'NOT_IMPLEMENTED' });
