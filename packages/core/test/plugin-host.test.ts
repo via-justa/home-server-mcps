@@ -321,32 +321,16 @@ describe('discovery', () => {
         });
         proc.start();
         cleanup.push(() => proc.stop(500));
-        if (p.manifest.id === 'truenas') {
-          // A real plugin: it loads, takes its config and reports an unreachable upstream cleanly
-          // (its bundled WebSocket client works with no access outside its own directory).
-          await proc.call('init', {
-            instanceId: 'i',
-            config: { baseUrl: 'http://127.0.0.1:1' },
-            secrets: { apiKey: 'k' },
-            sdkVersion: '1.0.0',
-          });
-          await expect(proc.call('testConnection')).resolves.toMatchObject({ ok: false });
-          continue;
-        }
-        if (p.manifest.id === 'seerr') {
-          // Same for Seerr's bundled YAML parser and global fetch.
-          await proc.call('init', {
-            instanceId: 'i',
-            config: { baseUrl: 'http://127.0.0.1:1', authMethod: 'apiKey' },
-            secrets: { apiKey: 'k' },
-            sdkVersion: '1.0.0',
-          });
-          await expect(proc.call('testConnection')).resolves.toMatchObject({ ok: false });
-          continue;
-        }
-        // The skeleton plugins answer NOT_IMPLEMENTED — which proves the bundle loaded with no
-        // access outside its own directory.
-        await expect(proc.call('getUpstreamVersion')).rejects.toMatchObject({ code: 'NOT_IMPLEMENTED' });
+        // Every core plugin is real now: each loads its bundle (WebSocket client, YAML parser, fetch)
+        // with no access outside its own directory, takes its config, and reports an unreachable
+        // upstream cleanly.
+        const init: Record<string, { config: Record<string, unknown>; secrets: Record<string, string> }> = {
+          truenas: { config: { baseUrl: 'http://127.0.0.1:1' }, secrets: { apiKey: 'k' } },
+          seerr: { config: { baseUrl: 'http://127.0.0.1:1', authMethod: 'apiKey' }, secrets: { apiKey: 'k' } },
+          homeassistant: { config: { baseUrl: 'http://127.0.0.1:1' }, secrets: { token: 't' } },
+        };
+        await proc.call('init', { instanceId: 'i', ...init[p.manifest.id]!, sdkVersion: '1.0.0' });
+        await expect(proc.call('testConnection')).resolves.toMatchObject({ ok: false });
       }
     },
   );
