@@ -28,6 +28,42 @@ describe('createRedactor', () => {
     expect(input.secret).toBe('s');
   });
 
+  it('redacts keys that contain a sensitive word, keeping flags and counts visible (review L1)', () => {
+    expect(
+      redact({
+        db_password: 'hunter2',
+        newPassword: 'n',
+        smtp_pass: 's',
+        authPass: 'a',
+        ssh_private_key: 'pem',
+        'X-Api-Key': 'k',
+        Authorization: 'Bearer abc',
+        headers: { cookie: 'sid=1' },
+        password_set: true,
+        max_tokens: 4096,
+        bypass: 'on',
+        passive: 'yes',
+        compass: 'north',
+      }),
+    ).toEqual({
+      db_password: REDACTED,
+      newPassword: REDACTED,
+      smtp_pass: REDACTED,
+      authPass: REDACTED,
+      ssh_private_key: REDACTED,
+      'X-Api-Key': REDACTED,
+      Authorization: REDACTED,
+      headers: { cookie: REDACTED },
+      password_set: true,
+      max_tokens: 4096,
+      bypass: 'on',
+      passive: 'yes',
+      compass: 'north',
+    });
+    // An exact match hides any value, numbers included.
+    expect(redact({ password: 1234 })).toEqual({ password: REDACTED });
+  });
+
   it('handles primitives and cycles', () => {
     expect(redact('plain')).toBe('plain');
     const a: Record<string, unknown> = { password: 'x' };

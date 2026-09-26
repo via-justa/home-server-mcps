@@ -496,9 +496,11 @@ An approval must come from a person, never from the client that made the call. M
 
 A core engine walks results, params, and summaries and replaces values with `"[REDACTED]"` for any key matching:
 
-- the global list: `password`, `passphrase`, `secret`, `token`, `apiKey`, `api_key`, `privateKey`, `private_key`, `bindpw`, `authPass`
+- the global list: `password`, `passphrase`, `secret`, `token`, `apiKey`, `privateKey`, `bindpw`, `authPass`, `accessToken`, `refreshToken`, `clientSecret`, `authorization`, `credential`, `cookie`, `passwd`, `pass`, `pwd`
 - the plugin's `sensitiveKeys`
 - the instance's extra keys, configured in the portal
+
+Keys compare case-insensitively, ignoring `_` and `-`. A key matches a rule exactly or by containing it (`db_password`, `X-Api-Key`, `ssh_private_key`); rules under five characters (`pass`, `pwd`) only match as the key's last word (`smtp_pass`), so `bypass` stays visible. Under a contained match, booleans and numbers stay visible (`password_set: true`, `max_tokens: 4096`).
 
 Text has no keys to go by, so each instance's redactor also **scrubs the instance's actual secret values** (and their URL/JSON-escaped forms, if at least 6 characters long) out of every string. Inside the sandbox, redaction applies to everything that leaves it: the result (before an oversized result is cut into its preview), every `console.log` argument (before it is turned into text), and error messages; `registry.find` redacts mirrored attributes at the source, and plugin/upstream error messages are scrubbed before they reach the model.
 
