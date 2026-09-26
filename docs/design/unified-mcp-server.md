@@ -401,6 +401,7 @@ binding(args)
   └─ 10. audit (every branch above, including rejections)
 ```
 
+- **Invoke timeouts can't be undone.** When `invoke` times out, the upstream may still have carried the write out; there is no cancellation RPC. The call is audited `error:UPSTREAM_TIMEOUT` (meaning "outcome unknown", not "did not happen"), and every `invoke` carries a unique `context.callId` so a plugin whose upstream supports idempotency keys can pass it on and make a retry safe.
 - Errors are thrown **into** the sandbox as catchable `Error`s with a `code` property. They never crash the host (TN §3.1.6). Codes: `UNKNOWN_OPERATION`, `ATTESTATION_REQUIRED`, `OPERATION_DISABLED` (message says why: level None, a write at level Read, a read-only connection, a locked operation nobody enabled, or disabled while its approval was open), `TARGET_RESOLUTION_FAILED`, `CONFIG_CONFLICT`, `PERMISSION_DENIED` (denied, declined in the client, timed out, or the client cannot approve), `RATE_LIMITED`, `UPSTREAM_DENIED`, `UPSTREAM_ERROR`, `UPSTREAM_TIMEOUT`, `PLUGIN_UNAVAILABLE`, `PLUGIN_ERROR`, `EXECUTION_ENDED`.
 - `prepareWrite` (step 4) runs for write operations whose descriptor `kind` is `config`, on plugins that declare `configTransform`.
 - **An `execute` ends with its sandbox.** When the script returns, throws or times out — or the MCP request is cancelled, or its session closes — calls it left behind are refused (`EXECUTION_ENDED`) and an approval still open is cancelled, so nothing reaches the upstream after the tool call has answered.
@@ -482,6 +483,8 @@ An approval must come from a person, never from the client that made the call. M
 7. **Single use.** An approval authorizes exactly one `invoke` of exactly the `params_hash` it was created for (TN §3.3). A re-submitted call creates a new approval.
 8. **Timeout** → auto-deny, logged `timed-out`. It is never auto-allowed.
 9. **Tool annotations.** `search` is `readOnlyHint: true`; `execute` is `readOnlyHint: false, destructiveHint: true, openWorldHint: true`, so clients that confirm tool calls themselves do. The gate never relies on them.
+10. **Who may approve.** There are no roles: any enabled portal user who can sign in on the MCP port with TOTP may decide any approval, including one requested through their own OAuth grant, and auto-provisioned OIDC users are portal users. Keep the user list (and the OIDC allow policy) to the people who should hold that power; every decision records who made it.
+11. **Values under redacted keys stay hidden on the approval page.** The page shows the same redacted params as the audit log, so for a write whose meaningful value sits under a sensitive key (setting an integration's `apiKey`), the approver sees `[REDACTED]`, not the value. This is deliberate: the approval page must not become a way to read secrets. Such operations should summarize what changes without the value (the plugin's `summarize` receives redacted params too).
 
 ### 5.4 Sandbox
 
@@ -777,7 +780,7 @@ Each channel subscribes to a set of **events** and can filter by instance:
 
 - `instance.error`, `instance.recovered`, `plugin.crashed`
 - `sync.failed`, `sync.pending_review` (new or changed writes, which ask until acknowledged where their level is Write, and rules the sync disabled)
-- `auth.lockout`
+- `auth.lockout` (once per lockout, when a username reaches the failure limit; the per-IP budget and the bounded throttle (§6.1) keep a flood of random usernames from turning into a flood of notifications faster than one per five failed attempts)
 
 Delivery is retried with backoff (3 attempts; 4xx other than 429 is not retried). Failures update `last_error`, shown on Settings → Notifications, and every channel has a Test button. Notification bodies are built from the **redacted** summary and never contain raw params.
 
