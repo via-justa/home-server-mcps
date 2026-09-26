@@ -17,8 +17,11 @@ const shutdown = (signal: string) => {
   if (stopping) return;
   stopping = true;
   console.log(`${signal} received, shutting down`);
-  servers
-    .close()
+  // Drain first (approvals, MCP sessions, SSE), then close the listeners with a grace period, then stop
+  // plugins and the database; nothing here waits on a client that keeps its connection open.
+  ctx
+    .drain()
+    .then(() => servers.close())
     .then(() => ctx.stop())
     .then(
       () => process.exit(0),

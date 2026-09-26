@@ -8,7 +8,8 @@ import { createMcpApp } from './http/mcp-app.js';
 export interface RunningServers {
   mcp: { server: Server; port: number };
   admin: { server: Server; port: number };
-  close(): Promise<void>;
+  /** Stops accepting, then waits up to `graceMs` for open requests before cutting their connections. */
+  close(graceMs?: number): Promise<void>;
 }
 
 function listen(app: { fetch: (req: Request) => Response | Promise<Response> }, hostname: string, port: number) {
@@ -20,8 +21,16 @@ function listen(app: { fetch: (req: Request) => Response | Promise<Response> }, 
   });
 }
 
-function close(server: Server) {
-  return new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+function close(server: Server, graceMs: number) {
+  return new Promise<void>((resolve, reject) => {
+    const cut = setTimeout(() => server.closeAllConnections(), graceMs);
+    server.close((err) => {
+      clearTimeout(cut);
+      if (err) reject(err);
+      else resolve();
+    });
+    server.closeIdleConnections();
+  });
 }
 
 /** Starts the two listeners on separate ports (design §2.1). */
@@ -32,8 +41,8 @@ export async function startServers(ctx: AppContext): Promise<RunningServers> {
   return {
     mcp,
     admin,
-    close: async () => {
-      await Promise.all([close(mcp.server), close(admin.server)]);
+    close: async (graceMs = 5000) => {
+      await Promise.all([close(mcp.server, graceMs), close(admin.server, graceMs)]);
     },
   };
 }

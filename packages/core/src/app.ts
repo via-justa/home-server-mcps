@@ -22,6 +22,7 @@ import type { FetchLike } from './notify/service.js';
 import { discoverPlugins, syncPluginRegistry } from './plugins/discovery.js';
 import { PluginRepoService } from './plugins/repos.js';
 import type { FetchBytes } from './plugins/repos.js';
+import { sandboxesRunning } from './runtime/index.js';
 
 /**
  * Wires every core service together once (design §2). Both listeners, the scheduler and tests use
@@ -52,8 +53,16 @@ export interface AppContext {
   /** Re-scan plugin directories and update the registry (startup, after installs). */
   discoverPlugins(): ReturnType<typeof syncPluginRegistry>;
   start(): Promise<void>;
-  /** Registers cleanup to run on stop (e.g. closing open MCP sessions). */
+  /** Registers cleanup to run when draining (e.g. closing open MCP sessions). */
   onStop(fn: () => unknown): void;
+  /** Aborted when shutdown begins; long-lived responses (SSE) end on it. */
+  shutdownSignal: AbortSignal;
+  /**
+   * First step of shutdown, while the listeners still run: stops timers, cancels open approvals,
+   * runs the stop hooks and ends long-lived streams, so closing the listeners doesn't wait on them.
+   */
+  drain(): Promise<void>;
+  /** Drains (if not yet), stops plugin children and closes the database. */
   stop(): Promise<void>;
 }
 
@@ -133,6 +142,21 @@ export async function createAppContext(config: Config, opts: AppOptions = {}): P
 
   const timers: NodeJS.Timeout[] = [];
   const stopHooks: (() => unknown)[] = [];
+  const draining = new AbortController();
+  const drain = async () => {
+    if (draining.signal.aborted) return;
+    draining.abort();
+    for (const t of timers) clearInterval(t);
+    // Cancelled approvals end their tool calls first, so closing sessions doesn't cut them off mid-reply.
+    approvals.cancelAll('shutdown');
+    // Give the scripts those calls belonged to a moment to return their result to the client.
+    if (sandboxesRunning() > 0) {
+      for (const until = Date.now() + 2000; sandboxesRunning() > 0 && Date.now() < until;)
+        await new Promise((r) => setTimeout(r, 20));
+      await new Promise((r) => setTimeout(r, 50)); // the reply is written after the script returns
+    }
+    for (const fn of stopHooks.splice(0).reverse()) await fn();
+  };
   const ctx: AppContext = {
     config,
     db,
@@ -174,11 +198,11 @@ export async function createAppContext(config: Config, opts: AppOptions = {}): P
     onStop(fn) {
       stopHooks.push(fn);
     },
+    shutdownSignal: draining.signal,
+    drain,
     async stop() {
-      for (const t of timers) clearInterval(t);
-      for (const fn of stopHooks.splice(0).reverse()) await fn();
+      await drain();
       unsubscribeNotifier();
-      approvals.cancelAll('shutdown');
       await instances.stopAll();
       db.$client.close();
     },

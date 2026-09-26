@@ -242,7 +242,12 @@ export function registerSystemRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
         return [name, handler] as const;
       });
       const heartbeat = setInterval(() => void stream.writeSSE({ event: 'ping', data: '{}' }), 25_000);
-      await new Promise<void>((resolve) => stream.onAbort(resolve));
+      await new Promise<void>((resolve) => {
+        stream.onAbort(resolve);
+        // Shutdown ends the stream so closing the listener doesn't wait for the browser to leave.
+        if (ctx.shutdownSignal.aborted) resolve();
+        else ctx.shutdownSignal.addEventListener('abort', () => resolve(), { once: true });
+      });
       clearInterval(heartbeat);
       for (const [name, handler] of handlers) ctx.events.off(name, handler as never);
     }),

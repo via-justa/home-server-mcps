@@ -27,6 +27,9 @@ export const SANDBOX_CONCURRENCY = { perInstance: 4, total: 16 };
 const running = new Map<string, number>();
 let runningTotal = 0;
 
+/** Scripts running now, across all instances (shutdown waits for cancelled ones to return). */
+export const sandboxesRunning = () => runningTotal;
+
 function admit(deps: GateDeps, rt: InstanceRuntime, caller: CallerContext): SandboxResult | (() => void) {
   const who = caller.client.id ?? 'anonymous';
   if (!deps.limiter.take(`run:${rt.instanceId}:${who}`, rt.settings.executePerMinute, 60_000)) {
