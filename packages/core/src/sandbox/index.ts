@@ -49,6 +49,11 @@ export interface SandboxRun {
   /** `{ truenas: { call: fn } }` becomes `truenas.call(...)` inside the sandbox. */
   bindings: Record<string, Record<string, Binding>>;
   limits?: Partial<SandboxLimits>;
+  /**
+   * Applied to everything that leaves the sandbox — the result (before it is size-capped), every
+   * `console.log` argument and error messages — so nothing the code derives or prints escapes redaction.
+   */
+  redact?: (value: unknown) => unknown;
 }
 
 export type SandboxResult =
@@ -107,7 +112,7 @@ const __hsm_call = __hsm.call;
 const __hsm_log = __hsm.log;
 delete globalThis.__hsm;
 globalThis.console = Object.freeze({
-  log: (...a) => __hsm_log.applySync(undefined, [a.map((x) => typeof x === 'string' ? x : JSON.stringify(x)).join(' ')]),
+  log: (...a) => __hsm_log.applySync(undefined, [JSON.stringify(a.map((x) => x === undefined ? null : x))]),
 });
 function __hsm_bind(ns, fn) {
   return async (...args) => {
@@ -127,6 +132,7 @@ function toJson(value: unknown): string {
 
 export async function runInSandbox(run: SandboxRun): Promise<SandboxResult> {
   const limits = { ...DEFAULT_LIMITS, ...run.limits };
+  const redact = run.redact ?? ((v: unknown) => v);
   const logs: string[] = [];
   let logBytes = 0;
   const isolate = new ivm.Isolate({ memoryLimit: limits.memoryMb });
@@ -152,9 +158,17 @@ export async function runInSandbox(run: SandboxRun): Promise<SandboxResult> {
         return toJson({ ok: false, error: { code, message } });
       }
     };
-    const hostLog = (line: string) => {
+    const hostLog = (argsJson: string) => {
       if (logBytes >= limits.maxLogBytes) return;
-      const text = String(line).slice(0, limits.maxLogBytes - logBytes);
+      let args: unknown[];
+      try {
+        args = JSON.parse(argsJson) as unknown[];
+      } catch {
+        args = ['[unprintable]'];
+      }
+      // Redact the values, then format: a JSON string of a secret has no key left to redact by.
+      const line = (redact(args) as unknown[]).map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ');
+      const text = line.slice(0, limits.maxLogBytes - logBytes);
       logBytes += text.length;
       logs.push(text);
     };
@@ -189,17 +203,23 @@ export async function runInSandbox(run: SandboxRun): Promise<SandboxResult> {
 
     const envelope = JSON.parse(json) as
       { ok: true; value: unknown } | { ok: false; error: { code: string; message: string } };
-    if (!envelope.ok) return { ok: false, error: envelope.error, logs };
-    const valueJson = JSON.stringify(envelope.value);
+    if (!envelope.ok) return { ok: false, error: redact(envelope.error) as typeof envelope.error, logs };
+    // Redact before measuring: the preview of an oversized result is raw text, beyond key redaction.
+    const value = redact(envelope.value);
+    const valueJson = JSON.stringify(value);
     const bytes = Buffer.byteLength(valueJson);
     if (bytes > limits.maxResultBytes) {
       const preview = Buffer.from(valueJson).subarray(0, limits.maxResultBytes).toString('utf8');
       return { ok: true, value: { truncated: true, bytes, preview }, truncated: true, logs };
     }
-    return { ok: true, value: envelope.value, truncated: false, logs };
+    return { ok: true, value, truncated: false, logs };
   } catch (err) {
     budget.stop();
-    return { ok: false, error: classify(err, budget.expired, isolate), logs };
+    return {
+      ok: false,
+      error: redact(classify(err, budget.expired, isolate)) as { code: string; message: string },
+      logs,
+    };
   } finally {
     if (!isolate.isDisposed) isolate.dispose();
   }

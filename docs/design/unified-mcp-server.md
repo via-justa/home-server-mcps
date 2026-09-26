@@ -495,6 +495,8 @@ A core engine walks results, params, and summaries and replaces values with `"[R
 - the plugin's `sensitiveKeys`
 - the instance's extra keys, configured in the portal
 
+Text has no keys to go by, so each instance's redactor also **scrubs the instance's actual secret values** (and their URL/JSON-escaped forms, if at least 6 characters long) out of every string. Inside the sandbox, redaction applies to everything that leaves it: the result (before an oversized result is cut into its preview), every `console.log` argument (before it is turned into text), and error messages; `registry.find` redacts mirrored attributes at the source, and plugin/upstream error messages are scrubbed before they reach the model.
+
 It is applied (a) to results returned to the model, (b) to everything written to the audit log and pending approvals, and (c) to anything rendered in the portal. For approval integrity, the unredacted params are held **only in memory** while the call is pending. The DB stores the redacted display copy plus `params_hash`. On restart, pending approvals are **auto-denied** (`denied: server_restart`), because the in-memory params are gone. This is intentional: an approval must never cover params the approver did not see.
 
 ---

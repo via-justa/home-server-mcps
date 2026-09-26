@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { canonicalJson, sha256Hex } from '../src/gate/canonical.js';
 import { getPointer, matches, MatchSchema } from '../src/gate/match.js';
-import { createRedactor, GLOBAL_SENSITIVE_KEYS, REDACTED } from '../src/gate/redact.js';
+import { createInstanceRedactor, createRedactor, GLOBAL_SENSITIVE_KEYS, REDACTED } from '../src/gate/redact.js';
 
 describe('createRedactor', () => {
   const redact = createRedactor(GLOBAL_SENSITIVE_KEYS, ['plexToken']);
@@ -112,5 +112,15 @@ describe('matches', () => {
     expect(MatchSchema.safeParse([{ field: '$targets' }]).success).toBe(false);
     expect(MatchSchema.safeParse([{ field: 'name', op: 'prefix', value: 'x' }]).success).toBe(false);
     expect(MatchSchema.safeParse([{ field: '/n', op: 'regex', value: '.*' }]).success).toBe(false);
+  });
+});
+
+describe('instance redactor', () => {
+  it('scrubs the instance secret values out of any text, encoded or not, and ignores short ones', () => {
+    const redact = createInstanceRedactor({ keyLists: [GLOBAL_SENSITIVE_KEYS], secretValues: ['p@ss word!', 'abc'] });
+    expect(redact('login with p@ss word! failed')).toBe('login with [REDACTED] failed');
+    expect(redact({ url: 'https://x/?k=p%40ss%20word!' })).toEqual({ url: 'https://x/?k=[REDACTED]' });
+    expect(redact({ ['p@ss word!']: 1 })).toEqual({ [REDACTED]: 1 });
+    expect(redact('abc stays')).toBe('abc stays'); // too short to scrub safely
   });
 });

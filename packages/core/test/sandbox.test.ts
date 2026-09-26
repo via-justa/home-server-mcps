@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createInstanceRedactor, GLOBAL_SENSITIVE_KEYS } from '../src/gate/redact.js';
 import { BindingError, runInSandbox } from '../src/sandbox/index.js';
 import type { Binding } from '../src/sandbox/index.js';
 
@@ -146,5 +147,42 @@ describe('runInSandbox', () => {
   it('rejects calls to functions that are not bindings', async () => {
     const r = await run(`return Object.keys(t);`);
     expect(r).toMatchObject({ ok: true, value: ['call'] });
+  });
+});
+
+describe('redaction of everything leaving the sandbox', () => {
+  const SECRET = 'sk-live-0123456789';
+  const redact = createInstanceRedactor({ keyLists: [GLOBAL_SENSITIVE_KEYS], secretValues: [SECRET] });
+  const leaky: Binding = async () => ({ apiKey: SECRET, note: `key is ${SECRET}` });
+  const runR = (code: string, limits = {}) => runInSandbox({ code, bindings: { t: { call: leaky } }, limits, redact });
+
+  it('redacts console.log arguments before they are turned into text', async () => {
+    const r = await runR(`
+      const v = await t.call();
+      console.log(v);
+      console.log(JSON.stringify(v));
+      console.log('plain', { password: 'pw' }, v.apiKey);
+      return null;`);
+    expect(r.logs).toEqual([
+      '{"apiKey":"[REDACTED]","note":"key is [REDACTED]"}',
+      '{"apiKey":"[REDACTED]","note":"key is [REDACTED]"}',
+      'plain {"password":"[REDACTED]"} [REDACTED]',
+    ]);
+    expect(JSON.stringify(r)).not.toContain(SECRET);
+  });
+
+  it('redacts an oversized result before cutting its preview', async () => {
+    const r = await runR(`const v = await t.call(); return { pad: 'x'.repeat(2000), raw: JSON.stringify(v) };`, {
+      maxResultBytes: 500,
+    });
+    expect(r).toMatchObject({ ok: true, truncated: true });
+    expect(JSON.stringify(r)).not.toContain(SECRET);
+  });
+
+  it('redacts derived values and error messages', async () => {
+    const derived = await runR(`const v = await t.call(); return [v.apiKey.split('').join('')];`);
+    expect(derived).toMatchObject({ ok: true, value: ['[REDACTED]'] });
+    const thrown = await runR(`const v = await t.call(); throw new Error('boom ' + v.apiKey);`);
+    expect(thrown).toMatchObject({ ok: false, error: { message: 'boom [REDACTED]' } });
   });
 });

@@ -13,7 +13,7 @@ import { pendingApprovals, pluginInstances, plugins } from '../db/schema.js';
 import { isValidSlug } from '../endpoints/slug.js';
 import { ConflictError, NotFoundError, ValidationError } from '../errors.js';
 import type { CoreEvents } from '../events.js';
-import { createRedactor, GLOBAL_SENSITIVE_KEYS } from '../gate/redact.js';
+import { createInstanceRedactor, GLOBAL_SENSITIVE_KEYS } from '../gate/redact.js';
 import type { InstanceRuntime } from '../gate/pipeline.js';
 import { PluginProcess, PluginUnavailableError } from '../plugins/process.js';
 import { PluginSupervisor } from '../plugins/supervisor.js';
@@ -169,7 +169,10 @@ export class InstanceManager {
       slug: instance.slug,
       manifest: plugin.parsed,
       settings,
-      redact: createRedactor(GLOBAL_SENSITIVE_KEYS, plugin.parsed.sensitiveKeys, settings.extraRedactKeys),
+      redact: createInstanceRedactor({
+        keyLists: [GLOBAL_SENSITIVE_KEYS, plugin.parsed.sensitiveKeys, settings.extraRedactKeys],
+        secretValues: Object.values(this.readSecrets(instance)),
+      }),
       plugin: () => {
         const live = this.live.get(instanceId);
         if (!live) throw new PluginUnavailableError();

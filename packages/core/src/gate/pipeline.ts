@@ -336,7 +336,10 @@ export function createGateBindings(
       finish(decision, { resultStatus: 'ok' });
       return rt.redact(result);
     } catch (err) {
-      const mapped = toBindingError(err);
+      const raw = toBindingError(err);
+      // Plugin and upstream messages are free text: scrub the instance's secret values out of them.
+      const mapped = new BindingError(raw.code, rt.redact(raw.message));
+      Object.assign(mapped, { reason: (raw as { reason?: string }).reason });
       // Gate rejections were audited where they were raised; plugin/upstream failures are audited here.
       if (!audited) {
         const decision = audit.classification ? `error:${mapped.code}` : `rejected:${mapped.code.toLowerCase()}`;

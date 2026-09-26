@@ -16,7 +16,7 @@ import type { AccessCeiling, AccessLevel } from '../src/gate/access.js';
 import { issueAttestationKey } from '../src/gate/attestation.js';
 import type { CallerContext, GateDeps, InstanceRuntime } from '../src/gate/pipeline.js';
 import { SlidingWindowLimiter } from '../src/gate/rate-limit.js';
-import { createRedactor, GLOBAL_SENSITIVE_KEYS } from '../src/gate/redact.js';
+import { createInstanceRedactor, createRedactor, GLOBAL_SENSITIVE_KEYS } from '../src/gate/redact.js';
 import { parseInstanceSettings } from '../src/instances/settings.js';
 import type { InstanceSettings } from '../src/instances/settings.js';
 import { PluginProcess } from '../src/plugins/process.js';
@@ -496,6 +496,15 @@ describe('execute → gate → plugin', () => {
       for (let i = 0; i < 3; i++) { try { await echo.call('echo.query'); out.push('ok'); } catch (e) { out.push(e.code); } }
       return out;`);
     expect(r).toMatchObject({ ok: true, value: ['ok', 'ok', 'RATE_LIMITED'] });
+  });
+
+  it('scrubs the instance secrets out of upstream error messages', async () => {
+    const t = await setup();
+    t.rt.redact = createInstanceRedactor({ keyLists: [GLOBAL_SENSITIVE_KEYS], secretValues: ['tok-9f8e7d6c5b'] });
+    const r = await t.exec(
+      `try { await echo.call('echo.query', { action: 'upstream-echo', text: 'token tok-9f8e7d6c5b is invalid' }); } catch (e) { return e.message; }`,
+    );
+    expect(r).toMatchObject({ ok: true, value: 'upstream rejected: token [REDACTED] is invalid' });
   });
 
   it('maps upstream and plugin failures to structured errors', async () => {

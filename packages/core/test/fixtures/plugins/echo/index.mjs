@@ -83,6 +83,9 @@ const handlers = {
         return;
       case 'upstream-denied':
         return fail(id, 'UPSTREAM_DENIED', 'insufficient permission');
+      case 'upstream-echo':
+        // An upstream error that quotes the request back, as many APIs do.
+        return fail(id, 'UPSTREAM_ERROR', `upstream rejected: ${params.text}`);
       default:
         return reply(id, key.startsWith('echo.') ? { key, params, password: 'hunter2' } : params);
     }

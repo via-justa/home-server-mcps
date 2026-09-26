@@ -28,9 +28,10 @@ export async function executeCode(
     code,
     bindings: createGateBindings(deps, rt, caller),
     limits: rt.settings.sandbox,
+    // Each gated call's result was already redacted; this covers anything the script derived or logged.
+    redact: rt.redact,
   });
-  // Each gated call's result was already redacted; this covers anything the script derived or logged.
-  return result.ok ? { ...result, value: rt.redact(result.value), logs: rt.redact(result.logs) } : result;
+  return result;
 }
 
 type OperationRow = typeof operations.$inferSelect;
@@ -181,7 +182,8 @@ function searchBindings(
   if (rt.manifest.capabilities.registry) {
     bindings.registry = {
       find: async ([q]) =>
-        findRegistryEntries(deps.db, rt.instanceId, (q ?? {}) as Parameters<typeof findRegistryEntries>[2]),
+        // Mirrored upstream attributes can hold tokens (HA camera `access_token`): redact at the source.
+        rt.redact(findRegistryEntries(deps.db, rt.instanceId, (q ?? {}) as Parameters<typeof findRegistryEntries>[2])),
     };
   }
   if (rt.manifest.capabilities.attestation) bindings.guides = guideBindings(deps, rt);
@@ -198,6 +200,7 @@ export async function searchCode(
     code,
     bindings: searchBindings(deps, rt, caller),
     limits: rt.settings.sandbox,
+    redact: rt.redact,
   });
   writeAudit(
     deps.db,
@@ -211,5 +214,5 @@ export async function searchCode(
     },
     deps.now?.() ?? new Date(),
   );
-  return result.ok ? { ...result, value: rt.redact(result.value) } : result;
+  return result;
 }
