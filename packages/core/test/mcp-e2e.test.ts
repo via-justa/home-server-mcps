@@ -14,10 +14,12 @@ import { setGroupLevel, updateOperation } from '../src/catalog/groups.js';
 import { loadConfig } from '../src/config/env.js';
 import { auditLog, operations } from '../src/db/schema.js';
 import { hostAllowed, MAX_SESSIONS_PER_PRINCIPAL } from '../src/http/mcp/endpoint.js';
+import { createAdminApp } from '../src/http/admin-app.js';
 import { createMcpApp } from '../src/http/mcp-app.js';
 import { startServers } from '../src/server.js';
 import type { RunningServers } from '../src/server.js';
 import { updateSettings } from '../src/settings.js';
+import { browser } from './admin-client.js';
 
 /**
  * End to end over real HTTP: the MCP SDK client ↔ `/{slug}` ↔ gate ↔ sandboxed plugin child, with
@@ -389,7 +391,7 @@ describe('OAuth 2.1 authorization server', () => {
     return { verifier, challenge: createHash('sha256').update(verifier).digest('base64url') };
   };
 
-  async function authorize(resources: string[], access?: 'read' | 'write') {
+  async function authorize(resources: string[], access?: 'read' | 'write', username = 'admin') {
     const reg = await fetch(`${base}/oauth/register`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -414,7 +416,7 @@ describe('OAuth 2.1 authorization server', () => {
     const afterLogin = await browse(
       '/oauth/login',
       form({
-        username: 'admin',
+        username,
         password: PASSWORD,
         csrf: hidden(login, 'csrf'),
         continue: hidden(login, 'continue').replace(/&amp;/g, '&'),
@@ -634,6 +636,66 @@ describe('OAuth 2.1 authorization server', () => {
     expect((await init('moved')).status).toBe(404);
     expect((await init('movable')).status).toBe(401);
     await ctx.instances.remove(squatter.id, 'movable');
+  });
+
+  it('revokes grants on a password change, and grants and bearer tokens when the user is disabled (review L9)', async () => {
+    const bob = await ctx.users.create({ username: 'bob', password: PASSWORD });
+    const admin = browser(createAdminApp(ctx));
+    await admin.init();
+    expect((await admin.post('/auth/login', { username: 'admin', password: PASSWORD })).status).toBe(200);
+
+    const tokensFor = async () => {
+      const { clientId, code, verifier } = await authorize([`${base}/echo`], undefined, 'bob');
+      const pair = (await (
+        await token({
+          grant_type: 'authorization_code',
+          client_id: clientId,
+          code,
+          redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
+          code_verifier: verifier,
+        })
+      ).json()) as { access_token: string; refresh_token: string };
+      return { clientId, ...pair };
+    };
+    const reaches = (accessToken: string) =>
+      fetch(`${base}/echo`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } },
+        }),
+      }).then((r) => r.status);
+
+    // A password change ends the grant: the refresh token no longer works.
+    const before = await tokensFor();
+    expect(await reaches(before.access_token)).toBe(200);
+    expect((await admin.patch(`/api/users/${bob.id}`, { password: `${PASSWORD}!` })).status).toBe(200);
+    expect(await reaches(before.access_token)).toBe(401);
+    expect(
+      (await token({ grant_type: 'refresh_token', client_id: before.clientId, refresh_token: before.refresh_token }))
+        .status,
+    ).toBe(400);
+    expect((await admin.patch(`/api/users/${bob.id}`, { password: PASSWORD })).status).toBe(200);
+
+    // Disabling ends grants and the bearer tokens bob created; re-enabling revives neither.
+    const live = await tokensFor();
+    const { token: bearer } = ctx.tokens.create({ name: 'bob', scope: [instanceId] }, { userId: bob.id });
+    expect(await reaches(bearer)).toBe(200);
+    expect((await admin.patch(`/api/users/${bob.id}`, { disabled: true })).status).toBe(200);
+    expect((await admin.patch(`/api/users/${bob.id}`, { disabled: false })).status).toBe(200);
+    expect(await reaches(live.access_token)).toBe(401);
+    expect(await reaches(bearer)).toBe(401);
+    expect(
+      (await token({ grant_type: 'refresh_token', client_id: live.clientId, refresh_token: live.refresh_token }))
+        .status,
+    ).toBe(400);
   });
 
   it('rotates refresh tokens and revokes the family on reuse', async () => {

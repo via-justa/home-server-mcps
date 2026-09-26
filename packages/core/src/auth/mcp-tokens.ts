@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { writeAudit } from '../audit.js';
 import type { Db } from '../db/index.js';
@@ -101,6 +101,35 @@ export class McpTokenService {
         actorId: actor.userId,
         detail: { id, name: row.name },
       });
+    });
+  }
+
+  /** Their creator was disabled: bearer tokens they made are revoked (re-enabling revives none). */
+  revokeCreatedBy(userId: string, actor: { userId?: string } = {}) {
+    return this.db.transaction((tx) => {
+      const live = tx
+        .select({ id: mcpTokens.id, name: mcpTokens.name })
+        .from(mcpTokens)
+        .where(and(eq(mcpTokens.createdBy, userId), isNull(mcpTokens.revokedAt)))
+        .all();
+      if (!live.length) return 0;
+      tx.update(mcpTokens)
+        .set({ revokedAt: this.now() })
+        .where(
+          inArray(
+            mcpTokens.id,
+            live.map((t) => t.id),
+          ),
+        )
+        .run();
+      writeAudit(tx, {
+        kind: 'config',
+        decision: 'mcp_tokens_revoked',
+        actorKind: actor.userId ? 'user' : 'system',
+        actorId: actor.userId,
+        detail: { createdBy: userId, reason: 'user_disabled', tokens: live.map((t) => t.name) },
+      });
+      return live.length;
     });
   }
 

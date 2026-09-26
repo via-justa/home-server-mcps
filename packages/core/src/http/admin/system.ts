@@ -184,11 +184,17 @@ export function registerSystemRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
       if (id === c.get('user').id && body.disabled)
         throw new ConflictError('self_disable', 'You cannot disable yourself');
       ctx.users.setDisabled(id, body.disabled, actor(c));
-      if (body.disabled) ctx.sessions.revokeUser(id);
+      if (body.disabled) {
+        // Everything the user could still reach MCP with goes too; re-enabling revives none of it.
+        ctx.sessions.revokeUser(id);
+        ctx.oauth.revokeUserGrants(id, 'user_disabled', actor(c));
+        ctx.tokens.revokeCreatedBy(id, actor(c));
+      }
     }
     if (body.password !== undefined) {
       await ctx.users.setPassword(id, body.password, { actorId: c.get('user').id });
       ctx.sessions.revokeUser(id);
+      ctx.oauth.revokeUserGrants(id, 'password_changed', actor(c));
     }
     return c.json(toPublicUser(ctx.users.get(id)));
   });

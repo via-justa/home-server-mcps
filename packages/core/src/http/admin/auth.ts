@@ -319,6 +319,7 @@ export function registerProfileRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
       actorId: user.id,
     });
     ctx.sessions.revokeUser(user.id, c.get('sessionRaw'));
+    ctx.oauth.revokeUserGrants(user.id, 'password_changed', { userId: user.id });
     return c.json({ status: 'ok' });
   });
 

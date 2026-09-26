@@ -205,6 +205,33 @@ export class OAuthService {
     });
   }
 
+  /**
+   * The user's password changed or they were disabled: every live grant (and its tokens) is revoked,
+   * so a stolen refresh token dies with the old password and re-enabling a user revives nothing.
+   */
+  revokeUserGrants(userId: string, reason: 'password_changed' | 'user_disabled', actor: { userId?: string } = {}) {
+    const now = this.now();
+    return this.db.transaction((tx) => {
+      const live = tx
+        .select({ id: oauthGrants.id })
+        .from(oauthGrants)
+        .where(and(eq(oauthGrants.userId, userId), isNull(oauthGrants.revokedAt)))
+        .all()
+        .map((g) => g.id);
+      if (!live.length) return 0;
+      tx.update(oauthGrants).set({ revokedAt: now }).where(inArray(oauthGrants.id, live)).run();
+      tx.update(oauthTokens).set({ revokedAt: now }).where(inArray(oauthTokens.grantId, live)).run();
+      writeAudit(tx, {
+        kind: 'auth',
+        decision: 'oauth_grants_revoked',
+        actorKind: actor.userId ? 'user' : 'system',
+        actorId: actor.userId,
+        detail: { userId, reason, grants: live.length },
+      });
+      return live.length;
+    });
+  }
+
   /** After consent: records the grant and returns a single-use code bound to PKCE, redirect and resources. */
   issueCode(input: {
     client: ClientRow;
@@ -366,6 +393,8 @@ export class OAuthService {
       const grant = row && tx.select().from(oauthGrants).where(eq(oauthGrants.id, row.grantId)).get();
       if (!row || !grant || grant.clientId !== input.client.id)
         return new OAuthError('invalid_grant', 'Invalid refresh token');
+      const owner = tx.select({ disabled: users.disabled }).from(users).where(eq(users.id, grant.userId)).get();
+      if (!owner || owner.disabled) return new OAuthError('invalid_grant', 'The user of this grant is disabled');
       if (row.revokedAt) {
         this.revokeFamily(tx, row.familyId);
         writeAudit(tx, {
