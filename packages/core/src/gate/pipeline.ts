@@ -171,9 +171,6 @@ export function createGateBindings(
 
     try {
       ensureRunning();
-      if (!deps.limiter.take(`exec:${rt.instanceId}`, rt.settings.executePerMinute, 60_000)) {
-        reject('rejected:rate_limited', new BindingError('RATE_LIMITED', 'Too many calls on this endpoint; slow down'));
-      }
 
       // 0. Map the raw binding call onto a catalog key (Seerr path templates, HA garage-door split…).
       const resolved = await rt.plugin().call('resolveOperation', { fn, args });

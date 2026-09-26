@@ -20,7 +20,7 @@ import { createInstanceRedactor, createRedactor, GLOBAL_SENSITIVE_KEYS } from '.
 import { parseInstanceSettings } from '../src/instances/settings.js';
 import type { InstanceSettings } from '../src/instances/settings.js';
 import { PluginProcess } from '../src/plugins/process.js';
-import { executeCode, searchCode } from '../src/runtime/index.js';
+import { executeCode, SANDBOX_CONCURRENCY, searchCode } from '../src/runtime/index.js';
 import { seedInstance } from './helpers.js';
 
 const FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/plugins/echo');
@@ -564,13 +564,34 @@ describe('execute → gate → plugin', () => {
     await expect(call(v1)).resolves.toMatchObject({ ok: false, error: { code: 'ATTESTATION_REQUIRED' } });
   });
 
-  it('enforces the per-instance call rate limit', async () => {
+  it('limits execute and search runs per principal, not binding calls', async () => {
     const t = await setup({ executePerMinute: 2 });
-    const r = await t.exec(`
-      const out = [];
-      for (let i = 0; i < 3; i++) { try { await echo.call('echo.query'); out.push('ok'); } catch (e) { out.push(e.code); } }
-      return out;`);
-    expect(r).toMatchObject({ ok: true, value: ['ok', 'ok', 'RATE_LIMITED'] });
+    const three = `const out = []; for (let i = 0; i < 3; i++) out.push((await echo.call('echo.query')).key); return out.length;`;
+    await expect(t.exec(three)).resolves.toMatchObject({ ok: true, value: 3 });
+    await expect(searchCode(t.deps, t.rt, t.caller(), 'return 1')).resolves.toMatchObject({ ok: true });
+    await expect(t.exec('return 1')).resolves.toMatchObject({ ok: false, error: { code: 'RATE_LIMITED' } });
+    // Another principal has its own budget.
+    const other = { ...t.caller(), client: { kind: 'mcp_client' as const, id: 'other-client' } };
+    await expect(executeCode(t.deps, t.rt, other, 'return 1')).resolves.toMatchObject({ ok: true });
+  });
+
+  it('caps how many scripts run at once', async () => {
+    const t = await setup({ executePerMinute: 1000 });
+    const saved = { ...SANDBOX_CONCURRENCY };
+    SANDBOX_CONCURRENCY.perInstance = 2;
+    try {
+      t.setLevel('ask');
+      const hold = urlClient(); // opens the page, nobody decides: the script stays running
+      const a = t.exec(`await echo.call('echo.set', { name: 'a' });`, hold.prompts);
+      const b = t.exec(`await echo.call('echo.set', { name: 'b' });`, hold.prompts);
+      await waitFor(() => hold.opened.length === 2);
+      await expect(t.exec('return 1')).resolves.toMatchObject({ ok: false, error: { code: 'BUSY' } });
+      t.approvals.cancelAll();
+      await Promise.all([a, b]);
+      await expect(t.exec('return 1')).resolves.toMatchObject({ ok: true });
+    } finally {
+      Object.assign(SANDBOX_CONCURRENCY, saved);
+    }
   });
 
   it('scrubs the instance secrets out of upstream error messages', async () => {

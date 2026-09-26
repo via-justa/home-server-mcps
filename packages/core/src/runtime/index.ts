@@ -18,6 +18,36 @@ import type { Binding, SandboxResult } from '../sandbox/index.js';
  * turn a tool call into `executeCode` / `searchCode` and the result back into tool output.
  */
 
+/**
+ * Caps on sandbox work (design §5.2): `executePerMinute` counts `execute` and `search` runs per
+ * principal and instance, and only so many isolates (up to `memoryMb` each) run at once per instance
+ * and in total. Over either cap the run is refused before an isolate is created.
+ */
+export const SANDBOX_CONCURRENCY = { perInstance: 4, total: 16 };
+const running = new Map<string, number>();
+let runningTotal = 0;
+
+function admit(deps: GateDeps, rt: InstanceRuntime, caller: CallerContext): SandboxResult | (() => void) {
+  const who = caller.client.id ?? 'anonymous';
+  if (!deps.limiter.take(`run:${rt.instanceId}:${who}`, rt.settings.executePerMinute, 60_000)) {
+    return {
+      ok: false,
+      error: { code: 'RATE_LIMITED', message: 'Too many search/execute calls; slow down' },
+      logs: [],
+    };
+  }
+  const here = running.get(rt.instanceId) ?? 0;
+  if (here >= SANDBOX_CONCURRENCY.perInstance || runningTotal >= SANDBOX_CONCURRENCY.total) {
+    return { ok: false, error: { code: 'BUSY', message: 'Too many scripts are running; try again shortly' }, logs: [] };
+  }
+  running.set(rt.instanceId, here + 1);
+  runningTotal++;
+  return () => {
+    running.set(rt.instanceId, (running.get(rt.instanceId) ?? 1) - 1);
+    runningTotal--;
+  };
+}
+
 export async function executeCode(
   deps: GateDeps,
   rt: InstanceRuntime,
@@ -25,6 +55,8 @@ export async function executeCode(
   code: string,
   signal?: AbortSignal,
 ): Promise<SandboxResult> {
+  const release = admit(deps, rt, caller);
+  if (typeof release !== 'function') return release;
   // Ends with the sandbox (return, error or timeout) or earlier, when the request or session goes away.
   const run = new AbortController();
   const stop = () => run.abort();
@@ -41,6 +73,7 @@ export async function executeCode(
   } finally {
     stop();
     signal?.removeEventListener('abort', stop);
+    release();
   }
 }
 
@@ -207,12 +240,19 @@ export async function searchCode(
   code: string,
   _signal?: AbortSignal, // search never calls the upstream; same signature as executeCode
 ): Promise<SandboxResult> {
-  const result = await runInSandbox({
-    code,
-    bindings: searchBindings(deps, rt, caller),
-    limits: rt.settings.sandbox,
-    redact: rt.redact,
-  });
+  const release = admit(deps, rt, caller);
+  if (typeof release !== 'function') return release;
+  let result: SandboxResult;
+  try {
+    result = await runInSandbox({
+      code,
+      bindings: searchBindings(deps, rt, caller),
+      limits: rt.settings.sandbox,
+      redact: rt.redact,
+    });
+  } finally {
+    release();
+  }
   writeAudit(
     deps.db,
     {

@@ -19,6 +19,8 @@ import type { SandboxResult } from '../../sandbox/index.js';
  */
 
 const SESSION_IDLE_MS = 30 * 60_000;
+/** Open MCP sessions per authenticated principal; a new one past the cap closes that principal's oldest. */
+export const MAX_SESSIONS_PER_PRINCIPAL = 16;
 const SERVER_VERSION = '0.1.0';
 
 interface Session {
@@ -264,6 +266,12 @@ export class McpEndpoints {
       );
     }
 
+    // One principal can't pile up servers: past the cap, its least recently used session goes.
+    const mine = [...this.sessions].filter(([, s]) => s.principal === auth.identity.principal);
+    if (mine.length >= MAX_SESSIONS_PER_PRINCIPAL) {
+      const [oldest] = mine.sort(([, a], [, b]) => a.lastSeen - b.lastSeen)[0]!;
+      await this.closeSession(oldest);
+    }
     const closed = new AbortController();
     const server = this.buildServer(instance.id, auth.identity, publicMcpBase(this.ctx, c), closed.signal);
     const transport = new WebStandardStreamableHTTPServerTransport({

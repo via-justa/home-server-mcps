@@ -16,6 +16,7 @@ export const InstanceSettingsSchema = z
      * its own writes. URL prompts (a signed-in human on the approval page) always work.
      */
     formElicitationApprovals: z.enum(['off', 'writes']).default('off'),
+    /** `execute` and `search` runs per minute, per principal (design §5.2). */
     executePerMinute: z.number().int().min(1).max(10_000).default(30),
     writesPerMinute: z.number().int().min(1).max(10_000).default(10),
     sandbox: z

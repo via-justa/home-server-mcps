@@ -13,6 +13,7 @@ import type { AppContext } from '../src/app.js';
 import { setGroupLevel, updateOperation } from '../src/catalog/groups.js';
 import { loadConfig } from '../src/config/env.js';
 import { auditLog, operations } from '../src/db/schema.js';
+import { MAX_SESSIONS_PER_PRINCIPAL } from '../src/http/mcp/endpoint.js';
 import { startServers } from '../src/server.js';
 import type { RunningServers } from '../src/server.js';
 import { updateSettings } from '../src/settings.js';
@@ -272,6 +273,16 @@ describe('MCP endpoint with bearer tokens', () => {
     expect((await init(`Bearer ${other.token}`)).status).toBe(403);
     ctx.tokens.revoke(other.id);
     expect((await init(`Bearer ${other.token}`)).status).toBe(401);
+  });
+
+  it('caps open sessions per principal, closing the least recently used', async () => {
+    const { token } = ctx.tokens.create({ name: 'many', scope: [instanceId] });
+    const clients = [];
+    for (let i = 0; i <= MAX_SESSIONS_PER_PRINCIPAL; i++) clients.push(await connect('echo', token));
+    // The first session was evicted by the one past the cap; the newest still works.
+    await expect(clients[0]!.listTools()).rejects.toThrow();
+    await expect(clients.at(-1)!.listTools()).resolves.toMatchObject({ tools: expect.any(Array) });
+    for (const c of clients) await c.close().catch(() => undefined);
   });
 
   it('binds sessions to the principal that created them', async () => {
