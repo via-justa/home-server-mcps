@@ -23,6 +23,8 @@ export interface SeerrParams {
 
 const baseKey = (key: string) => key.split('#')[0]!;
 const isPlainObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+const startsScan = (body: unknown) =>
+  body !== undefined && (!isPlainObject(body) || (body.start !== undefined && body.start !== false));
 const str = (v: unknown): string | undefined =>
   typeof v === 'string' && v ? v : typeof v === 'number' ? String(v) : undefined;
 
@@ -200,7 +202,9 @@ export function createSeerrPlugin(): PluginHandlers {
       let key = match.op.key;
       const split = SPLITS[key];
       if (split === '#on-behalf' && (await onBehalf(match.pathParams.requestId!))) key += split;
-      if (split === '#start' && isPlainObject(req.body) && req.body.start === true) key += split;
+      // Seerr starts the scan on any truthy `start`, so only a body that clearly doesn't ask for one
+      // (none, or `start` absent or exactly false) keeps the ordinary key.
+      if (split === '#start' && startsScan(req.body)) key += split;
       return { key, params };
     },
 

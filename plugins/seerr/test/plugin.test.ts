@@ -170,6 +170,22 @@ describe('Seerr plugin', () => {
     ).toEqual({ body: { mediaType: 'tv', mediaId: 1, is4k: true } });
   });
 
+  it('locks a full library scan whenever `start` could be truthy (fail closed)', async () => {
+    const { plugin } = await setup();
+    const key = async (body?: unknown) =>
+      (
+        await resolve(plugin, {
+          method: 'POST',
+          path: '/settings/jellyfin/sync',
+          ...(body === undefined ? {} : { body }),
+        })
+      ).key;
+    for (const body of [{ start: true }, { start: 1 }, { start: 'true' }, { start: null }, 'start', ['start']])
+      expect(await key(body), JSON.stringify(body)).toBe('POST /settings/jellyfin/sync#start');
+    for (const body of [undefined, { cancel: true }, { start: false }, {}])
+      expect(await key(body), JSON.stringify(body)).toBe('POST /settings/jellyfin/sync');
+  });
+
   it('locks approving a request someone else filed, and fails closed when that is unknown', async () => {
     const { plugin, fake } = await setup();
     // Request 8 was filed by the plugin's own user; 7 by Alex.
