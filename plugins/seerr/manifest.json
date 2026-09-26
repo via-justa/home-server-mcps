@@ -146,7 +146,7 @@
     "auth"
   ],
   "network": {
-    "hosts": ["{{connection.baseUrl}}", "https://raw.githubusercontent.com"]
+    "hosts": ["{{connection.baseUrl}}", "https://raw.githubusercontent.com", "{{connection.specBaseUrl}}"]
   },
   "matchProfiles": {
     "media-request": [
