@@ -24,16 +24,21 @@ describe('runInSandbox', () => {
     await expect(run('const x = 1;')).resolves.toMatchObject({ ok: true, value: null });
   });
 
-  it('exposes no Node or network APIs', async () => {
+  it('exposes no Node or network APIs, and no host references', async () => {
+    // `import.meta` is a syntax error in a script.
+    await expect(run(`return typeof import.meta`)).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'SYNTAX_ERROR' },
+    });
     const r = await run(
-      `return [typeof require, typeof process, typeof fetch, typeof import.meta, typeof setTimeout, typeof __hsm, typeof __hsm_call].join(',')`,
+      `return [typeof require, typeof process, typeof fetch, typeof setTimeout, typeof __hsm, typeof __hsm_call, typeof __hsm_log, typeof call, typeof log, typeof bind].join(',')`,
     );
-    // `import.meta` is a syntax error in a script, so check it separately below.
-    expect(r.ok).toBe(false);
-    const r2 = await run(
-      `return [typeof require, typeof process, typeof fetch, typeof setTimeout, typeof __hsm].join(',')`,
+    expect(r).toMatchObject({ ok: true, value: Array(10).fill('undefined').join(',') });
+    // Nothing on the global object is a host reference either.
+    const globals = await run(
+      `return Object.getOwnPropertyNames(globalThis).filter((k) => { const v = globalThis[k]; return v && typeof v === 'object' && typeof v.applySync === 'function'; });`,
     );
-    expect(r2).toMatchObject({ ok: true, value: 'undefined,undefined,undefined,undefined,undefined' });
+    expect(globals).toMatchObject({ ok: true, value: [] });
   });
 
   it('cannot reach the host through binding functions or the constructor chain', async () => {
@@ -144,9 +149,18 @@ describe('runInSandbox', () => {
     await expect(run('return typeof leak')).resolves.toMatchObject({ ok: true, value: 'undefined' });
   });
 
-  it('rejects calls to functions that are not bindings', async () => {
+  it('only offers the bindings it was given, as own properties', async () => {
     const r = await run(`return Object.keys(t);`);
     expect(r).toMatchObject({ ok: true, value: ['call'] });
+    // Namespaces are frozen plain objects: nothing inherited is callable as a binding.
+    const inherited = await run(`return [typeof t.constructor, typeof t.hasOwnProperty, typeof t.__proto__.call];`);
+    expect(inherited).toMatchObject({ ok: true, value: ['function', 'function', 'undefined'] });
+    // Reserved and non-identifier names never become namespaces or functions.
+    const odd = await runInSandbox({
+      code: `return [typeof console.call, typeof globalThis['bad-name']];`,
+      bindings: { console: { call: echo }, 'bad-name': { call: echo } },
+    });
+    expect(odd).toMatchObject({ ok: true, value: ['undefined', 'undefined'] });
   });
 });
 
