@@ -156,6 +156,20 @@ describe('Seerr plugin', () => {
     });
   });
 
+  it('makes the is4k default explicit on media requests, so a "4K: no" rule can match', async () => {
+    const { plugin } = await setup();
+    expect(
+      await resolve(plugin, { method: 'POST', path: '/request', body: { mediaType: 'movie', mediaId: 1 } }),
+    ).toEqual({
+      key: 'POST /request',
+      params: { body: { mediaType: 'movie', mediaId: 1, is4k: false } },
+    });
+    expect(
+      (await resolve(plugin, { method: 'POST', path: '/request', body: { mediaType: 'tv', mediaId: 1, is4k: true } }))
+        .params,
+    ).toEqual({ body: { mediaType: 'tv', mediaId: 1, is4k: true } });
+  });
+
   it('locks approving a request someone else filed, and fails closed when that is unknown', async () => {
     const { plugin, fake } = await setup();
     // Request 8 was filed by the plugin's own user; 7 by Alex.

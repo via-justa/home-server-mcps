@@ -193,6 +193,10 @@ export function createSeerrPlugin(): PluginHandlers {
         ...(req.query && Object.keys(req.query).length ? { query: req.query } : {}),
         ...(req.body !== undefined && method !== 'GET' ? { body: req.body } : {}),
       };
+      // Seerr treats a missing is4k as false. Saying so explicitly lets a media-request rule on
+      // "4K: no" match the call; the request Seerr receives means the same thing.
+      if (match.op.key === 'POST /request' && isPlainObject(params.body) && params.body.is4k === undefined)
+        params.body = { ...params.body, is4k: false };
       let key = match.op.key;
       const split = SPLITS[key];
       if (split === '#on-behalf' && (await onBehalf(match.pathParams.requestId!))) key += split;

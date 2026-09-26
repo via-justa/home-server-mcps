@@ -52,7 +52,7 @@ Access groups are the first OpenAPI tag (`request`, `settings`, `users`, `search
 
 ## Pre-approval rules
 
-`POST /request` offers the `media-request` profile: **4K request** (yes/no) and **media type** (movie, tv). Rules are strict: every other body field (`mediaId`, `seasons`, …) must be allowed with "any value", or the call asks a human. For example, standard-quality movie requests:
+`POST /request` offers the `media-request` profile: **4K request** (yes/no) and **media type** (movie, tv). Rules are strict: every other body field (`mediaId`, `seasons`, …) must be allowed with "any value", or the call asks a human. A request that leaves out `is4k` is sent with `is4k: false` (Seerr's default), so a "4K: no" rule matches it. For example, standard-quality movie requests:
 
 | Field           | Condition |
 | --------------- | --------- |

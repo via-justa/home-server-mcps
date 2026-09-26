@@ -139,7 +139,7 @@ describe.skipIf(!BUILT)('Seerr plugin end to end (fake Seerr)', () => {
       },
     );
     expect(r).toMatchObject({ ok: true, value: { mediaType: 'movie', tmdbId: 550 } });
-    expect(shown[0]).toContain('Seerr POST /request {"mediaType":"movie","mediaId":550}');
+    expect(shown[0]).toContain('Seerr POST /request {"mediaType":"movie","mediaId":550,"is4k":false}');
   });
 
   it('auto-approves standard-quality requests under a media-request rule, and asks for 4K', async () => {
@@ -154,7 +154,7 @@ describe.skipIf(!BUILT)('Seerr plugin end to end (fake Seerr)', () => {
       reason: 'standard movie requests',
     });
     const standard = await run(
-      `return (await seerr.request({ method: 'POST', path: '/request', body: { mediaType: 'movie', mediaId: 551, is4k: false } })).is4k;`,
+      `return (await seerr.request({ method: 'POST', path: '/request', body: { mediaType: 'movie', mediaId: 551 } })).is4k;`,
     );
     expect(standard).toMatchObject({ ok: true, value: false });
     // 4K doesn't match the rule, so a human is asked (and here, nobody can be).
