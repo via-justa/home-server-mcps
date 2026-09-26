@@ -198,7 +198,10 @@ describe('OidcService', () => {
   async function fakeIdp() {
     const { publicKey, privateKey } = await generateKeyPair('RS256');
     const jwk = { ...(await exportJWK(publicKey)), kid: 'k1', alg: 'RS256', use: 'sig' };
-    const codes = new Map<string, { nonce: string; sub: string; email: string; groups: string[] }>();
+    const codes = new Map<
+      string,
+      { nonce: string; sub: string; email: string; groups: string[]; emailVerified?: boolean }
+    >();
     const app = new Hono();
     let issuer = '';
     app.get('/.well-known/openid-configuration', (c) =>
@@ -221,7 +224,7 @@ describe('OidcService', () => {
       const idToken = await new SignJWT({
         nonce: grant.nonce,
         email: grant.email,
-        email_verified: true,
+        ...(grant.emailVerified === undefined ? {} : { email_verified: grant.emailVerified }),
         groups: grant.groups,
       })
         .setProtectedHeader({ alg: 'RS256', kid: 'k1' })
@@ -244,7 +247,7 @@ describe('OidcService', () => {
   async function signIn(
     service: OidcService,
     idp: Awaited<ReturnType<typeof fakeIdp>>,
-    who: { sub: string; email: string; groups?: string[] },
+    who: { sub: string; email: string; groups?: string[]; emailVerified?: boolean | null },
   ) {
     const { url, stateToken } = await service.begin({
       purpose: 'admin_login',
@@ -252,7 +255,14 @@ describe('OidcService', () => {
     });
     const params = new URL(url).searchParams;
     expect(params.get('code_challenge_method')).toBe('S256');
-    idp.codes.set('code-1', { nonce: params.get('nonce')!, sub: who.sub, email: who.email, groups: who.groups ?? [] });
+    idp.codes.set('code-1', {
+      nonce: params.get('nonce')!,
+      sub: who.sub,
+      email: who.email,
+      groups: who.groups ?? [],
+      // null: the IdP leaves the claim out; default: it vouches for the address.
+      emailVerified: who.emailVerified === null ? undefined : (who.emailVerified ?? true),
+    });
     const callback = new URL(
       `https://admin.lan/auth/oidc/callback?code=code-1&state=${params.get('state')}&iss=${encodeURIComponent(idp.issuer)}`,
     );
@@ -293,6 +303,31 @@ describe('OidcService', () => {
     const second = await signIn(service, idp, { sub: 'u-2', email: 'new.person@example.com', groups: ['admins'] });
     const provisioned = await service.resolveUser(t.users, second.identity);
     expect(provisioned).toMatchObject({ username: 'new.person', oidcSubject: 'u-2' });
+  });
+
+  it('uses an email only when the IdP marks it verified', async () => {
+    const t = setup();
+    const idp = await fakeIdp();
+    const service = new OidcService(t.db, t.box, randomBytes(32), true);
+    service.updateSettings({
+      enabled: true,
+      issuer: idp.issuer,
+      clientId: 'portal',
+      clientSecret: 'shh',
+      autoProvision: true,
+      allowPolicy: { emails: ['admin@example.com'], subjects: [], group: '', groupsClaim: 'groups' },
+    });
+    for (const emailVerified of [null, false] as const) {
+      const { identity } = await signIn(service, idp, {
+        sub: `u-${emailVerified}`,
+        email: 'admin@example.com',
+        emailVerified,
+      });
+      expect(identity.email).toBeUndefined();
+      expect(await service.resolveUser(t.users, identity)).toBeNull();
+    }
+    const { identity } = await signIn(service, idp, { sub: 'u-ok', email: 'admin@example.com' });
+    expect(await service.resolveUser(t.users, identity)).toMatchObject({ oidcSubject: 'u-ok' });
   });
 
   it('rejects tampered or replayed state', async () => {

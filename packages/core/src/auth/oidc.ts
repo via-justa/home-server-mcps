@@ -218,7 +218,8 @@ export class OidcService {
     const identity: OidcIdentity = {
       issuer: claims.iss,
       subject: claims.sub,
-      email: typeof claims.email === 'string' && claims.email_verified !== false ? claims.email : undefined,
+      // Only an email the IdP vouches for counts: many IdPs omit the claim or let users set any address.
+      email: typeof claims.email === 'string' && claims.email_verified === true ? claims.email : undefined,
       username: typeof claims.preferred_username === 'string' ? claims.preferred_username : undefined,
       groups: Array.isArray(rawGroups) ? rawGroups.map(String) : [],
     };
