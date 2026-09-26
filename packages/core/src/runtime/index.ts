@@ -23,15 +23,25 @@ export async function executeCode(
   rt: InstanceRuntime,
   caller: CallerContext,
   code: string,
+  signal?: AbortSignal,
 ): Promise<SandboxResult> {
-  const result = await runInSandbox({
-    code,
-    bindings: createGateBindings(deps, rt, caller),
-    limits: rt.settings.sandbox,
-    // Each gated call's result was already redacted; this covers anything the script derived or logged.
-    redact: rt.redact,
-  });
-  return result;
+  // Ends with the sandbox (return, error or timeout) or earlier, when the request or session goes away.
+  const run = new AbortController();
+  const stop = () => run.abort();
+  signal?.addEventListener('abort', stop);
+  if (signal?.aborted) stop();
+  try {
+    return await runInSandbox({
+      code,
+      bindings: createGateBindings(deps, rt, caller, run.signal),
+      limits: rt.settings.sandbox,
+      // Each gated call's result was already redacted; this covers anything the script derived or logged.
+      redact: rt.redact,
+    });
+  } finally {
+    stop();
+    signal?.removeEventListener('abort', stop);
+  }
 }
 
 type OperationRow = typeof operations.$inferSelect;
@@ -195,6 +205,7 @@ export async function searchCode(
   rt: InstanceRuntime,
   caller: CallerContext,
   code: string,
+  _signal?: AbortSignal, // search never calls the upstream; same signature as executeCode
 ): Promise<SandboxResult> {
   const result = await runInSandbox({
     code,

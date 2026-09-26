@@ -335,6 +335,44 @@ describe('execute → gate → plugin', () => {
     });
   });
 
+  describe('ending an execution', () => {
+    it('refuses calls the script left behind once it has returned', async () => {
+      const t = await setup();
+      t.setLevel('write');
+      const r = await t.exec(`echo.call('echo.set', { name: 'x' }); return 'returned';`);
+      expect(r).toMatchObject({ ok: true, value: 'returned' });
+      await waitFor(() => t.audits().length === 1);
+      expect(t.audits()[0]).toMatchObject({ operationKey: 'echo.set', decision: 'rejected:execution_ended' });
+    });
+
+    it('never leaves an approval open for a script that returned', async () => {
+      const t = await setup();
+      t.setLevel('ask');
+      const client = urlClient();
+      const r = await t.exec(`echo.call('echo.set', { name: 'x' }); return 'returned';`, client.prompts);
+      expect(r).toMatchObject({ ok: true, value: 'returned' });
+      await waitFor(() => t.audits().length === 1);
+      expect(t.audits()[0]).toMatchObject({ decision: 'rejected:execution_ended' });
+      expect(t.pending()).toEqual([]);
+    });
+
+    it('ends when the MCP request is cancelled while an approval is open', async () => {
+      const t = await setup();
+      t.setLevel('ask');
+      const abort = new AbortController();
+      const client = urlClient(() => abort.abort());
+      const r = await executeCode(
+        t.deps,
+        t.rt,
+        t.caller(client.prompts),
+        `await echo.call('echo.set', { name: 'x' });`,
+        abort.signal,
+      );
+      expect(r).toMatchObject({ ok: false, error: { code: 'EXECUTION_ENDED' } });
+      expect(t.db.select().from(pendingApprovals).get()?.status).toBe('cancelled');
+    });
+  });
+
   describe('locked operations', () => {
     it('stay unreachable until the operation itself is set to Ask', async () => {
       const t = await setup();

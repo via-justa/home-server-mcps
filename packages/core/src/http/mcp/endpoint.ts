@@ -24,6 +24,8 @@ const SERVER_VERSION = '0.1.0';
 interface Session {
   transport: WebStandardStreamableHTTPServerTransport;
   server: McpServer;
+  /** Aborted when the session closes: its executions end and their open approvals are cancelled. */
+  closed: AbortController;
   instanceId: string;
   principal: string;
   lastSeen: number;
@@ -122,6 +124,7 @@ export class McpEndpoints {
     const s = this.sessions.get(id);
     if (!s) return;
     this.sessions.delete(id);
+    s.closed.abort();
     await s.transport.close().catch(() => undefined);
     await s.server.close().catch(() => undefined);
   }
@@ -131,7 +134,7 @@ export class McpEndpoints {
     await Promise.all([...this.sessions.keys()].map((id) => this.closeSession(id)));
   }
 
-  private buildServer(instanceId: string, identity: McpIdentity, publicBase: string): McpServer {
+  private buildServer(instanceId: string, identity: McpIdentity, publicBase: string, closed: AbortSignal): McpServer {
     const rt = () => this.ctx.instances.runtime(instanceId);
     const manifest = rt().manifest;
     const server = new McpServer(
@@ -181,7 +184,7 @@ export class McpEndpoints {
       prompts: prompts(),
     });
 
-    const run = async (fn: typeof searchCode, code: string, sessionId: string | undefined) => {
+    const run = async (fn: typeof searchCode, code: string, sessionId: string | undefined, request: AbortSignal) => {
       try {
         await this.ctx.instances.ensureFresh(instanceId);
       } catch (err) {
@@ -191,7 +194,9 @@ export class McpEndpoints {
           logs: [],
         });
       }
-      return toolText(await fn(this.ctx.gateDeps(), rt(), caller(sessionId), code));
+      // A cancelled request or a closed session ends the run: nothing it queued may run afterwards.
+      const signal = AbortSignal.any([request, closed]);
+      return toolText(await fn(this.ctx.gateDeps(), rt(), caller(sessionId), code, signal));
     };
 
     const input = {
@@ -209,7 +214,7 @@ export class McpEndpoints {
         inputSchema: input,
         annotations: { readOnlyHint: true, openWorldHint: false },
       },
-      ({ code }, extra) => run(searchCode, code, extra.sessionId),
+      ({ code }, extra) => run(searchCode, code, extra.sessionId, extra.signal),
     );
     server.registerTool(
       'execute',
@@ -220,7 +225,7 @@ export class McpEndpoints {
         // Hints for clients that confirm tool calls themselves; the gate never relies on them.
         annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
       },
-      ({ code }, extra) => run(executeCode, code, extra.sessionId),
+      ({ code }, extra) => run(executeCode, code, extra.sessionId, extra.signal),
     );
     return server;
   }
@@ -259,13 +264,15 @@ export class McpEndpoints {
       );
     }
 
-    const server = this.buildServer(instance.id, auth.identity, publicMcpBase(this.ctx, c));
+    const closed = new AbortController();
+    const server = this.buildServer(instance.id, auth.identity, publicMcpBase(this.ctx, c), closed.signal);
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (id) => {
         this.sessions.set(id, {
           transport,
           server,
+          closed,
           instanceId: instance.id,
           principal: auth.identity.principal,
           lastSeen: Date.now(),

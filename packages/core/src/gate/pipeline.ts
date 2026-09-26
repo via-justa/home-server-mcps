@@ -102,14 +102,24 @@ const DENIAL_MESSAGES: Record<string, string> = {
   confirmation_mismatch: 'was denied (confirmation mismatch)',
 };
 
+/**
+ * The gate bindings for one `execute` run. `signal` ends the run: once it is aborted (the sandbox
+ * settled, the MCP request was cancelled, or the session closed), calls the script left behind are
+ * refused and an approval still open is cancelled, so nothing runs after the tool call has returned.
+ */
 export function createGateBindings(
   deps: GateDeps,
   rt: InstanceRuntime,
   caller: CallerContext,
+  signal: AbortSignal = new AbortController().signal,
 ): Record<string, Record<string, Binding>> {
   const now = deps.now ?? (() => new Date());
   const executionId = randomUUID();
   let queue: Promise<unknown> = Promise.resolve();
+  const openApprovals = new Set<string>();
+  signal.addEventListener('abort', () => {
+    for (const id of openApprovals) deps.approvals.cancel(id, 'execution_ended');
+  });
 
   const serialized =
     (fn: string): Binding =>
@@ -148,7 +158,16 @@ export function createGateBindings(
       throw err;
     };
 
+    const ensureRunning = () => {
+      if (signal.aborted)
+        reject(
+          'rejected:execution_ended',
+          new BindingError('EXECUTION_ENDED', 'The execute call this belongs to has already ended'),
+        );
+    };
+
     try {
+      ensureRunning();
       if (!deps.limiter.take(`exec:${rt.instanceId}`, rt.settings.executePerMinute, 60_000)) {
         reject('rejected:rate_limited', new BindingError('RATE_LIMITED', 'Too many calls on this endpoint; slow down'));
       }
@@ -267,6 +286,7 @@ export function createGateBindings(
               new BindingError('PLUGIN_ERROR', `The plugin did not provide a confirmation value for ${operation.key}`),
             );
           }
+          ensureRunning();
           const paramsHash = sha256Hex(
             canonicalJson({ key: operation.key, params, targets, expectedHash: expectedHash ?? null }),
           );
@@ -290,14 +310,17 @@ export function createGateBindings(
               rt.settings.formElicitationApprovals === 'writes' && !operation.locked && !operation.typedConfirmation,
           });
           audit.detail.approvalId = request.id;
+          openApprovals.add(request.id);
           budget.pause();
           try {
             approval = await request.decision;
           } finally {
+            openApprovals.delete(request.id);
             budget.resume();
           }
           audit.decidedBy = approval.decidedBy;
           audit.decidedVia = approval.via;
+          if (approval.outcome === 'cancelled' && signal.aborted) ensureRunning();
           if (approval.outcome !== 'approved') {
             const label = approval.outcome === 'timed_out' ? 'timed-out' : 'denied';
             reject(
@@ -323,6 +346,7 @@ export function createGateBindings(
       }
 
       // 8. The real upstream call, within what's left of the sandbox budget.
+      ensureRunning();
       const remaining = Math.max(1, budget.remainingMs());
       const result = await rt
         .plugin()

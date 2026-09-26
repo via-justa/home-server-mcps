@@ -256,6 +256,14 @@ export class ApprovalService {
     return decision;
   }
 
+  /** Cancels one open request (its execution ended). Returns false if it was already decided. */
+  cancel(id: string, reason: string): boolean {
+    const live = this.live.get(id);
+    if (!live) return false;
+    live.settle({ outcome: 'cancelled', reason });
+    return true;
+  }
+
   /** Cancels every open request (shutdown). Cancelled calls are denied to the sandbox. */
   cancelAll(reason = 'shutdown') {
     for (const live of [...this.live.values()]) live.settle({ outcome: 'cancelled', reason });
