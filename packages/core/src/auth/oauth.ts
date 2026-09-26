@@ -482,7 +482,9 @@ export class OAuthService {
     const bySlug = new Map(instances.map((i) => [i.slug, i.id]));
     let n = 0;
     for (const g of this.db.select().from(oauthGrants).where(isNull(oauthGrants.instanceIds)).all()) {
-      const ids = g.resources.map((r) => bySlug.get(new URL(r).pathname.replace(/^\/+/, '')) ?? '');
+      // The slug is the last path segment: PUBLIC_MCP_URL may carry a path (`https://host/mcp/<slug>`).
+      const slugOf = (r: string) => new URL(r).pathname.split('/').filter(Boolean).at(-1) ?? '';
+      const ids = g.resources.map((r) => bySlug.get(slugOf(r)) ?? '');
       this.db.update(oauthGrants).set({ instanceIds: ids }).where(eq(oauthGrants.id, g.id)).run();
       n++;
     }

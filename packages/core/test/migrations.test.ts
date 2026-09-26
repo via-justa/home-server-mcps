@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
+import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -110,9 +111,16 @@ describe('grant instance binding backfill', () => {
         resources: ['https://mcp.example/nas', 'https://mcp.example/gone'],
       })
       .run();
+    // PUBLIC_MCP_URL with a path: the slug is still the last segment.
+    db.insert(schema.oauthGrants)
+      .values({ id: 'g2', clientId: 'c1', userId: 'u1', resources: ['https://example.com/mcp/nas'] })
+      .run();
     const oauth = new OAuthService(db);
-    expect(oauth.backfillInstanceIds([{ id: instanceId, slug: 'nas' }])).toBe(1);
-    expect(db.select().from(schema.oauthGrants).get()?.instanceIds).toEqual([instanceId, '']);
+    expect(oauth.backfillInstanceIds([{ id: instanceId, slug: 'nas' }])).toBe(2);
+    const ids = (id: string) =>
+      db.select().from(schema.oauthGrants).where(eq(schema.oauthGrants.id, id)).get()?.instanceIds;
+    expect(ids('g1')).toEqual([instanceId, '']);
+    expect(ids('g2')).toEqual([instanceId]);
     expect(oauth.backfillInstanceIds([{ id: instanceId, slug: 'nas' }])).toBe(0); // only once
   });
 });
