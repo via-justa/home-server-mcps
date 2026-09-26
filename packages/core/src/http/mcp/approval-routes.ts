@@ -101,14 +101,18 @@ export function registerApprovalRoutes(app: Hono, ctx: AppContext) {
 
     if (approve && needsTotp(session, data)) {
       const user = session.user;
-      if (ctx.throttle.lockedFor(user.username) > 0)
+      if (ctx.throttle.lockedFor(user.username, 'mcp') > 0)
         return render(c, token, data, session, 'Too many attempts; try again later.');
       if (ctx.users.verifySecondFactor(user.id, String(body.totp ?? '')) !== 'totp') {
-        if (ctx.throttle.fail(user.username))
-          ctx.events.emit('auth.lockout', { username: user.username, ip: clientIp(c, ctx.config.TRUST_PROXY) });
+        if (ctx.throttle.fail(user.username, 'mcp'))
+          ctx.events.emit('auth.lockout', {
+            username: user.username,
+            ip: clientIp(c, ctx.config.TRUST_PROXY),
+            surface: 'mcp',
+          });
         return render(c, token, data, session, 'Enter a valid authenticator code to approve.');
       }
-      ctx.throttle.succeed(user.username);
+      ctx.throttle.succeed(user.username, 'mcp');
       recordTotpProof(ctx, session.idHash);
     }
 

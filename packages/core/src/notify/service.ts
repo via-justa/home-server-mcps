@@ -288,8 +288,8 @@ export class NotifierService {
         void this.dispatch({
           event: 'auth.lockout',
           title: 'Sign-in locked',
-          message: `Too many failed sign-ins for "${p.username}"${p.ip ? ` from ${p.ip}` : ''}.`,
-          data: { username: p.username, ip: p.ip ?? null },
+          message: `Too many failed sign-ins for "${p.username}" on the ${p.surface === 'mcp' ? 'MCP (internet-facing)' : 'admin'} sign-in page${p.ip ? ` from ${p.ip}` : ''}.`,
+          data: { username: p.username, ip: p.ip ?? null, surface: p.surface ?? 'admin' },
         }),
     );
     return () => {

@@ -517,7 +517,7 @@ It is applied (a) to results returned to the model, (b) to everything written to
   - **Break-glass.** Local password login always remains available unless `security.disableLocalLogin = true`. That setting can only be saved while at least one OIDC-linked user exists, and it can be reverted with the env var `ADMIN_FORCE_LOCAL_LOGIN=true`.
 - **Sessions.** Stored server-side (`sessions` table, random 256-bit ID, stored hashed). Cookie: `__Host-hsm_admin` (`Secure` when behind TLS, `HttpOnly`, `SameSite=Strict`, `Path=/`). Idle timeout 30 min, absolute 12 h. Logout deletes the row. Changing a password revokes the user's other sessions.
 - **CSRF.** A double-submit token: a non-HttpOnly `hsm_csrf` cookie plus an `X-CSRF-Token` header on every state-changing `/api/*` request. `Origin` is also checked against `PUBLIC_ADMIN_URL` when that is set.
-- **Brute-force protection.** 5 failed logins per username per 15 min triggers a 15 min lockout. There is also a per-IP token bucket on `/auth/*` and `/api/instances/:id/connection/test` (the credential-testing-oracle concern from TN §4). Login failures are audited as `auth` events.
+- **Brute-force protection.** 5 failed logins per username per 15 min triggers a 15 min lockout, counted **per surface**: failures on the internet-facing MCP-port sign-in lock the username there only, never out of the LAN admin portal. There is also a per-IP token bucket on `/auth/*` and `/api/instances/:id/connection/test` (the credential-testing-oracle concern from TN §4). Login failures are audited as `auth` events.
 
 ### 6.2 MCP endpoint authentication (port 8080)
 

@@ -333,12 +333,12 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
     if (!localLoginEnabled(ctx)) return renderLogin(ctx, c, continueTo, 'Sign in', 'Use single sign-on.', 401);
     const ip = clientIp(c, ctx.config.TRUST_PROXY);
     const username = String(body.username ?? '').slice(0, 64);
-    if (!ctx.throttle.allowIp(ip) || ctx.throttle.lockedFor(username) > 0) {
+    if (!ctx.throttle.allowIp(ip) || ctx.throttle.lockedFor(username, 'mcp') > 0) {
       return renderLogin(ctx, c, continueTo, 'Sign in', 'Too many attempts; try again later.', 429);
     }
     const user = await ctx.users.verifyPassword(username, String(body.password ?? '').slice(0, 1024));
     if (!user) {
-      if (ctx.throttle.fail(username)) ctx.events.emit('auth.lockout', { username, ip });
+      if (ctx.throttle.fail(username, 'mcp')) ctx.events.emit('auth.lockout', { username, ip, surface: 'mcp' });
       writeAudit(ctx.db, {
         kind: 'auth',
         decision: 'login_failed',
@@ -358,7 +358,7 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
         csrf: uiCsrf(ctx, c),
       });
     }
-    ctx.throttle.succeed(username);
+    ctx.throttle.succeed(username, 'mcp');
     startUiSession(ctx, c, user.id, 'password');
     return c.redirect(continueTo, 303);
   });
@@ -373,13 +373,13 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
     if (!checkUiCsrf(c, body.csrf) || !pending)
       return renderLogin(ctx, c, continueTo, 'Sign in', 'Your sign-in expired; try again.', 401);
     const user = ctx.users.get(pending.mfaUser);
-    if (ctx.throttle.lockedFor(user.username) > 0)
+    if (ctx.throttle.lockedFor(user.username, 'mcp') > 0)
       return renderLogin(ctx, c, continueTo, 'Sign in', 'Too many attempts; try again later.', 429);
     if (!ctx.users.verifySecondFactor(user.id, String(body.code ?? ''))) {
-      ctx.throttle.fail(user.username);
+      ctx.throttle.fail(user.username, 'mcp');
       return totpPage(c, { mfa: String(body.mfa), continueTo, csrf: uiCsrf(ctx, c), error: 'Invalid code.' }, 401);
     }
-    ctx.throttle.succeed(user.username);
+    ctx.throttle.succeed(user.username, 'mcp');
     startUiSession(ctx, c, user.id, 'password+totp');
     return c.redirect(continueTo, 303);
   });

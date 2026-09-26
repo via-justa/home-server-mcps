@@ -9,7 +9,7 @@ export interface CoreEventMap {
   'plugin.crashed': [{ instanceId: string; slug: string; error: string }];
   'sync.completed': [{ instanceId: string; slug: string; added: number; pendingReview: string[]; newGroups: string[] }];
   'sync.failed': [{ instanceId: string; slug: string; error: string }];
-  'auth.lockout': [{ username: string; ip?: string }];
+  'auth.lockout': [{ username: string; ip?: string; surface?: 'admin' | 'mcp' }];
 }
 
 export type CoreEventName = keyof CoreEventMap;

@@ -167,6 +167,14 @@ describe('SessionService', () => {
 });
 
 describe('LoginThrottle', () => {
+  it('counts MCP-port failures separately, so the internet cannot lock the admin portal', () => {
+    const throttle = new LoginThrottle();
+    for (let i = 0; i < 5; i++) throttle.fail('admin', 'mcp');
+    expect(throttle.lockedFor('admin', 'mcp')).toBeGreaterThan(0);
+    expect(throttle.lockedFor('admin')).toBe(0);
+    expect(throttle.lockedFor('admin', 'admin')).toBe(0);
+  });
+
   it('locks a username after 5 failures for 15 minutes and limits IPs', () => {
     let now = 0;
     const throttle = new LoginThrottle({ ipLimit: 3 }, () => now);
