@@ -227,11 +227,14 @@ describe('plugin repositories', () => {
       repoId: repo.id,
       signatureVerified: true,
       sha256: sha(v1),
-      enabled: true,
+      // A new install waits for the admin to review and enable it (review L7).
+      enabled: false,
       status: 'ok',
     });
     expect(existsSync(path.join(t.dataDir, 'plugins/echo/manifest.json'))).toBe(true);
     expect(t.fetched).toContain('https://plugins.example.com/echo-1.0.0.tgz');
+    const pluginRow = t.ctx.db.select().from(plugins).where(eq(plugins.pluginId, 'echo')).get()!;
+    expect((await t.b.patch(`/api/plugins/${pluginRow.id}`, { enabled: true })).status).toBe(200);
 
     // The installed plugin actually runs.
     const inst = await t.ctx.instances.create({ pluginId: 'echo', slug: 'echo', connection: {} });
@@ -252,8 +255,34 @@ describe('plugin repositories', () => {
     ]);
     expect(
       await (await t.b.post('/api/plugins/install', { repoId: repo.id, pluginId: 'echo', version: '1.1.0' })).json(),
-    ).toMatchObject({ version: '1.1.0' });
+    ).toMatchObject({ version: '1.1.0', enabled: true });
     expect(t.ctx.instances.status(inst.id)).toBe('ready');
+
+    // 1.2.0 asks for more network hosts: it installs disabled until the admin reviews it (review L7).
+    const v12 = echoTarball('1.2.0', (dir) => {
+      const m = JSON.parse(readFileSync(path.join(dir, 'manifest.json'), 'utf8')) as Record<string, unknown>;
+      writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ ...m, network: { hosts: ['*.example.net'] } }));
+    });
+    t.files.set('https://plugins.example.com/echo-1.2.0.tgz', v12);
+    t.publish(
+      indexFor(key, [
+        { version: '1.0.0', tarball: v1 },
+        { version: '1.1.0', tarball: v11 },
+        { version: '1.2.0', tarball: v12 },
+      ]),
+    );
+    await t.b.post(`/api/plugin-repos/${repo.id}/refresh`);
+    expect(
+      await (await t.b.post('/api/plugins/install', { repoId: repo.id, pluginId: 'echo', version: '1.2.0' })).json(),
+    ).toMatchObject({ version: '1.2.0', enabled: false });
+    expect(t.ctx.instances.status(inst.id)).toBe('stopped');
+    const held = t.ctx.db
+      .select()
+      .from(auditLog)
+      .all()
+      .filter((a) => a.decision === 'plugin_updated')
+      .at(-1);
+    expect(held?.detail).toMatchObject({ version: '1.2.0', enabled: false, needsReview: ['network.hosts'] });
 
     // Uninstall is blocked while endpoints use the plugin, and the repo while plugins come from it.
     expect(await (await t.b.del('/api/plugins/echo')).json()).toMatchObject({ error: 'plugin_has_instances' });
@@ -273,6 +302,8 @@ describe('plugin repositories', () => {
     expect(decisions).toEqual([
       'plugin_repo_added',
       'plugin_installed',
+      'plugin_enabled',
+      'plugin_updated',
       'plugin_updated',
       'plugin_uninstalled',
       'plugin_repo_removed',

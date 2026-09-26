@@ -96,6 +96,28 @@ export interface RepoServiceOptions {
   startPlugin: (pluginRowId: string) => Promise<void>;
 }
 
+/** The parts of a manifest that change what a plugin may do; an update touching them needs review. */
+export function permissionChanges(before: unknown, after: unknown): string[] {
+  const b = (before ?? {}) as Record<string, unknown>;
+  const a = (after ?? {}) as Record<string, unknown>;
+  const pick: Record<string, (m: Record<string, unknown>) => unknown> = {
+    binding: (m) => m.binding,
+    capabilities: (m) => m.capabilities,
+    sensitiveKeys: (m) => [...((m.sensitiveKeys as string[] | undefined) ?? [])].sort(),
+    'network.hosts': (m) => [...(((m.network as { hosts?: string[] } | undefined)?.hosts ?? []) as string[])].sort(),
+  };
+  return Object.entries(pick)
+    .filter(([, get]) => canonical(get(b)) !== canonical(get(a)))
+    .map(([name]) => name);
+}
+
+const canonical = (v: unknown): string =>
+  JSON.stringify(v, (_k, x: unknown) =>
+    x && typeof x === 'object' && !Array.isArray(x)
+      ? Object.fromEntries(Object.entries(x).sort(([p], [q]) => p.localeCompare(q)))
+      : x,
+  ) ?? 'null';
+
 /**
  * Replaces `target` with `next`, keeping the previous copy at `backup` until the swap succeeded. If
  * moving `next` in fails, the previous copy is moved back, so a failed update never leaves no plugin.
@@ -588,9 +610,13 @@ export class PluginRepoService {
       this.opts.discover();
 
       const row = this.db.select().from(plugins).where(eq(plugins.pluginId, input.pluginId)).get()!;
+      // New installs start disabled, and an update that changes what the plugin may do is disabled
+      // again: enabling it is the admin's review of its binding, capabilities and hosts (design §4.2).
+      const review = current ? permissionChanges(current.manifest, inspected.manifest) : [];
+      const enabled = current ? current.enabled && review.length === 0 : false;
       this.db.transaction((tx) => {
         tx.update(plugins)
-          .set({ repoId: repo.id, sha256, signatureVerified, ...(current ? {} : { enabled: true }) })
+          .set({ repoId: repo.id, sha256, signatureVerified, enabled })
           .where(eq(plugins.id, row.id))
           .run();
         writeAudit(tx, {
@@ -605,10 +631,12 @@ export class PluginRepoService {
             repo: repo.url,
             sha256,
             signatureVerified,
+            enabled,
+            ...(review.length ? { needsReview: review } : {}),
           },
         });
       });
-      await this.opts.startPlugin(row.id);
+      if (enabled) await this.opts.startPlugin(row.id);
       return this.db.select().from(plugins).where(eq(plugins.id, row.id)).get()!;
     } finally {
       rmSync(work, { recursive: true, force: true });
