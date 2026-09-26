@@ -68,6 +68,11 @@ const handlers = {
       }
     };
     if (params.action === 'context') return reply(id, context);
+    // The upstream was upgraded while the plugin kept running (mid-session version recheck).
+    if (params.action === 'set-version') {
+      config = { ...config, version: params.version };
+      return reply(id, config.version);
+    }
     switch (params.action) {
       case 'env':
         return reply(id, Object.keys(process.env).sort());

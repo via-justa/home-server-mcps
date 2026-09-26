@@ -31,7 +31,7 @@ const waitFor = async (pred: () => boolean, ms = 3000) => {
   }
 };
 
-function setup() {
+function setup(opts: { versionCheckIntervalMs?: number } = {}) {
   const db = openDatabase(':memory:');
   syncPluginRegistry(db, discoverPlugins([{ dir: PLUGINS, source: 'core' }]), { autoEnableCore: true });
   const events = new CoreEvents();
@@ -45,7 +45,7 @@ function setup() {
     secrets,
     events,
     supervisor: { backoff: { initialMs: 20, maxMs: 100 }, initTimeoutMs: 2000, rpcTimeoutMs: 5000 },
-    versionCheckIntervalMs: 0,
+    versionCheckIntervalMs: opts.versionCheckIntervalMs ?? 0,
   });
   cleanup.push(() => manager.stopAll());
   return { db, manager, events, seen, secrets };
@@ -194,6 +194,49 @@ describe('InstanceManager', () => {
     expect(everything).toContain('401 for token [REDACTED]');
     expect(everything).toContain('sync refused for [REDACTED]');
     expect(everything).not.toContain(token);
+  });
+
+  it('rechecks the upstream version mid-session only after the interval, and syncs on a change (test gap 12)', async () => {
+    const t = setup({ versionCheckIntervalMs: 200 });
+    const inst = await create(t.manager, { version: '1.0' });
+    await t.manager.ensureFresh(inst.id);
+    const syncs = () => t.seen.filter((e) => e.name === 'sync.completed').length;
+    const before = syncs();
+
+    // The upstream is upgraded while the session runs.
+    await t.manager
+      .runtime(inst.id)
+      .plugin()
+      .call('invoke', {
+        key: 'k',
+        params: { action: 'set-version', version: '2.0' },
+        context: { callId: 'c', deadlineMs: 1000 },
+      });
+    await t.manager.ensureFresh(inst.id);
+    expect(syncs()).toBe(before); // within the interval: no version check at all
+    expect(t.manager.get(inst.id).upstreamVersion).toBe('1.0');
+
+    await new Promise((r) => setTimeout(r, 250));
+    await t.manager.ensureFresh(inst.id);
+    expect(syncs()).toBe(before + 1);
+    expect(t.manager.get(inst.id).upstreamVersion).toBe('2.0');
+  });
+
+  it('staggers the daily backstop sync by the last sync of each instance (test gap 12)', async () => {
+    const t = setup();
+    const fresh = await create(t.manager, {}, 'fresh');
+    const old = await create(t.manager, {}, 'old');
+    await t.manager.syncNow(fresh.id);
+    await t.manager.syncNow(old.id);
+    t.db
+      .update(pluginInstances)
+      .set({ lastSyncedAt: new Date(Date.now() - 25 * 60 * 60_000) })
+      .where(eq(pluginInstances.id, old.id))
+      .run();
+    t.seen.length = 0;
+    await t.manager.syncStale();
+    const synced = t.seen.filter((e) => e.name === 'sync.completed').map((e) => (e.payload as { slug: string }).slug);
+    expect(synced).toEqual(['old']);
   });
 
   it('shares one sync between concurrent callers', async () => {
