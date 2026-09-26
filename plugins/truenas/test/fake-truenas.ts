@@ -104,6 +104,10 @@ export const METHODS: Record<string, MethodInfo> = {
   'core.debug': { description: 'Attach a remote debugger.' },
   'service.restart': { description: 'Restart a service.', accepts: [{ type: 'string', title: 'service' }], job: true },
   'kerberos.keytab.kerberos_principal_choices': { description: 'Principals.' },
+  'kerberos.keytab.query': { description: 'Query keytabs.' },
+  'ups.config': { description: 'UPS settings.' },
+  'snmp.config': { description: 'SNMP settings.' },
+  'ssh.config': { description: 'SSH settings.' },
   'vm.get_console': { description: 'An oddly named method.' },
 };
 
@@ -197,6 +201,16 @@ export async function startFakeTrueNas(opts: { jobDelayMs?: number } = {}): Prom
     'sharing.smb.query': () => [
       { id: 1, name: 'media', path: '/mnt/tank/media', auxsmbconf: '', password: 'share-secret-123' },
     ],
+    // Secret-bearing reads (review of PR #8): each field name must come back redacted.
+    'ups.config': () => ({ id: 1, monuser: 'upsmon', monpwd: 'ups-secret-456' }),
+    'snmp.config': () => ({ id: 1, community: 'snmp-secret-789', v3: false }),
+    'ssh.config': () => ({
+      id: 1,
+      tcpport: 22,
+      host_ed25519_key: 'ssh-secret-key',
+      host_ed25519_key_pub: 'ssh-ed25519 AAAA',
+    }),
+    'kerberos.keytab.query': () => [{ id: 1, name: 'AD_MACHINE_ACCOUNT', file: 'keytab-secret-b64' }],
     'core.get_jobs': ([filters]) => {
       const id = ((filters as unknown[][])[0] ?? [])[2];
       const j = jobs.get(Number(id));

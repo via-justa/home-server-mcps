@@ -133,9 +133,10 @@ export function createTrueNasPlugin(): PluginHandlers {
       const args = Array.isArray(params) ? params : params === undefined ? [] : [params];
       const known = catalog ?? (await loadCatalog());
       const timeout = Math.max(1000, context.deadlineMs);
-      return known.jobs.has(method)
-        ? connected().callJob(method, args, timeout)
-        : connected().call(method, args, timeout);
+      const result = known.jobs.has(method)
+        ? await connected().callJob(method, args, timeout)
+        : await connected().call(method, args, timeout);
+      return method.startsWith('kerberos.keytab.') ? maskKeytabs(result) : result;
     },
 
     async optionsFor({ source, query }) {
@@ -154,6 +155,18 @@ export function createTrueNasPlugin(): PluginHandlers {
       client?.close();
     },
   };
+}
+
+/**
+ * Keytab rows carry the keytab itself under `file`. Core redacts by key name, and `file` is too
+ * common to add to `sensitiveKeys` (it would hide ordinary paths), so it is masked here.
+ */
+function maskKeytabs(result: unknown): unknown {
+  const mask = (row: unknown) =>
+    row && typeof row === 'object' && !Array.isArray(row) && (row as Record<string, unknown>).file
+      ? { ...row, file: '[REDACTED]' }
+      : row;
+  return Array.isArray(result) ? result.map(mask) : mask(result);
 }
 
 function stringOr(value: unknown): string | undefined {

@@ -116,6 +116,13 @@ describe('TrueNAS plugin', () => {
     expect(fake.calls.at(-1)).toEqual({ method: 'filesystem.setacl', params: [{ path: '/mnt/tank' }] });
   });
 
+  it('masks the keytab contents, which core cannot recognize by key name', async () => {
+    const { plugin } = await setup();
+    expect(await invoke(plugin, 'kerberos.keytab.query', [])).toEqual([
+      { id: 1, name: 'AD_MACHINE_ACCOUNT', file: '[REDACTED]' },
+    ]);
+  });
+
   it('surfaces a permission denial as UPSTREAM_DENIED', async () => {
     const { plugin, fake } = await setup();
     fake.denied.add('user.query');

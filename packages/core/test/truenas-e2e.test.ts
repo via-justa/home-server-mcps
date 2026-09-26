@@ -91,6 +91,20 @@ describe.skipIf(!BUILT)('TrueNAS plugin end to end (fake TrueNAS)', () => {
     const shares = await run(`return await truenas.call('sharing.smb.query');`);
     expect(JSON.stringify(shares)).not.toContain('share-secret-123');
     expect(shares).toMatchObject({ ok: true, value: [{ name: 'media', password: '[REDACTED]' }] });
+    const secrets = await run(
+      `return await Promise.all(['ups.config', 'snmp.config', 'ssh.config', 'kerberos.keytab.query'].map((m) => truenas.call(m)));`,
+    );
+    for (const s of ['ups-secret-456', 'snmp-secret-789', 'ssh-secret-key', 'keytab-secret-b64'])
+      expect(JSON.stringify(secrets)).not.toContain(s);
+    expect(secrets).toMatchObject({
+      ok: true,
+      value: [
+        { monuser: 'upsmon', monpwd: '[REDACTED]' },
+        { community: '[REDACTED]' },
+        { tcpport: 22, host_ed25519_key: '[REDACTED]' },
+        [{ file: '[REDACTED]' }],
+      ],
+    });
     await expect(run(`return await truenas.call('pool.dataset.create', { name: 'tank/x' });`)).resolves.toMatchObject({
       ok: false,
       error: { code: 'OPERATION_DISABLED' },

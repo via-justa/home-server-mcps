@@ -50,6 +50,10 @@ Two match profiles are offered:
 
 Rules are strict: any other option in the call (a `quota`, say) must be allowed explicitly with "any value", or the call falls back to asking a human.
 
+## Redaction
+
+Besides core's global list (passwords, tokens, secrets, …), results are redacted under `apiKey`, `bindpw`, `privatekey`, `monpwd` (UPS), `community` (SNMP) and the SSH host keys (`host_rsa_key`, `host_ecdsa_key`, `host_ed25519_key`; the matching `_pub` keys are hidden too). Keytab contents (`file` in `kerberos.keytab.*` results) are masked by the plugin itself, since `file` is too common a key name to redact everywhere.
+
 ## Development
 
 ```sh
