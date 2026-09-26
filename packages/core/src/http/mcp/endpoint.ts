@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
+import { isIP } from 'node:net';
 import type { Manifest } from '@home-server-mcps/plugin-sdk';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import type { Context } from 'hono';
 import { z } from 'zod';
 import type { AppContext } from '../../app.js';
+import type { Config } from '../../config/env.js';
 import type { ClientPrompts } from '../../approvals/service.js';
 import { authenticateMcp, publicMcpBase } from '../../auth/mcp-auth.js';
 import type { McpIdentity } from '../../auth/mcp-auth.js';
@@ -99,6 +101,34 @@ export function describeExecute(manifest: Manifest): string {
     'Reads run immediately. Writes either run straight away or pause until a human approves them on an approval page the client is asked to open (see `approval` in catalog entries); denials and other refusals throw an Error with `err.code` (e.g. OPERATION_DISABLED, PERMISSION_DENIED, UPSTREAM_ERROR) that your code can catch.',
     'Calls run one at a time. There is no network, filesystem or timer access. Secrets in results are redacted.',
   ].join('\n');
+}
+
+/**
+ * DNS-rebinding defence (MCP transport spec): a browser page can make its own domain resolve to this
+ * server, but it can't change the Host it sends, nor the Origin. Host must be a name this server was
+ * configured for (PUBLIC_MCP_URL, MCP_ALLOWED_HOSTS) or something that can't be rebound (localhost, an
+ * IP literal); an Origin, when present, must be one of those too.
+ */
+export function hostAllowed(config: Config, hostHeader: string | undefined): boolean {
+  if (!hostHeader) return false;
+  let host: string;
+  try {
+    host = new URL(`http://${hostHeader}`).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (host === 'localhost' || isIP(host.replace(/^\[|\]$/g, ''))) return true;
+  if (config.PUBLIC_MCP_URL && new URL(config.PUBLIC_MCP_URL).hostname.toLowerCase() === host) return true;
+  return config.MCP_ALLOWED_HOSTS.includes(host);
+}
+
+export function originAllowed(config: Config, origin: string | undefined): boolean {
+  if (!origin) return true; // not a browser request
+  try {
+    return hostAllowed(config, new URL(origin).host);
+  } catch {
+    return false;
+  }
 }
 
 export class McpEndpoints {
@@ -233,6 +263,12 @@ export class McpEndpoints {
   }
 
   async handle(c: Context, slug: string): Promise<Response> {
+    if (
+      !hostAllowed(this.ctx.config, c.req.header('host')) ||
+      !originAllowed(this.ctx.config, c.req.header('origin'))
+    ) {
+      return c.json(jsonRpcError(-32003, 'Host or Origin not allowed; set PUBLIC_MCP_URL or MCP_ALLOWED_HOSTS'), 403);
+    }
     const found = this.ctx.instances.bySlug(slug);
     if (!found) return c.json(jsonRpcError(-32001, 'Unknown MCP endpoint'), 404);
     const { instance, plugin } = found;

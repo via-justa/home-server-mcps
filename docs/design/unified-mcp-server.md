@@ -128,6 +128,7 @@ The MCP port serves a **small, fixed set of HTML pages**: OAuth login, OAuth con
 
 - `/{slug}` is the Streamable HTTP endpoint for the instance with that slug. `POST` carries JSON-RPC, `GET` carries the SSE stream, and `DELETE` ends the session. These are the SDK's `StreamableHTTPServerTransport` semantics.
 - Slugs match `^[a-z0-9][a-z0-9-]{0,62}$`, are unique, and cannot use reserved words: `oauth`, `a`, `healthz`, `.well-known`, `api`, `auth`, `static`.
+- **DNS-rebinding defence.** A request whose `Host` isn't `PUBLIC_MCP_URL`'s host, a name in `MCP_ALLOWED_HOSTS`, `localhost` or an IP literal is refused with 403, and so is a browser `Origin` outside the same set (MCP transport spec).
 - A disabled instance, or an instance whose plugin is disabled, returns **503** with a JSON-RPC error body. A slug that doesn't exist returns **404**.
 - Each instance has its own `McpServer` object exposing `search` and `execute`. Their tool descriptions are templated from the plugin manifest (binding name, a short upstream description) so the model sees `truenas.call(...)` on `/truenas` and `ha.call(...)` on `/ha`.
 - MCP sessions are keyed by `(instance, Mcp-Session-Id)`. The session records the authenticated client identity (§6.2) and whether the client advertised the elicitation capability.
@@ -808,7 +809,7 @@ TN §5, SR §5, and HA §5 apply unchanged, each run **per instance** by the cor
   - `mcp.example.com` → `:8080`. Must pass `Mcp-Session-Id`, allow SSE (no buffering), and forward `X-Forwarded-Proto`/`Host`.
   - `admin.lan` (or a VPN-only hostname) → `:8081`. **Do not** publish it on the internet. If it must be remote, put it behind Cloudflare Access / Authelia in addition to the portal login.
   - `TRUST_PROXY=true` makes core honor `X-Forwarded-*` headers for client IP (rate limiting, audit), scheme, and cookie `Secure`.
-- **Environment** (full list in `.env.example`): `DATA_DIR`, `MASTER_KEY`, `MCP_HOST`/`MCP_PORT`, `ADMIN_HOST`/`ADMIN_PORT`, `PUBLIC_MCP_URL`, `PUBLIC_ADMIN_URL`, `TRUST_PROXY`, `CORE_PLUGINS_AUTOENABLE`, `ADMIN_BOOTSTRAP_USERNAME`/`ADMIN_BOOTSTRAP_PASSWORD`, `ADMIN_FORCE_LOCAL_LOGIN`, `LOG_LEVEL`.
+- **Environment** (full list in `.env.example`): `DATA_DIR`, `MASTER_KEY`, `MCP_HOST`/`MCP_PORT`, `ADMIN_HOST`/`ADMIN_PORT`, `PUBLIC_MCP_URL`, `PUBLIC_ADMIN_URL`, `MCP_ALLOWED_HOSTS`, `TRUST_PROXY`, `CORE_PLUGINS_AUTOENABLE`, `ADMIN_BOOTSTRAP_USERNAME`/`ADMIN_BOOTSTRAP_PASSWORD`, `ADMIN_FORCE_LOCAL_LOGIN`, `LOG_LEVEL`.
 - **Egress hardening (recommended):** container network policy limiting outbound traffic to the upstream hosts, ntfy/webhook targets, OIDC issuer, and plugin repo hosts (see §4.4 limit).
 
 ---

@@ -13,7 +13,8 @@ import type { AppContext } from '../src/app.js';
 import { setGroupLevel, updateOperation } from '../src/catalog/groups.js';
 import { loadConfig } from '../src/config/env.js';
 import { auditLog, operations } from '../src/db/schema.js';
-import { MAX_SESSIONS_PER_PRINCIPAL } from '../src/http/mcp/endpoint.js';
+import { hostAllowed, MAX_SESSIONS_PER_PRINCIPAL } from '../src/http/mcp/endpoint.js';
+import { createMcpApp } from '../src/http/mcp-app.js';
 import { startServers } from '../src/server.js';
 import type { RunningServers } from '../src/server.js';
 import { updateSettings } from '../src/settings.js';
@@ -283,6 +284,34 @@ describe('MCP endpoint with bearer tokens', () => {
     await expect(clients[0]!.listTools()).rejects.toThrow();
     await expect(clients.at(-1)!.listTools()).resolves.toMatchObject({ tools: expect.any(Array) });
     for (const c of clients) await c.close().catch(() => undefined);
+  });
+
+  it('refuses rebound hosts and foreign origins (DNS rebinding)', async () => {
+    const app = createMcpApp(ctx);
+    const { token } = ctx.tokens.create({ name: 'rebind', scope: [instanceId] });
+    const init = (headers: Record<string, string>) =>
+      app.request('/echo', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          authorization: `Bearer ${token}`,
+          ...headers,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'x', version: '1' } },
+        }),
+      });
+    expect((await init({ host: 'attacker.example' })).status).toBe(403);
+    expect((await init({ host: '127.0.0.1:8080', origin: 'http://attacker.example' })).status).toBe(403);
+    expect((await init({ host: '127.0.0.1:8080' })).status).toBe(200);
+    expect((await init({ host: 'localhost', origin: 'http://localhost:3000' })).status).toBe(200);
+    expect(hostAllowed({ ...ctx.config, MCP_ALLOWED_HOSTS: ['mcp.lan'] }, 'mcp.lan:8080')).toBe(true);
+    expect(hostAllowed({ ...ctx.config, PUBLIC_MCP_URL: 'https://mcp.example.com' }, 'mcp.example.com')).toBe(true);
+    expect(hostAllowed(ctx.config, '[::1]:8080')).toBe(true);
   });
 
   it('binds sessions to the principal that created them', async () => {

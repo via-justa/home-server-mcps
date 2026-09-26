@@ -29,6 +29,19 @@ const EnvSchema = z
     PUBLIC_MCP_URL: optionalUrl,
     PUBLIC_ADMIN_URL: optionalUrl,
     TRUST_PROXY: bool,
+    /**
+     * Extra host names the MCP listener answers to (comma-separated), besides PUBLIC_MCP_URL's host,
+     * localhost and IP addresses. Anything else is refused, which stops DNS rebinding.
+     */
+    MCP_ALLOWED_HOSTS: z
+      .string()
+      .optional()
+      .transform((v) =>
+        (v ?? '')
+          .split(',')
+          .map((h) => h.trim().toLowerCase())
+          .filter(Boolean),
+      ),
     CORE_PLUGINS_AUTOENABLE: bool,
     CORE_PLUGINS_DIR: z.string().default(path.join(workspaceRoot, 'plugins')),
     ADMIN_UI_DIR: z.string().default(path.join(workspaceRoot, 'packages/admin-ui/dist')),
