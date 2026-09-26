@@ -312,11 +312,11 @@ export class UserService {
     });
   }
 
-  hasOidcLinkedUser(): boolean {
+  hasOidcLinkedUser(except?: string): boolean {
     return this.db
       .select()
       .from(users)
       .all()
-      .some((u) => !!u.oidcSubject && !u.disabled);
+      .some((u) => !!u.oidcSubject && !u.disabled && u.id !== except);
   }
 }

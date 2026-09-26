@@ -7,7 +7,10 @@ import { createAppContext } from '../src/app.js';
 import { base32Decode, currentStep, totpAt } from '../src/auth/totp.js';
 import { applyRegistrySync } from '../src/catalog/registry.js';
 import { loadConfig } from '../src/config/env.js';
+import { users } from '../src/db/schema.js';
 import { createAdminApp } from '../src/http/admin-app.js';
+import { updateSettings } from '../src/settings.js';
+import { eq } from 'drizzle-orm';
 import { browser } from './admin-client.js';
 
 const PLUGINS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/plugins');
@@ -125,6 +128,29 @@ describe('setup, login and sessions', () => {
     expect(await (await b.put('/api/settings/security', { disableLocalLogin: true })).json()).toMatchObject({
       error: 'oidc_required',
     });
+  });
+
+  it('keeps single sign-on usable while local login is off (review L18)', async () => {
+    const t = await setup();
+    const b = await signedIn(t);
+    const sso = (await (await b.post('/api/users', { username: 'sso', password: PASSWORD })).json()) as { id: string };
+    t.ctx.db
+      .update(users)
+      .set({ oidcIssuer: 'https://idp.example.com', oidcSubject: 'sub-1' })
+      .where(eq(users.id, sso.id))
+      .run();
+    const ssoClient = await t.client();
+    expect((await ssoClient.post('/auth/login', { username: 'sso', password: PASSWORD })).status).toBe(200);
+    updateSettings(t.ctx.db, 'security', { disableLocalLogin: true });
+
+    const refused = { error: 'local_login_disabled' };
+    expect(await (await b.patch(`/api/users/${sso.id}`, { disabled: true })).json()).toMatchObject(refused);
+    expect(await (await b.put('/api/settings/oidc', { enabled: false })).json()).toMatchObject(refused);
+    expect(await (await ssoClient.post('/api/profile/oidc/unlink')).json()).toMatchObject(refused);
+    expect(t.ctx.users.get(sso.id)).toMatchObject({ disabled: false, oidcSubject: 'sub-1' });
+
+    updateSettings(t.ctx.db, 'security', { disableLocalLogin: false });
+    expect((await b.patch(`/api/users/${sso.id}`, { disabled: true })).status).toBe(200);
   });
 
   it('manages users; password changes sign out other sessions', async () => {
