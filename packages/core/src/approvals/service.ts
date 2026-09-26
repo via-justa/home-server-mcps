@@ -264,6 +264,13 @@ export class ApprovalService {
     return true;
   }
 
+  /** Cancels the open requests of one endpoint (it was stopped: disabled, deleted or reconfigured). */
+  cancelForInstance(instanceId: string, reason: string): number {
+    const mine = [...this.live.values()].filter((l) => l.row.instanceId === instanceId);
+    for (const live of mine) live.settle({ outcome: 'cancelled', reason });
+    return mine.length;
+  }
+
   /** Cancels every open request (shutdown). Cancelled calls are denied to the sandbox. */
   cancelAll(reason = 'shutdown') {
     for (const live of [...this.live.values()]) live.settle({ outcome: 'cancelled', reason });

@@ -103,6 +103,7 @@ const DENIAL_MESSAGES: Record<string, string> = {
   declined: 'was declined in the client',
   prompt_failed: 'needs approval, but the client could not show the approval prompt',
   confirmation_mismatch: 'was denied (confirmation mismatch)',
+  endpoint_stopped: 'was cancelled: the endpoint was stopped or reconfigured while it waited for approval',
 };
 
 /**

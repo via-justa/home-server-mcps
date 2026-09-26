@@ -110,6 +110,10 @@ export async function createAppContext(config: Config, opts: AppOptions = {}): P
     );
   const links = new ApprovalLinkService(db, now);
   const approvals = new ApprovalService(db, links, now);
+  // An approval must not outlive the plugin process and configuration it was asked for.
+  events.on('instance.status', ({ instanceId, status }) => {
+    if (status === 'stopped') approvals.cancelForInstance(instanceId, 'endpoint_stopped');
+  });
 
   const keys = {
     attestation: secrets.deriveKey('attestation'),

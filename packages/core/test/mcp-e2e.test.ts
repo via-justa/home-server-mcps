@@ -222,6 +222,36 @@ describe('MCP endpoint with bearer tokens', () => {
     await client.close();
   });
 
+  it('cancels an open approval when its endpoint is stopped', async () => {
+    const { token } = ctx.tokens.create({ name: 'stop', scope: [otherInstanceId], access: 'write' });
+    await ctx.instances.syncNow(otherInstanceId);
+    setGroupLevel(ctx.db, otherInstanceId, 'echo', 'ask');
+    let prompted!: (id: string) => void;
+    const shown = new Promise<string>((r) => (prompted = r));
+    const client = await connect('echo-two', token, {
+      mode: 'url',
+      onElicit: (p) => {
+        prompted(p.elicitationId!);
+        return {};
+      },
+    });
+    const call = client.callTool({
+      name: 'execute',
+      arguments: { code: `return (await echo.call('echo.set', { name: 'tank/b' })).key;` },
+    });
+    const approvalId = await shown;
+    await ctx.instances.update(otherInstanceId, { enabled: false });
+    expect(parse(await call)).toMatchObject({
+      error: 'PERMISSION_DENIED',
+      message: expect.stringMatching(/endpoint was stopped/),
+    });
+    // Nobody can approve it on the page any more.
+    expect(() => ctx.approvals.decide(approvalId, { approve: true, decidedBy: 'admin' })).toThrow(/already cancelled/);
+    await client.close();
+    await ctx.instances.update(otherInstanceId, { enabled: true });
+    setGroupLevel(ctx.db, otherInstanceId, 'echo', 'read');
+  });
+
   it('returns a structured tool error when the user declines the prompt', async () => {
     const { token } = ctx.tokens.create({ name: 'e2e', scope: [instanceId], access: 'write' });
     const client = await connect('echo', token, { mode: 'url', onElicit: () => 'decline' });
