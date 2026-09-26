@@ -591,6 +591,23 @@ describe('execute → gate → plugin', () => {
     await expect(executeCode(t.deps, t.rt, other, 'return 1')).resolves.toMatchObject({ ok: true });
   });
 
+  it('charges write budgets per principal, and only for writes that run (review L20)', async () => {
+    const t = await setup({ executePerMinute: 1000, writesPerMinute: 2 });
+    const write = `return (await echo.call('echo.set', { name: 'tank/a' })).key;`;
+    // Denied writes (no way to ask anyone) don't use the budget.
+    t.setLevel('ask');
+    for (let i = 0; i < 3; i++)
+      await expect(t.exec(write)).resolves.toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+
+    t.setLevel('write');
+    await expect(t.exec(write)).resolves.toMatchObject({ ok: true });
+    await expect(t.exec(write)).resolves.toMatchObject({ ok: true });
+    await expect(t.exec(write)).resolves.toMatchObject({ ok: false, error: { code: 'RATE_LIMITED' } });
+    // Another client has its own budget.
+    const other = { ...t.caller(), client: { kind: 'mcp_client' as const, id: 'other-client' } };
+    await expect(executeCode(t.deps, t.rt, other, write)).resolves.toMatchObject({ ok: true });
+  });
+
   it('caps how many scripts run at once', async () => {
     const t = await setup({ executePerMinute: 1000 });
     const saved = { ...SANDBOX_CONCURRENCY };

@@ -68,6 +68,11 @@ export class SlidingWindowLimiter {
     return this.hits.size;
   }
 
+  /** Whether one more hit would fit, without recording it. */
+  allows(key: string, limit: number, windowMs: number): boolean {
+    return this.hits.recent(key, windowMs).length < limit;
+  }
+
   /** Records a hit and returns true if it fits within `limit` per `windowMs`; otherwise records nothing. */
   take(key: string, limit: number, windowMs: number): boolean {
     if (this.hits.recent(key, windowMs).length >= limit) return false;

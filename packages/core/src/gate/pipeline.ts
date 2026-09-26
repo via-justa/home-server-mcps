@@ -246,13 +246,14 @@ export function createGateBindings(
       // 5. Reads run straight away.
       let decision = 'auto-executed';
       let approval: Decision | undefined;
+      // Each principal has its own write budget, charged only for writes that actually run (step 9):
+      // a noisy, denied or timed-out client doesn't use up anyone else's.
+      const writeBucket = `write:${rt.instanceId}:${caller.client.id ?? 'anonymous'}`;
+      const overWriteBudget = () =>
+        reject('rejected:rate_limited', new BindingError('RATE_LIMITED', 'Too many write calls; slow down'));
       if (isWrite) {
-        if (!deps.limiter.take(`write:${rt.instanceId}`, rt.settings.writesPerMinute, 60_000)) {
-          reject(
-            'rejected:rate_limited',
-            new BindingError('RATE_LIMITED', 'Too many write calls on this endpoint; slow down'),
-          );
-        }
+        // Checked before asking anyone, so nobody approves a call that would be refused anyway.
+        if (!deps.limiter.allows(writeBucket, rt.settings.writesPerMinute, 60_000)) overWriteBudget();
 
         // 6. Level `write`: acknowledged writes are auto-approved. Level `ask`: pre-approval rules, which
         //    never cover locked ops (TN §3.4) nor writes still waiting for acknowledgement.
@@ -364,6 +365,7 @@ export function createGateBindings(
       }
 
       // 9. The real upstream call, within what's left of the sandbox budget.
+      if (isWrite && !deps.limiter.take(writeBucket, rt.settings.writesPerMinute, 60_000)) overWriteBudget();
       const remaining = Math.max(1, budget.remainingMs());
       const result = await rt.plugin().call(
         'invoke',
