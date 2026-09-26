@@ -124,7 +124,8 @@ export function applyCatalogSync(
         inferredClassification: d.classification,
         inferredReason: d.classificationReason,
         locked,
-        typedConfirmation: d.typedConfirmation ?? locked,
+        // A locked operation always needs the typed confirmation, whatever the plugin says.
+        typedConfirmation: locked || (d.typedConfirmation ?? false),
         needsReview: d.needsReview,
         matchProfile: d.matchProfile ?? null,
         paramsSchema: d.paramsSchema ?? null,

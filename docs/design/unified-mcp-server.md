@@ -263,7 +263,7 @@ The child can also send **notifications**: `log`, and `catalogChanged` (for exam
   classification: 'read' | 'write';     // plugin's inferred default (naming / verb / command-shape)
   classificationReason: string;         // 'naming:.query' | 'verb:GET' | 'call_service-default' …
   locked?: boolean;                     // seeded locked (TN §3.4 / SR §3.4 / HA §3.4)
-  typedConfirmation?: boolean;          // default: same as locked
+  typedConfirmation?: boolean;          // default false; core forces it on locked operations
   attestationRequired?: boolean;        // HA §3.6
   needsReview?: boolean;                // flag for the "New/Review" badge (SR GET-as-action, HA unknown WS command)
   matchProfile?: string;                // key into manifest.matchProfiles

@@ -262,6 +262,18 @@ describe('re-sync of changed operations (review M14)', () => {
     });
   });
 
+  it('always requires typed confirmation on locked operations (review M15)', () => {
+    const { db, instanceId } = setup();
+    applyCatalogSync(
+      db,
+      instanceId,
+      catalog(op('app.delete', { locked: true, typedConfirmation: false }), op('app.stop')),
+    );
+    const row = (key: string) => db.select().from(operations).where(eq(operations.key, key)).get()!;
+    expect(row('app.delete').typedConfirmation).toBe(true);
+    expect(row('app.stop').typedConfirmation).toBe(false);
+  });
+
   it('disables rules whose match no longer fits the operation, and audits it', () => {
     const { db, instanceId, id } = setup();
     applyCatalogSync(db, instanceId, all(), new Date(), { matchProfiles: profiles });
