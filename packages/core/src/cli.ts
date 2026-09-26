@@ -11,18 +11,23 @@ import { assertServerStopped } from './lock.js';
 /**
  * Operator commands, run with the server stopped:
  *
- *   node dist/cli.js rotate-master-key
+ *   node dist/cli.js rotate-master-key [--force]
  *
  * With `MASTER_KEY` set, the new key must be supplied as `NEW_MASTER_KEY` (so it exists before any
  * data depends on it); update `MASTER_KEY` to it afterwards. With a key file, a new key is generated,
  * written next to it as `master.key.new` before the database changes, then moved into place.
  */
 
-const USAGE = 'Usage: cli.js rotate-master-key   (stop the server first)';
+const USAGE =
+  'Usage: cli.js rotate-master-key [--force]   (stop the server first; --force skips the running-server check)';
 
-export function rotateMasterKeyCommand(env: NodeJS.ProcessEnv, log: (line: string) => void = console.log) {
+export function rotateMasterKeyCommand(
+  env: NodeJS.ProcessEnv,
+  log: (line: string) => void = console.log,
+  opts: { force?: boolean } = {},
+) {
   const config = loadConfig(env);
-  assertServerStopped(config.DATA_DIR);
+  assertServerStopped(config.DATA_DIR, opts);
   const keyFile = path.join(config.DATA_DIR, MASTER_KEY_FILENAME);
   if (!config.MASTER_KEY && !existsSync(keyFile))
     throw new Error(`No master key: MASTER_KEY is unset and ${keyFile} does not exist`);
@@ -68,9 +73,10 @@ export function rotateMasterKeyCommand(env: NodeJS.ProcessEnv, log: (line: strin
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  const [command] = process.argv.slice(2);
+  const [command, ...flags] = process.argv.slice(2);
   try {
-    if (command === 'rotate-master-key') rotateMasterKeyCommand(process.env);
+    if (command === 'rotate-master-key' && flags.every((f) => f === '--force'))
+      rotateMasterKeyCommand(process.env, console.log, { force: flags.includes('--force') });
     else {
       console.error(USAGE);
       process.exitCode = 2;

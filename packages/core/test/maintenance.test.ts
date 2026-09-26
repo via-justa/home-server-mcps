@@ -111,7 +111,7 @@ describe('rotate-master-key', () => {
     const lock = path.join(s.dataDir, LOCK_FILENAME);
     writeFileSync(lock, JSON.stringify({ pid: server.pid, host: hostname(), startedAt: new Date().toISOString() }));
 
-    expect(() => rotateMasterKeyCommand(env(s.dataDir), () => undefined)).toThrow(/server is running/);
+    expect(() => rotateMasterKeyCommand(env(s.dataDir), () => undefined)).toThrow(/server may be running/);
     expect(() => acquireServerLock(s.dataDir)).toThrow(/Another server/);
     expect(readFileSync(keyFile, 'utf8')).toBe(before);
 
@@ -121,6 +121,22 @@ describe('rotate-master-key', () => {
     expect(rotateMasterKeyCommand(env(s.dataDir), () => undefined)).toMatchObject({ instances: 1 });
     const release = acquireServerLock(s.dataDir);
     expect(JSON.parse(readFileSync(lock, 'utf8'))).toMatchObject({ pid: process.pid });
+    release();
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  it('treats a lock from another host as held unless forced; a server still takes it over', async () => {
+    const s = await seeded();
+    const lock = path.join(s.dataDir, LOCK_FILENAME);
+    // Written by a server in another container on the same volume.
+    writeFileSync(lock, JSON.stringify({ pid: 1, host: 'other-container', startedAt: new Date().toISOString() }));
+    expect(() => rotateMasterKeyCommand(env(s.dataDir), () => undefined)).toThrow(/on host other-container.*--force/);
+    expect(rotateMasterKeyCommand(env(s.dataDir), () => undefined, { force: true })).toMatchObject({ instances: 1 });
+
+    const warnings: string[] = [];
+    const release = acquireServerLock(s.dataDir, (m) => warnings.push(m));
+    expect(warnings.join('\n')).toMatch(/held by pid 1 on host other-container/);
+    expect(JSON.parse(readFileSync(lock, 'utf8'))).toMatchObject({ pid: process.pid, host: hostname() });
     release();
     expect(existsSync(lock)).toBe(false);
   });

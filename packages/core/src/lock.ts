@@ -27,41 +27,63 @@ const alive = (pid: number) => {
   }
 };
 
-/** The live holder of the lock, or null if it is free or stale (dead pid, other host or container). */
-export function lockHolder(dataDir: string): LockInfo | null {
-  let info: LockInfo;
+function readLock(dataDir: string): LockInfo | null {
   try {
-    info = JSON.parse(readFileSync(lockPath(dataDir), 'utf8')) as LockInfo;
+    const info = JSON.parse(readFileSync(lockPath(dataDir), 'utf8')) as LockInfo;
+    return typeof info?.pid === 'number' && typeof info.host === 'string' ? info : null;
   } catch {
     return null;
   }
-  if (typeof info?.pid !== 'number' || info.host !== hostname() || info.pid === process.pid) return null;
+}
+
+/**
+ * The live holder of the lock, or null if it is free or stale. A lock from another host (another
+ * container on the same volume) can't be checked from here, so it counts as held: only its pid on
+ * this host can be proven dead.
+ */
+export function lockHolder(dataDir: string): LockInfo | null {
+  const info = readLock(dataDir);
+  if (!info || info.pid === process.pid) return null;
+  if (info.host !== hostname()) return info;
   return alive(info.pid) ? info : null;
 }
 
-/** Takes the lock for this process; throws if another live server holds it. Returns the release. */
-export function acquireServerLock(dataDir: string): () => void {
-  const holder = lockHolder(dataDir);
-  if (holder) throw new Error(`Another server (pid ${holder.pid}) is using ${dataDir}`);
+/**
+ * Takes the lock for this process; throws if another live server on this host holds it. A lock left
+ * by another host is taken over with a warning: a recreated container gets a new hostname, and a
+ * server that refused to start there would never start again. Returns the release.
+ */
+export function acquireServerLock(
+  dataDir: string,
+  warn: (message: string) => void = (m) => console.warn(`WARN ${m}`),
+): () => void {
+  const previous = readLock(dataDir);
+  if (previous && previous.pid !== process.pid) {
+    if (previous.host === hostname()) {
+      if (alive(previous.pid)) throw new Error(`Another server (pid ${previous.pid}) is using ${dataDir}`);
+    } else {
+      warn(
+        `${lockPath(dataDir)} was held by pid ${previous.pid} on host ${previous.host}; taking it over. ` +
+          'Two servers must never share a data directory.',
+      );
+    }
+  }
   const info: LockInfo = { pid: process.pid, host: hostname(), startedAt: new Date().toISOString() };
   writeFileSync(lockPath(dataDir), `${JSON.stringify(info)}\n`, { mode: 0o600 });
   return () => {
-    try {
-      const current = JSON.parse(readFileSync(lockPath(dataDir), 'utf8')) as LockInfo;
-      if (current.pid === process.pid) rmSync(lockPath(dataDir), { force: true });
-    } catch {
-      // already gone
-    }
+    if (readLock(dataDir)?.pid === process.pid && readLock(dataDir)?.host === hostname())
+      rmSync(lockPath(dataDir), { force: true });
   };
 }
 
-/** For offline commands: throws while a server is running on this data directory. */
-export function assertServerStopped(dataDir: string) {
+/** For offline commands: throws while a server may be running on this data directory, unless forced. */
+export function assertServerStopped(dataDir: string, opts: { force?: boolean } = {}) {
+  if (opts.force) return;
   const holder = lockHolder(dataDir);
-  if (holder) {
-    throw new Error(
-      `The server is running (pid ${holder.pid}, since ${holder.startedAt}); stop it first. ` +
-        `If it is not running, delete ${lockPath(dataDir)}.`,
-    );
-  }
+  if (!holder) return;
+  const where = holder.host === hostname() ? `pid ${holder.pid}` : `pid ${holder.pid} on host ${holder.host}`;
+  throw new Error(
+    `The server may be running (${where}, since ${holder.startedAt}); stop it first. ` +
+      `If it is really stopped, run again with --force (or delete ${lockPath(dataDir)}).`,
+  );
 }
