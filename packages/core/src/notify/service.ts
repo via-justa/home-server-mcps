@@ -273,13 +273,24 @@ export class NotifierService {
         }),
     );
     on('sync.completed', (p) => {
-      if (p.pendingReview.length === 0) return;
+      const rulesDisabled = p.rulesDisabled ?? 0;
+      if (p.pendingReview.length === 0 && rulesDisabled === 0) return;
+      const lines = [];
+      if (p.pendingReview.length > 0)
+        lines.push(
+          `New or changed writes ask for approval where their level is Write, until acknowledged: ${p.pendingReview.slice(0, 10).join(', ')}${p.pendingReview.length > 10 ? ', …' : ''}`,
+        );
+      if (rulesDisabled > 0)
+        lines.push(`${rulesDisabled} pre-approval rule(s) no longer fit their operation and were disabled.`);
       void this.dispatch({
         event: 'sync.pending_review',
         instance: { id: p.instanceId, slug: p.slug },
-        title: `${p.pendingReview.length} new write operation(s) on /${p.slug}`,
-        message: `Where their level is Write they ask for approval until acknowledged: ${p.pendingReview.slice(0, 10).join(', ')}${p.pendingReview.length > 10 ? ', …' : ''}`,
-        data: { operations: p.pendingReview },
+        title:
+          p.pendingReview.length > 0
+            ? `${p.pendingReview.length} write operation(s) to review on /${p.slug}`
+            : `Pre-approval rules disabled on /${p.slug}`,
+        message: lines.join('\n'),
+        data: { operations: p.pendingReview, rulesDisabled },
       });
     });
     on(

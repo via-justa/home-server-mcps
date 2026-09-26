@@ -11,7 +11,8 @@ import {
   updateOperation,
 } from '../src/catalog/groups.js';
 import { applyCatalogSync } from '../src/catalog/sync.js';
-import { auditLog, operationGroupAliases, operations } from '../src/db/schema.js';
+import { createRule } from '../src/catalog/rules.js';
+import { auditLog, operationGroupAliases, operations, preApprovalRules } from '../src/db/schema.js';
 import { ConflictError, NotFoundError, ValidationError } from '../src/errors.js';
 import { catalog, op, seedInstance } from './helpers.js';
 
@@ -220,6 +221,80 @@ describe('updateOperation', () => {
     expect(listGroups(db, instanceId).find((g) => g.key === 'app')?.counts.pendingReview).toBe(1);
     updateOperation(db, instanceId, id('app.redeploy'), { acknowledged: true });
     expect(resolveAccess(db, instanceId, 'app.redeploy')).toMatchObject({ mode: 'auto' });
+  });
+});
+
+describe('re-sync of changed operations (review M14)', () => {
+  const profiles = { byName: [{ field: '/name', label: 'Name', widget: 'text' as const, op: 'eq' as const }] };
+  const all = (extra: Parameters<typeof op>[1] = {}, drop = false) =>
+    catalog(
+      op('app.query'),
+      op('app.upgrade', { matchProfile: 'byName', paramsSchema: { type: 'object' }, ...extra }),
+      op('app.stop'),
+      op('app.delete', { locked: true }),
+      op('pool.query'),
+      ...(drop ? [] : [op('pool.dataset.create')]),
+    );
+
+  it('asks again when an acknowledged write changes or returns from stale, not on a plain re-sync', () => {
+    const { db, instanceId, id } = setup();
+    applyCatalogSync(db, instanceId, all());
+    setGroupLevel(db, instanceId, 'app', 'write', { acknowledge: [id('app.upgrade'), id('app.stop')] });
+    setGroupLevel(db, instanceId, 'pool.dataset', 'write', { acknowledge: [id('pool.dataset.create')] });
+
+    expect(applyCatalogSync(db, instanceId, all()).pendingReview).toEqual([]);
+    expect(resolveAccess(db, instanceId, 'app.upgrade')).toMatchObject({ mode: 'auto' });
+
+    const changed = applyCatalogSync(db, instanceId, all({ paramsSchema: { type: 'object', required: ['force'] } }));
+    expect(changed.pendingReview).toEqual(['app.upgrade']);
+    expect(resolveAccess(db, instanceId, 'app.upgrade')).toMatchObject({ mode: 'approve', pendingReview: true });
+    expect(resolveAccess(db, instanceId, 'app.stop')).toMatchObject({ mode: 'auto' });
+
+    updateOperation(db, instanceId, id('app.upgrade'), { acknowledged: true });
+    expect(applyCatalogSync(db, instanceId, all({ kind: 'endpoint' })).pendingReview).toEqual(['app.upgrade']);
+
+    applyCatalogSync(db, instanceId, all({ kind: 'endpoint' }, true));
+    const back = applyCatalogSync(db, instanceId, all({ kind: 'endpoint' }));
+    expect(back.pendingReview).toContain('pool.dataset.create');
+    expect(resolveAccess(db, instanceId, 'pool.dataset.create')).toMatchObject({
+      mode: 'approve',
+      pendingReview: true,
+    });
+  });
+
+  it('disables rules whose match no longer fits the operation, and audits it', () => {
+    const { db, instanceId, id } = setup();
+    applyCatalogSync(db, instanceId, all(), new Date(), { matchProfiles: profiles });
+    const manifest = { matchProfiles: profiles } as never;
+    const fits = createRule(db, manifest, instanceId, {
+      operationId: id('app.upgrade'),
+      match: [{ field: '/name', op: 'eq', value: 'web' }],
+      reason: 'routine upgrades',
+    });
+    const anyOnly = createRule(db, manifest, instanceId, {
+      operationId: id('app.upgrade'),
+      match: [{ field: '', op: 'any' }],
+      reason: 'any upgrade',
+    });
+
+    // Same profile: nothing changes.
+    expect(applyCatalogSync(db, instanceId, all(), new Date(), { matchProfiles: profiles }).rulesDisabled).toBe(0);
+
+    // The plugin dropped the profile: the field-based rule is disabled, the "any" rule still fits.
+    const summary = applyCatalogSync(db, instanceId, all({ matchProfile: undefined }), new Date(), {
+      matchProfiles: profiles,
+    });
+    expect(summary.rulesDisabled).toBe(1);
+    const enabled = (ruleId: string) =>
+      db.select().from(preApprovalRules).where(eq(preApprovalRules.id, ruleId)).get()!.enabled;
+    expect(enabled(fits.id)).toBe(false);
+    expect(enabled(anyOnly.id)).toBe(true);
+    const audit = db
+      .select()
+      .from(auditLog)
+      .all()
+      .find((a) => a.decision === 'rules_disabled_operation_changed');
+    expect(audit?.detail).toMatchObject({ rules: [{ ruleId: fits.id, operationKey: 'app.upgrade' }] });
   });
 });
 

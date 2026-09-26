@@ -545,8 +545,8 @@ export class InstanceManager {
       const row = this.row(instanceId);
       try {
         const client = live.supervisor.client;
-        const summary = applyCatalogSync(this.db, instanceId, await client.call('syncCatalog'), this.now());
         const manifest = this.plugin(row.pluginId).parsed;
+        const summary = applyCatalogSync(this.db, instanceId, await client.call('syncCatalog'), this.now(), manifest);
         if (manifest.capabilities.registry) {
           applyRegistrySync(this.db, instanceId, await client.call('syncRegistry'), this.now());
         }
@@ -557,6 +557,7 @@ export class InstanceManager {
           added: summary.added,
           pendingReview: summary.pendingReview,
           newGroups: summary.newGroups,
+          rulesDisabled: summary.rulesDisabled,
         });
         return summary;
       } catch (err) {

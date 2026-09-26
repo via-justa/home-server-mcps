@@ -168,11 +168,27 @@ describe('notification channels', () => {
       newGroups: [],
     });
     await until(() => sent.length === 1);
-    expect(JSON.parse(sent[0]!.body)).toMatchObject({ topic: 'homelab', title: '1 new write operation(s) on /nas' });
+    expect(JSON.parse(sent[0]!.body)).toMatchObject({
+      topic: 'homelab',
+      title: '1 write operation(s) to review on /nas',
+    });
     expect(sent[0]!.url).toBe('https://ntfy.example.com');
     expect(sent[0]!.headers.authorization).toBe('Bearer tk');
 
     expect(JSON.parse(sent[0]!.body)).not.toHaveProperty('actions');
+
+    // Rules a sync disabled are reported even when no write needs review.
+    ctx.events.emit('sync.completed', {
+      instanceId: 'i',
+      slug: 'nas',
+      added: 0,
+      pendingReview: [],
+      newGroups: [],
+      rulesDisabled: 2,
+    });
+    await until(() => sent.length === 2);
+    expect(JSON.parse(sent[1]!.body)).toMatchObject({ title: 'Pre-approval rules disabled on /nas' });
+    expect(JSON.parse(sent[1]!.body).message).toMatch(/2 pre-approval rule\(s\) no longer fit/);
 
     // Approvals happen in the MCP client (design §5.3); channels can't subscribe to them.
     expect(() =>
