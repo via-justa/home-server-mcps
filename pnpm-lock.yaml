@@ -143,6 +143,13 @@ importers:
       '@home-server-mcps/plugin-sdk':
         specifier: workspace:*
         version: link:../../packages/plugin-sdk
+      ws:
+        specifier: ^8.22.0
+        version: 8.22.0
+    devDependencies:
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
 
   plugins/seerr:
     dependencies:
