@@ -153,6 +153,23 @@ describe('InstanceManager', () => {
     expect(t.seen.map((e) => e.name)).toContain('sync.failed');
   });
 
+  it('shows error when the first catalog sync fails, and ready once one succeeds (review L10)', async () => {
+    const t = setup();
+    const inst = await create(t.manager, { mode: 'bad-output' });
+    await expect(t.manager.syncNow(inst.id)).rejects.toThrow(/Invalid syncCatalog result/);
+    expect(t.manager.get(inst.id)).toMatchObject({ status: 'error', lastSyncedAt: null });
+    expect(t.manager.get(inst.id).statusError).toMatch(/First catalog sync failed/);
+
+    await t.manager.updateConnection(inst.id, { config: {} });
+    await t.manager.syncNow(inst.id);
+    expect(t.manager.get(inst.id)).toMatchObject({ status: 'ready', lastSyncStatus: 'ok' });
+
+    // Once a catalog exists, a failed sync keeps serving it: the endpoint stays ready.
+    await t.manager.updateConnection(inst.id, { config: { mode: 'bad-output' } });
+    await expect(t.manager.syncNow(inst.id)).rejects.toThrow();
+    expect(t.manager.get(inst.id).status).toBe('ready');
+  });
+
   it('shares one sync between concurrent callers', async () => {
     const t = setup();
     const inst = await create(t.manager);

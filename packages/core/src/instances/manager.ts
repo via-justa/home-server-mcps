@@ -551,6 +551,8 @@ export class InstanceManager {
           applyRegistrySync(this.db, instanceId, await client.call('syncRegistry'), this.now());
         }
         live.lastVersionCheck = Date.now();
+        if (this.row(instanceId).status === 'error' && live.supervisor.status === 'ready')
+          this.setStatus(instanceId, 'ready');
         this.opts.events.emit('sync.completed', {
           instanceId,
           slug: row.slug,
@@ -575,6 +577,9 @@ export class InstanceManager {
           detail: { error: message },
         });
         this.opts.events.emit('sync.failed', { instanceId, slug: row.slug, error: message });
+        // Without any catalog the endpoint can't serve at all: show that, not a misleading "ready".
+        if (!row.lastSyncedAt && live.supervisor.status === 'ready')
+          this.setStatus(instanceId, 'error', `First catalog sync failed: ${message}`.slice(0, 500));
         throw err;
       } finally {
         live.syncing = undefined;
