@@ -41,6 +41,12 @@ describe('TrueNAS plugin', () => {
         { fn: 'call', args: ['system.reboot'], expectKey: 'system.reboot' },
         { fn: 'call', args: ['filesystem.setacl', { path: '/mnt/tank' }], expectKey: 'filesystem.setacl#pool-root' },
         { fn: 'call', args: ['filesystem.setacl', { path: '/mnt/tank/media' }], expectKey: 'filesystem.setacl' },
+        {
+          fn: 'call',
+          args: ['filesystem.setacl', { path: '/mnt/tank/media/..' }],
+          expectKey: 'filesystem.setacl#pool-root',
+        },
+        { fn: 'call', args: ['filesystem.chown', { path: '/mnt/tank/.' }], expectKey: 'filesystem.chown#pool-root' },
       ],
       rejects: [
         { fn: 'call', args: ['no.such.method'] },

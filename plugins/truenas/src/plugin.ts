@@ -1,6 +1,6 @@
 import { ErrorCodes, PluginError } from '@home-server-mcps/plugin-sdk';
 import type { InitParams, PluginHandlers } from '@home-server-mcps/plugin-sdk';
-import { buildCatalog, isPoolRoot, POOL_ROOT_SPLIT, POOL_ROOT_SUFFIX } from './catalog.js';
+import { buildCatalog, needsPoolRootKey, POOL_ROOT_SPLIT, POOL_ROOT_SUFFIX } from './catalog.js';
 import type { Catalog, MethodInfo } from './catalog.js';
 import { TrueNasClient } from './client.js';
 
@@ -113,7 +113,8 @@ export function createTrueNasPlugin(): PluginHandlers {
       const known = catalog ?? (await loadCatalog());
       if (!known.methods.has(method))
         throw new PluginError(ErrorCodes.UnknownOperation, `${method} is not a TrueNAS method on this system`);
-      const split = (POOL_ROOT_SPLIT as readonly string[]).includes(method) && isPoolRoot(field(params[0], 'path'));
+      const split =
+        (POOL_ROOT_SPLIT as readonly string[]).includes(method) && needsPoolRootKey(field(params[0], 'path'));
       return { key: split ? `${method}${POOL_ROOT_SUFFIX}` : method, params };
     },
 

@@ -48,8 +48,7 @@ const EXCLUDED = new Set([
  */
 const CORE_ALLOWED = new Set(['core.get_jobs', 'core.get_methods', 'core.ping', 'core.job_abort']);
 
-const excluded = (method: string) =>
-  EXCLUDED.has(method) || (method.startsWith('core.') && !CORE_ALLOWED.has(method));
+const excluded = (method: string) => EXCLUDED.has(method) || (method.startsWith('core.') && !CORE_ALLOWED.has(method));
 
 const READ_LAST = new Set(['query', 'get_instance', 'config', 'status', 'choices', 'info']);
 const READ_VERBS = new Set(['list', 'listdir', 'get', 'search']);
@@ -142,7 +141,9 @@ function describe(key: string, method: string, info: MethodInfo): OperationDescr
           docs: {
             ...(summary ? { summary } : {}),
             ...(key.endsWith(POOL_ROOT_SUFFIX)
-              ? { description: `${method} on a pool's root path (/mnt/<pool>): locked.` }
+              ? {
+                  description: `${method} on a pool's root (/mnt/<pool>), outside /mnt, or on a path with . or .. segments: locked.`,
+                }
               : {}),
             ...(guidance ? { guidance } : {}),
           },
@@ -156,7 +157,7 @@ export function buildCatalog(methods: Record<string, MethodInfo>): Catalog {
   const jobs = new Set<string>();
   const names = new Set<string>();
   for (const [method, info] of Object.entries(methods).sort(([a], [b]) => a.localeCompare(b))) {
-    if (excluded(method) ||!/^[a-z0-9_.]+$/i.test(method)) continue;
+    if (excluded(method) || !/^[a-z0-9_.]+$/i.test(method)) continue;
     names.add(method);
     if (info?.job) jobs.add(method);
     operations.push(describe(method, method, info ?? {}));
@@ -167,9 +168,17 @@ export function buildCatalog(methods: Record<string, MethodInfo>): Catalog {
   return { operations, jobs, methods: names };
 }
 
-/** Whether a filesystem path is a pool's root: `/mnt/tank` (or `/mnt/tank/`), not `/mnt/tank/media`. */
-export function isPoolRoot(path: unknown): boolean {
+/**
+ * Whether an ACL/owner change on `path` needs the locked `#pool-root` key. Fails closed: only a plain
+ * absolute path strictly inside a pool (`/mnt/tank/media`) gets the ordinary key. A pool root
+ * (`/mnt/tank`), anything outside `/mnt`, a relative path, or any `.`/`..` segment (`/mnt/tank/.`,
+ * `/mnt/tank/media/..`) is locked. A missing or non-string path keeps the ordinary key; TrueNAS
+ * rejects the call as invalid.
+ */
+export function needsPoolRootKey(path: unknown): boolean {
   if (typeof path !== 'string') return false;
+  if (!path.startsWith('/')) return true;
   const parts = path.split('/').filter(Boolean);
-  return parts[0] === 'mnt' && parts.length <= 2;
+  if (parts.some((p) => p === '.' || p === '..')) return true;
+  return !(parts[0] === 'mnt' && parts.length >= 3);
 }

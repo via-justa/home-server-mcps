@@ -1,6 +1,6 @@
 import { OperationDescriptorSchema } from '@home-server-mcps/plugin-sdk';
 import { describe, expect, it } from 'vitest';
-import { buildCatalog, classify, groupOf, isPoolRoot, LOCKED } from '../src/catalog.js';
+import { buildCatalog, classify, groupOf, LOCKED, needsPoolRootKey } from '../src/catalog.js';
 import { METHODS } from './fake-truenas.js';
 
 describe('classify (TN §2.3, §9)', () => {
@@ -94,15 +94,25 @@ describe('buildCatalog', () => {
   });
 });
 
-describe('isPoolRoot', () => {
+describe('needsPoolRootKey', () => {
   it.each([
     ['/mnt/tank', true],
     ['/mnt/tank/', true],
+    ['//mnt//tank//', true],
     ['/mnt', true],
+    ['/', true],
+    ['/home/x', true],
+    ['mnt/tank/media', true],
+    ['/mnt/tank/.', true],
+    ['/mnt/tank/./', true],
+    ['/mnt/tank/media/..', true],
+    ['/mnt/tank/../tank', true],
+    ['/mnt/tank/media/../../other/x', true],
     ['/mnt/tank/media', false],
-    ['/home/x', false],
+    ['/mnt/tank/media/tv/', false],
+    [undefined, false],
     [5, false],
   ])('%s → %s', (path, expected) => {
-    expect(isPoolRoot(path)).toBe(expected);
+    expect(needsPoolRootKey(path)).toBe(expected);
   });
 });
