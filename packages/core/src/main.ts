@@ -1,8 +1,13 @@
+import { mkdirSync } from 'node:fs';
 import { createAppContext } from './app.js';
 import { loadConfig } from './config/env.js';
+import { acquireServerLock } from './lock.js';
 import { startServers } from './server.js';
 
 const config = loadConfig();
+mkdirSync(config.DATA_DIR, { recursive: true });
+const releaseLock = acquireServerLock(config.DATA_DIR);
+process.on('exit', releaseLock);
 const ctx = await createAppContext(config);
 for (const warning of ctx.warnings) console.warn(`WARN ${warning}`);
 if (ctx.users.count() === 0) console.log('No users yet: open the admin portal to create the first account.');

@@ -1,5 +1,7 @@
+import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +11,7 @@ import { createAppContext } from '../src/app.js';
 import { currentStep, totpAt } from '../src/auth/totp.js';
 import { rotateMasterKeyCommand } from '../src/cli.js';
 import { loadConfig } from '../src/config/env.js';
+import { acquireServerLock, LOCK_FILENAME } from '../src/lock.js';
 import { auditLog, preApprovalHits, sessions } from '../src/db/schema.js';
 import { runHousekeeping } from '../src/maintenance.js';
 import { updateSettings } from '../src/settings.js';
@@ -95,6 +98,31 @@ describe('rotate-master-key', () => {
     expect(ctx.instances.getConnection(s.instanceId).secrets).toMatchObject({ token: { set: true } });
     expect(ctx.notifier.list()[0]!.secrets).toEqual({ token: { set: true } });
     expect(ctx.users.confirmTotp(s.userId, totpAt(s.secret, currentStep()))).toHaveLength(10);
+  });
+
+  it('refuses to run while a server holds the data directory (review L8)', async () => {
+    const s = await seeded();
+    const keyFile = path.join(s.dataDir, 'master.key');
+    const before = readFileSync(keyFile, 'utf8');
+    // Stand-in for a running server: a live process named in the lock file.
+    const server = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    const exited = new Promise((r) => server.once('exit', r));
+    cleanup.push(() => server.kill());
+    const lock = path.join(s.dataDir, LOCK_FILENAME);
+    writeFileSync(lock, JSON.stringify({ pid: server.pid, host: hostname(), startedAt: new Date().toISOString() }));
+
+    expect(() => rotateMasterKeyCommand(env(s.dataDir), () => undefined)).toThrow(/server is running/);
+    expect(() => acquireServerLock(s.dataDir)).toThrow(/Another server/);
+    expect(readFileSync(keyFile, 'utf8')).toBe(before);
+
+    // Once it has stopped, the stale lock doesn't block anything.
+    server.kill();
+    await exited;
+    expect(rotateMasterKeyCommand(env(s.dataDir), () => undefined)).toMatchObject({ instances: 1 });
+    const release = acquireServerLock(s.dataDir);
+    expect(JSON.parse(readFileSync(lock, 'utf8'))).toMatchObject({ pid: process.pid });
+    release();
+    expect(existsSync(lock)).toBe(false);
   });
 
   it('with MASTER_KEY in the environment, requires NEW_MASTER_KEY and changes nothing on a wrong key', async () => {

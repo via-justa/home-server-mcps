@@ -6,6 +6,7 @@ import { loadConfig } from './config/env.js';
 import { loadMasterKey, MASTER_KEY_FILENAME, SecretBox } from './crypto/index.js';
 import { rotateSecrets } from './crypto/rotate.js';
 import { openDatabase } from './db/index.js';
+import { assertServerStopped } from './lock.js';
 
 /**
  * Operator commands, run with the server stopped:
@@ -21,6 +22,7 @@ const USAGE = 'Usage: cli.js rotate-master-key   (stop the server first)';
 
 export function rotateMasterKeyCommand(env: NodeJS.ProcessEnv, log: (line: string) => void = console.log) {
   const config = loadConfig(env);
+  assertServerStopped(config.DATA_DIR);
   const keyFile = path.join(config.DATA_DIR, MASTER_KEY_FILENAME);
   if (!config.MASTER_KEY && !existsSync(keyFile))
     throw new Error(`No master key: MASTER_KEY is unset and ${keyFile} does not exist`);
