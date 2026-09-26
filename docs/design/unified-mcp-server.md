@@ -808,7 +808,7 @@ TN §5, SR §5, and HA §5 apply unchanged, each run **per instance** by the cor
 - **Reverse proxy** (documented examples for Caddy, Traefik, and Cloudflare Tunnel):
   - `mcp.example.com` → `:8080`. Must pass `Mcp-Session-Id`, allow SSE (no buffering), and forward `X-Forwarded-Proto`/`Host`.
   - `admin.lan` (or a VPN-only hostname) → `:8081`. **Do not** publish it on the internet. If it must be remote, put it behind Cloudflare Access / Authelia in addition to the portal login.
-  - `TRUST_PROXY=true` makes core honor `X-Forwarded-*` headers for client IP (rate limiting, audit), scheme, and cookie `Secure`.
+  - `TRUST_PROXY=true` (or a hop count, e.g. `2` for two chained proxies) makes core honor `X-Forwarded-*` headers for client IP (rate limiting, audit), scheme, and cookie `Secure`. `X-Forwarded-For` is read **from the right**: the entry the outermost trusted proxy appended is the client; anything further left was sent by the client and is ignored.
 - **Environment** (full list in `.env.example`): `DATA_DIR`, `MASTER_KEY`, `MCP_HOST`/`MCP_PORT`, `ADMIN_HOST`/`ADMIN_PORT`, `PUBLIC_MCP_URL`, `PUBLIC_ADMIN_URL`, `MCP_ALLOWED_HOSTS`, `TRUST_PROXY`, `CORE_PLUGINS_AUTOENABLE`, `ADMIN_BOOTSTRAP_USERNAME`/`ADMIN_BOOTSTRAP_PASSWORD`, `ADMIN_FORCE_LOCAL_LOGIN`, `LOG_LEVEL`.
 - **Egress hardening (recommended):** container network policy limiting outbound traffic to the upstream hosts, ntfy/webhook targets, OIDC issuer, and plugin repo hosts (see §4.4 limit).
 
