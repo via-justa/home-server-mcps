@@ -133,6 +133,28 @@ interface AuthorizeRequest extends Record<string, unknown> {
 }
 
 export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthService) {
+  // The authorization server only runs with a configured public URL (design §2.1): its issuer and every
+  // discovery document must not come from the request's Host header, which a client controls.
+  const asOff = (c: Context) => {
+    c.header('Cache-Control', 'no-store');
+    return c.json(
+      {
+        error: 'temporarily_unavailable',
+        error_description: 'OAuth is off until the server operator sets PUBLIC_MCP_URL',
+      },
+      503,
+    );
+  };
+  for (const path of [
+    '/.well-known/*',
+    '/oauth/register',
+    '/oauth/authorize',
+    '/oauth/consent',
+    '/oauth/token',
+    '/oauth/revoke',
+  ]) {
+    app.use(path, async (c, next) => (ctx.config.PUBLIC_MCP_URL ? next() : asOff(c)));
+  }
   const issuer = (c: Context) => publicMcpBase(ctx, c);
   const oauthEndpoints = (c: Context) =>
     ctx.instances

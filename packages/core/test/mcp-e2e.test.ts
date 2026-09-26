@@ -52,6 +52,8 @@ beforeAll(async () => {
   await ctx.users.create({ username: 'admin', password: PASSWORD });
   servers = await startServers(ctx);
   base = `http://127.0.0.1:${servers.mcp.port}`;
+  // OAuth is off until the public URL is known (review M12); the port is only known now.
+  (ctx.config as { PUBLIC_MCP_URL?: string }).PUBLIC_MCP_URL = base;
   instanceId = (await ctx.instances.create({ pluginId: 'echo', slug: 'echo', connection: {} })).id;
   otherInstanceId = (await ctx.instances.create({ pluginId: 'echo', slug: 'echo-two', connection: {} })).id;
   await ctx.instances.syncNow(instanceId);
@@ -453,6 +455,26 @@ describe('OAuth 2.1 authorization server', () => {
     });
     const pr = await (await fetch(`${base}/.well-known/oauth-protected-resource/echo`)).json();
     expect(pr).toMatchObject({ resource: `${base}/echo`, authorization_servers: [base] });
+  });
+
+  it('stays off until PUBLIC_MCP_URL is set: no discovery from the Host header', async () => {
+    const config = ctx.config as { PUBLIC_MCP_URL?: string };
+    const saved = config.PUBLIC_MCP_URL;
+    config.PUBLIC_MCP_URL = undefined;
+    try {
+      const as = await fetch(`${base}/.well-known/oauth-authorization-server`, {
+        headers: { host: 'evil.example.com' },
+      });
+      expect(as.status).toBe(503);
+      expect(((await as.json()) as { error: string }).error).toBe('temporarily_unavailable');
+      expect((await fetch(`${base}/.well-known/oauth-protected-resource/echo`)).status).toBe(503);
+      expect((await fetch(`${base}/oauth/register`, { method: 'POST', body: '{}' })).status).toBe(503);
+      const res = await fetch(`${base}/echo`, { method: 'POST', body: '{}' });
+      expect(res.status).toBe(401);
+      expect(res.headers.get('www-authenticate')).not.toContain('resource_metadata');
+    } finally {
+      config.PUBLIC_MCP_URL = saved;
+    }
   });
 
   it('runs DCR → sign-in → consent → PKCE code exchange → MCP access, bound to the granted endpoint', async () => {

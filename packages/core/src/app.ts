@@ -91,6 +91,10 @@ export async function createAppContext(config: Config, opts: AppOptions = {}): P
   if (boot === 'ignored') warnings.push('ADMIN_BOOTSTRAP_* is set but users already exist; it is ignored — remove it');
 
   const instances = new InstanceManager({ db, secrets, events, now, supervisor: opts.supervisor });
+  if (!config.PUBLIC_MCP_URL)
+    warnings.push(
+      'PUBLIC_MCP_URL is not set: OAuth is off (bearer tokens still work). Set it to the public address of the MCP port.',
+    );
   const links = new ApprovalLinkService(db, now);
   const approvals = new ApprovalService(db, links, now);
 

@@ -31,6 +31,10 @@ export type McpAuthResult =
   | { ok: true; identity: McpIdentity }
   | { ok: false; status: 401 | 403; error: string; message: string; wwwAuthenticate?: string };
 
+/**
+ * The MCP listener's public origin: PUBLIC_MCP_URL, or — only where no security decision depends on
+ * it (the approval-page link sent back to the same client, sign-in redirects) — the request's origin.
+ */
 export function publicMcpBase(ctx: AppContext, c: Context): string {
   return (ctx.config.PUBLIC_MCP_URL ?? requestOrigin(c, ctx.config.TRUST_PROXY)).replace(/\/+$/, '');
 }
@@ -93,7 +97,8 @@ export async function authenticateMcp(
   }
 
   const allowBearer = mode === 'bearer' || mode === 'bearer+oauth';
-  const allowOauth = mode === 'oauth' || mode === 'bearer+oauth';
+  // OAuth is off until PUBLIC_MCP_URL is set: its discovery documents must not come from the Host header.
+  const allowOauth = (mode === 'oauth' || mode === 'bearer+oauth') && !!ctx.config.PUBLIC_MCP_URL;
   const base = publicMcpBase(ctx, c);
   const challenge = (error?: string) => {
     const params: string[] = [];
