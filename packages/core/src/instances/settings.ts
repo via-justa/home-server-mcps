@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { cleanStored, parseLeniently } from '../lenient.js';
 
 /** Per-instance runtime settings (design §8.2 "Instance Settings"), stored as JSON on `plugin_instances.settings`. */
 export const InstanceSettingsSchema = z
@@ -48,4 +49,14 @@ export type InstanceSettings = z.infer<typeof InstanceSettingsSchema>;
 
 export function parseInstanceSettings(raw: unknown): InstanceSettings {
   return InstanceSettingsSchema.parse(raw ?? {});
+}
+
+/** Stored instance settings, read leniently (a field a newer schema rejects falls back to its default). */
+export function readInstanceSettings(raw: unknown, label = 'instance settings'): InstanceSettings {
+  return parseLeniently(InstanceSettingsSchema, raw, label);
+}
+
+/** For the startup normalization: the stored settings with just the rejected fields removed. */
+export function cleanInstanceSettings(raw: unknown, label: string) {
+  return cleanStored(InstanceSettingsSchema, raw, label);
 }

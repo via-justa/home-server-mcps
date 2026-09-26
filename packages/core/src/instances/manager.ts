@@ -19,7 +19,7 @@ import { PluginProcess, PluginUnavailableError } from '../plugins/process.js';
 import { PluginSupervisor } from '../plugins/supervisor.js';
 import type { InstanceStatus } from '../plugins/supervisor.js';
 import { mergeSecrets, storedSecretsFor, summarizeSecrets, validateConnection } from './connection.js';
-import { parseInstanceSettings } from './settings.js';
+import { cleanInstanceSettings, parseInstanceSettings, readInstanceSettings } from './settings.js';
 import type { InstanceSettings } from './settings.js';
 
 /**
@@ -87,6 +87,13 @@ export class InstanceManager {
   private plugin(pluginRowId: string): PluginRow & { parsed: Manifest } {
     const p = this.db.select().from(plugins).where(eq(plugins.id, pluginRowId)).get();
     if (!p) throw new NotFoundError('plugin_not_found', 'No such plugin');
+    // Discovery re-validates manifests against the current SDK on every start and marks failures; a
+    // row it marked unusable is reported as such rather than failing deep inside a request.
+    if (p.status !== 'ok')
+      throw new ConflictError(
+        'plugin_unusable',
+        `Plugin ${p.pluginId} is ${p.status}${p.statusError ? `: ${p.statusError}` : ''}`,
+      );
     return { ...p, parsed: parseManifest(p.manifest) };
   }
 
@@ -138,7 +145,7 @@ export class InstanceManager {
       sourceRef: instance.sourceRef,
       lastSyncedAt: instance.lastSyncedAt,
       lastSyncStatus: instance.lastSyncStatus,
-      settings: parseInstanceSettings(instance.settings),
+      settings: readInstanceSettings(instance.settings, `/${instance.slug} settings`),
       plugin: {
         id: plugin.id,
         pluginId: plugin.pluginId,
@@ -157,7 +164,7 @@ export class InstanceManager {
   }
 
   settingsOf(instance: InstanceRow): InstanceSettings {
-    return parseInstanceSettings(instance.settings);
+    return readInstanceSettings(instance.settings, `/${instance.slug} settings`);
   }
 
   /**
@@ -171,6 +178,22 @@ export class InstanceManager {
     } catch {
       return message;
     }
+  }
+
+  /** Startup step: removes stored instance settings fields the current schema rejects. */
+  normalizeStoredSettings(): string[] {
+    const changed: string[] = [];
+    for (const row of this.db.select().from(pluginInstances).all()) {
+      const { cleaned, dropped } = cleanInstanceSettings(row.settings, `/${row.slug} settings`);
+      if (!dropped.length) continue;
+      this.db
+        .update(pluginInstances)
+        .set({ settings: cleaned as Record<string, unknown> })
+        .where(eq(pluginInstances.id, row.id))
+        .run();
+      changed.push(row.slug);
+    }
+    return changed;
   }
 
   /** Everything the gate needs for one instance. */
@@ -289,7 +312,10 @@ export class InstanceManager {
       set.authMode = patch.authMode;
     }
     if (patch.settings !== undefined) {
-      const merged = { ...(before.settings as object), ...(patch.settings as object) };
+      // Start from the normalized stored settings, so a field an older release stored and this one
+      // rejects doesn't block saving an unrelated change.
+      const stored = cleanInstanceSettings(before.settings, `/${before.slug} settings`).cleaned as object;
+      const merged = { ...stored, ...(patch.settings as object) };
       set.settings = parseInstanceSettings(merged);
     }
     if (Object.keys(set).length === 0) return this.get(id);

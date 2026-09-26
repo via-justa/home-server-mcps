@@ -631,6 +631,8 @@ notifier_channels(id, kind 'ntfy'|'webhook', name, config TEXT, secrets_enc BLOB
 approval_links(token_hash PK, approval_id FK, action 'view', expires_at, used_at)   -- approval-page tokens (§5.3)
 ```
 
+JSON columns written by an earlier release (global `settings`, instance `settings`) are read **leniently**: a field the current schema rejects falls back to its default with a logged warning, instead of making every read throw. At startup those rejected fields are removed from the stored JSON once; valid fields are kept exactly as stored, so a later release's new defaults still apply to fields nobody set. Plugin manifests are re-validated by discovery on every start, and a plugin whose manifest no longer passes is marked unusable (its endpoints answer 503) rather than failing inside requests.
+
 ### 7.2 Secrets & master key
 
 - `MASTER_KEY` (32 bytes, base64) comes from env. If unset, core reads or creates `DATA_DIR/master.key` (0600) on first boot and logs a prominent warning recommending that the key be moved out of the data volume.

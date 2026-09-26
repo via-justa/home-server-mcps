@@ -23,6 +23,7 @@ import { discoverPlugins, syncPluginRegistry } from './plugins/discovery.js';
 import { PluginRepoService } from './plugins/repos.js';
 import type { FetchBytes } from './plugins/repos.js';
 import { sandboxesRunning } from './runtime/index.js';
+import { normalizeStoredSettings } from './settings.js';
 
 /**
  * Wires every core service together once (design §2). Both listeners, the scheduler and tests use
@@ -100,6 +101,9 @@ export async function createAppContext(config: Config, opts: AppOptions = {}): P
   if (boot === 'ignored') warnings.push('ADMIN_BOOTSTRAP_* is set but users already exist; it is ignored — remove it');
 
   const instances = new InstanceManager({ db, secrets, events, now, supervisor: opts.supervisor });
+  // Stored JSON from an earlier release is brought to the current schemas once, before anything reads it.
+  normalizeStoredSettings(db);
+  instances.normalizeStoredSettings();
   if (!config.PUBLIC_MCP_URL)
     warnings.push(
       'PUBLIC_MCP_URL is not set: OAuth is off (bearer tokens still work). Set it to the public address of the MCP port.',
