@@ -35,7 +35,7 @@ describe('seerr manifest', () => {
       Object.entries(connection.ui)
         .filter(([, ui]) => !ui.showWhen || ui.showWhen.in.includes(method))
         .map(([name]) => name);
-    expect(shownFor('local')).toEqual(['baseUrl', 'authMethod', 'email', 'password']);
-    expect(shownFor('apiKey')).toEqual(['baseUrl', 'authMethod', 'apiKey', 'actAsUserId']);
+    expect(shownFor('local')).toEqual(['baseUrl', 'authMethod', 'email', 'password', 'specBaseUrl']);
+    expect(shownFor('apiKey')).toEqual(['baseUrl', 'authMethod', 'apiKey', 'actAsUserId', 'specBaseUrl']);
   });
 });
