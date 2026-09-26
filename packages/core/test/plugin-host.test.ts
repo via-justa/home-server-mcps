@@ -333,6 +333,17 @@ describe('discovery', () => {
           await expect(proc.call('testConnection')).resolves.toMatchObject({ ok: false });
           continue;
         }
+        if (p.manifest.id === 'seerr') {
+          // Same for Seerr's bundled YAML parser and global fetch.
+          await proc.call('init', {
+            instanceId: 'i',
+            config: { baseUrl: 'http://127.0.0.1:1', authMethod: 'apiKey' },
+            secrets: { apiKey: 'k' },
+            sdkVersion: '1.0.0',
+          });
+          await expect(proc.call('testConnection')).resolves.toMatchObject({ ok: false });
+          continue;
+        }
         // The skeleton plugins answer NOT_IMPLEMENTED — which proves the bundle loaded with no
         // access outside its own directory.
         await expect(proc.call('getUpstreamVersion')).rejects.toMatchObject({ code: 'NOT_IMPLEMENTED' });
