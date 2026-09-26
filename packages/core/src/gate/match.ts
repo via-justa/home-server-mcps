@@ -100,15 +100,17 @@ const escapePointer = (key: string) => key.replace(/~/g, '~0').replace(/\//g, '~
 
 /**
  * Whether every parameter is covered by some condition: a condition on a path covers everything under
- * it; an object only partly covered has each of its keys checked in turn. Nothing (or `{}`) is covered.
+ * it; an object or array only partly covered has each of its keys (or indexes: `/0/name`) checked in
+ * turn. Nothing (or `{}` / `[]`) is covered. Arrays matter for positional APIs such as TrueNAS, whose
+ * params are `[{ name, … }]`.
  */
 export function coversAllParams(match: readonly MatchCondition[], params: unknown): boolean {
   const pointers = match.filter((c) => c.field !== '$targets').map((c) => c.field);
   const covered = (value: unknown, path: string): boolean => {
     if (pointers.includes(path)) return true;
     if (value === undefined || value === null) return path === '';
-    if (typeof value !== 'object' || Array.isArray(value)) return false;
-    const entries = Object.entries(value);
+    if (typeof value !== 'object') return false;
+    const entries = Array.isArray(value) ? value.map((v, i) => [String(i), v] as const) : Object.entries(value);
     if (entries.length === 0) return true;
     if (!pointers.some((p) => p.startsWith(`${path}/`))) return false;
     return entries.every(([k, v]) => covered(v, `${path}/${escapePointer(k)}`));
