@@ -190,6 +190,8 @@ export const operations = sqliteTable(
     acknowledgedBy: text('acknowledged_by').references(() => users.id),
     typedConfirmation: flag('typed_confirmation').notNull().default(false),
     attestationRequired: flag('attestation_required').notNull().default(false),
+    /** An admin turned the attestation requirement off; the plugin's request no longer re-adds it. */
+    attestationWaived: flag('attestation_waived').notNull().default(false),
     needsReview: flag('needs_review').notNull().default(false),
     matchProfile: text('match_profile'),
     paramsSchema: json('params_schema'),

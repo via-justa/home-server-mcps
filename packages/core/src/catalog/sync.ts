@@ -157,8 +157,8 @@ export function applyCatalogSync(
       tx.update(operations)
         .set({
           ...fields,
-          // The plugin can add the attestation requirement; only an admin can remove it.
-          attestationRequired: prev.attestationRequired || d.attestationRequired,
+          // The plugin can add the attestation requirement; only an admin can remove it (and then it stays off).
+          attestationRequired: prev.attestationRequired || (d.attestationRequired && !prev.attestationWaived),
           ...(becameWrite ? { writeAcknowledged: false, acknowledgedAt: null, acknowledgedBy: null } : {}),
           // A newly locked op starts closed again: it needs its own `ask` level to be callable.
           ...(becameLocked ? { levelOverride: null } : {}),

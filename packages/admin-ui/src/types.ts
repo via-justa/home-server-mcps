@@ -56,6 +56,8 @@ export interface Instance {
     enabled: boolean;
     status: string;
     labels?: { operation: string; operations: string };
+    /** The plugin offers best-practice guides (attestation keys). */
+    attestation?: boolean;
   };
   endpointUrl?: string;
   effectiveAuthMode?: AuthMode;

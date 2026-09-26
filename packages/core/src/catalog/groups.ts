@@ -402,6 +402,8 @@ export interface OperationPatch {
   level?: AccessLevel | null;
   acknowledged?: boolean;
   classification?: 'read' | 'write';
+  /** Require a best-practice key (guides) for this operation; turning it off is remembered across syncs. */
+  attestationRequired?: boolean;
 }
 
 /**
@@ -446,6 +448,10 @@ export function updateOperation(
     if (acknowledges && !op.writeAcknowledged) {
       Object.assign(set, { writeAcknowledged: true, acknowledgedAt: now, acknowledgedBy: actor.userId ?? null });
     }
+    if (patch.attestationRequired !== undefined && patch.attestationRequired !== op.attestationRequired) {
+      set.attestationRequired = patch.attestationRequired;
+      set.attestationWaived = !patch.attestationRequired;
+    }
     if (patch.acknowledged === false) {
       Object.assign(set, { writeAcknowledged: false, acknowledgedAt: null, acknowledgedBy: null });
     }
@@ -466,6 +472,7 @@ export function updateOperation(
             level: op.levelOverride,
             writeAcknowledged: op.writeAcknowledged,
             classification: op.classification,
+            attestationRequired: op.attestationRequired,
           },
           after: set,
         },

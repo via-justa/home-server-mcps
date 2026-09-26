@@ -1,0 +1,1 @@
+ALTER TABLE `operations` ADD `attestation_waived` integer DEFAULT false NOT NULL;

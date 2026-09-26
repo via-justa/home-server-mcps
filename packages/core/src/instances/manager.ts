@@ -146,6 +146,7 @@ export class InstanceManager {
         enabled: plugin.enabled,
         status: plugin.status,
         labels: manifest?.labels,
+        attestation: manifest?.capabilities.attestation ?? false,
       },
     };
   }

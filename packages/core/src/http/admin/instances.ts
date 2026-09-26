@@ -194,6 +194,7 @@ export function registerInstanceRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
         level: z.enum(ACCESS_LEVELS).nullable().optional(),
         acknowledged: z.boolean().optional(),
         classification: z.enum(['read', 'write']).optional(),
+        attestationRequired: z.boolean().optional(),
       }),
     );
     updateOperation(ctx.db, c.req.param('id'), c.req.param('opId'), body, { actor: actor(c) });

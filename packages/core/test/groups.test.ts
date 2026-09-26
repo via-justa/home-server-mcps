@@ -262,6 +262,29 @@ describe('re-sync of changed operations (review M14)', () => {
     });
   });
 
+  it('lets an admin turn the attestation requirement off, and remembers it across syncs (review L13)', () => {
+    const { db, instanceId, id } = setup();
+    const guided = () => catalog(op('app.query'), op('app.upgrade', { attestationRequired: true }));
+    applyCatalogSync(db, instanceId, guided());
+    const row = () => db.select().from(operations).where(eq(operations.key, 'app.upgrade')).get()!;
+    expect(row().attestationRequired).toBe(true);
+
+    updateOperation(db, instanceId, id('app.upgrade'), { attestationRequired: false }, { actor: { userId: 'u1' } });
+    applyCatalogSync(db, instanceId, guided());
+    expect(row().attestationRequired).toBe(false);
+    const audit = db
+      .select()
+      .from(auditLog)
+      .all()
+      .filter((a) => a.decision === 'operation_updated')
+      .at(-1);
+    expect(audit).toMatchObject({ actorId: 'u1', detail: { after: { attestationRequired: false } } });
+
+    updateOperation(db, instanceId, id('app.upgrade'), { attestationRequired: true });
+    applyCatalogSync(db, instanceId, guided());
+    expect(row().attestationRequired).toBe(true);
+  });
+
   it('always requires typed confirmation on locked operations (review M15)', () => {
     const { db, instanceId } = setup();
     applyCatalogSync(

@@ -325,6 +325,19 @@ const kindLabel = (op: Operation) => (op.locked ? 'locked' : op.classification);
                     <option value="read">read</option>
                     <option value="write">write</option>
                   </select>
+                  <label
+                    v-if="instance.plugin.attestation"
+                    class="row small"
+                    title="Calls must present the key from this operation's best-practice guide"
+                  >
+                    <input
+                      type="checkbox"
+                      :checked="op.attestationRequired"
+                      :aria-label="`Require the guide for ${op.key}`"
+                      @change="patchOp(op, { attestationRequired: ($event.target as HTMLInputElement).checked })"
+                    />
+                    Guide
+                  </label>
                 </div>
               </td>
             </tr>
