@@ -81,7 +81,7 @@ export function registerApprovalRoutes(app: Hono, ctx: AppContext) {
     const token = c.req.param('token');
     const data = load(c, token);
     if (!data) return gone(c);
-    const session = uiSession(ctx, c);
+    const session = uiSession(ctx, c, 'approval');
     if (!session) return renderLogin(ctx, c, `/a/${token}`, 'Sign in to review this approval request.');
     if (!session.user.totpEnabled) return noTotp(c);
     return render(c, token, data, session);
@@ -92,7 +92,7 @@ export function registerApprovalRoutes(app: Hono, ctx: AppContext) {
     const body = await c.req.parseBody();
     const data = load(c, token);
     if (!data) return gone(c);
-    const session = uiSession(ctx, c);
+    const session = uiSession(ctx, c, 'approval');
     if (!session) return renderLogin(ctx, c, `/a/${token}`, 'Your sign-in expired. Sign in again to decide.');
     if (!session.user.totpEnabled) return noTotp(c);
     if (!checkUiCsrf(c, body.csrf)) return render(c, token, data, session, 'The form expired; try again.');

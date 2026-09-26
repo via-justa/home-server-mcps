@@ -204,6 +204,20 @@ describe('approval page', () => {
     await t.run;
   });
 
+  it('keeps approval sign-ins apart from OAuth consent sign-ins (review L14)', async () => {
+    const t = await withPendingCall(`return (await echo.call('echo.set', { name: 'tank/a' })).key;`);
+    const signedIn = await t.signIn(t.page);
+    const cookie = signedIn.headers.getSetCookie().find((c) => c.startsWith('hsm_mcp_approve='))!;
+    expect(cookie).toMatch(/Path=\/a(;|$)/);
+    expect(cookie).toMatch(/HttpOnly/);
+    const raw = cookie.slice('hsm_mcp_approve='.length).split(';')[0]!;
+    const limits = { idleMs: 60 * 60_000, absoluteMs: 24 * 60 * 60_000 };
+    expect(t.ctx.sessions.validate(raw, 'approval_ui', limits)).not.toBeNull();
+    // The same session can't stand in for a consent sign-in.
+    expect(t.ctx.sessions.validate(raw, 'oauth_ui', limits)).toBeNull();
+    expect(signedIn.headers.getSetCookie().some((c) => c.startsWith('hsm_mcp_oauth='))).toBe(false);
+  });
+
   it('rejects unknown tokens', async () => {
     const t = await withPendingCall(`await echo.call('echo.set', { name: 'x' });`);
     expect((await t.browse('/a/not-a-real-token-at-all-000000')).status).toBe(404);
