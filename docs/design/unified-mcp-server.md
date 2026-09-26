@@ -843,7 +843,7 @@ Residual risks, stated up front:
 
 ## 13. Development Phases (TDD)
 
-Same discipline as TN §7: tests first, phase gates, no loosening tests to pass. Coverage is tracked separately for the security-critical path (`gate/`, `auth/`, `plugins/host`, `crypto`).
+Same discipline as TN §7: tests first, phase gates, no loosening tests to pass. Coverage is tracked separately for the security-critical path: `pnpm --filter @home-server-mcps/core test:coverage` (V8 coverage) fails when `gate/`, `auth/`, `approvals/`, `sandbox/` or `crypto/` drop below their thresholds in `packages/core/vitest.config.ts`.
 
 | #   | Phase                                        | Tests first (highlights)                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | --- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
