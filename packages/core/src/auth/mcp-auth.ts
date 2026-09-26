@@ -1,5 +1,6 @@
 import type { Context } from 'hono';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
+import type { JWTVerifyGetKey } from 'jose';
 import type { AppContext } from '../app.js';
 import { getSettings } from '../settings.js';
 import { McpTokenService, TOKEN_PREFIX } from './mcp-tokens.js';
@@ -47,12 +48,23 @@ export function effectiveAuthMode(ctx: AppContext, instanceAuthMode: string | nu
 
 const jwksCache = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
-async function verifyCloudflareAccess(teamDomain: string, aud: string, assertion: string): Promise<string | null> {
+/**
+ * Verifies a `Cf-Access-Jwt-Assertion` against the team's signing keys: signature, issuer (the team
+ * domain), audience (the Access application's AUD tag) and expiry. Returns who it names, or null.
+ * `keys` replaces the team's published key set (tests).
+ */
+export async function verifyCloudflareAccess(
+  teamDomain: string,
+  aud: string,
+  assertion: string,
+  keys?: JWTVerifyGetKey,
+): Promise<string | null> {
   const domain = teamDomain.replace(/^https?:\/\//, '').replace(/\/+$/, '');
-  let jwks = jwksCache.get(domain);
+  let jwks = keys ?? jwksCache.get(domain);
   if (!jwks) {
-    jwks = createRemoteJWKSet(new URL(`https://${domain}/cdn-cgi/access/certs`));
-    jwksCache.set(domain, jwks);
+    const remote = createRemoteJWKSet(new URL(`https://${domain}/cdn-cgi/access/certs`));
+    jwksCache.set(domain, remote);
+    jwks = remote;
   }
   try {
     const { payload } = await jwtVerify(assertion, jwks, { issuer: `https://${domain}`, audience: aud });
