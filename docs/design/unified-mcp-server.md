@@ -360,7 +360,7 @@ Installation, update, removal, and repo add/remove/key-change are written to the
 - **Scrubbed environment.** Only `NODE_ENV` and a `PLUGIN_INSTANCE_ID` are passed. `MASTER_KEY`, DB paths, and admin config are never visible.
 - **Memory cap** via `--max-old-space-size` (default 256 MB, adjustable per instance).
 - **Secrets arrive only via `init`** over IPC, decrypted by core for **that instance only**.
-- **Supervision.** If the child crashes, the instance status becomes `error`. It restarts with exponential backoff (1 s → 60 s max), and the incident is audited and sent to notifiers (§9). While the child is down, in-flight `execute` calls fail with a structured `PluginUnavailable` error. The permission gate itself does not fail open; it never needs the plugin in order to _deny_.
+- **Supervision.** If the child crashes, the instance status becomes `error`. It restarts with exponential backoff (1 s → 60 s max), and the incident is audited and sent to notifiers (§9). Start, stop and restart run one at a time per instance; a stop or restart kills a child still in `init` instead of waiting for it, so at most one child per instance is ever alive. While the child is down, in-flight `execute` calls fail with a structured `PluginUnavailable` error. The permission gate itself does not fail open; it never needs the plugin in order to _deny_.
 - **Known limit: network egress is not restricted.** The Node permission model does not cover network access. A malicious plugin can reach any host the container can. The manifest's `network.hosts` is a _declaration_ shown at install time, not enforcement. Container-level egress policy is the documented mitigation, and per-plugin egress control is an open decision (§14).
 
 ---

@@ -2,7 +2,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeF
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openDatabase } from '../src/db/index.js';
 import { plugins } from '../src/db/schema.js';
 import { discoverPlugins, inspectPluginDir, syncPluginRegistry } from '../src/plugins/discovery.js';
@@ -101,14 +101,14 @@ describe('PluginProcess', () => {
 });
 
 describe('PluginSupervisor', () => {
-  function supervise(config: { mode?: string }) {
+  function supervise(config: { mode?: string }, initTimeoutMs = 300) {
     const statuses: [InstanceStatus, string | undefined][] = [];
     const sup = new PluginSupervisor({
       dir: FIXTURE,
       entry: 'index.mjs',
       instanceId: 'inst-1',
       defaultTimeoutMs: 2000,
-      initTimeoutMs: 300,
+      initTimeoutMs,
       backoff: { initialMs: 20, maxMs: 100 },
       loadInit: () => ({ config: { ...config }, secrets: {} }),
       onStatus: (s, e) => statuses.push([s, e]),
@@ -153,6 +153,42 @@ describe('PluginSupervisor', () => {
       await sup.stop();
       expect(sup.status).toBe('stopped');
     }
+  });
+
+  /** Records every child the supervisor forks, so a test can check none is left behind. */
+  function trackChildren() {
+    const spawned: PluginProcess[] = [];
+    const start = PluginProcess.prototype.start;
+    const spy = vi.spyOn(PluginProcess.prototype, 'start').mockImplementation(function (this: PluginProcess) {
+      spawned.push(this);
+      start.call(this);
+    });
+    cleanup.push(() => spy.mockRestore());
+    return () => spawned.filter((p) => p.running).length;
+  }
+
+  it('serializes concurrent restarts: exactly one child survives', async () => {
+    const live = trackChildren();
+    const { sup, statuses } = supervise({});
+    await sup.start();
+    await Promise.all([sup.restart(), sup.restart(), sup.start(), sup.restart()]);
+    expect(sup.status).toBe('ready');
+    await waitFor(() => live() === 1);
+    expect(sup.client.running).toBe(true);
+    expect(statuses.map(([s]) => s)).not.toContain('error');
+  });
+
+  it('stops promptly during init and kills the child being initialized', async () => {
+    const live = trackChildren();
+    const { sup } = supervise({ mode: 'hang-init' }, 10_000);
+    const starting = sup.start();
+    await waitFor(() => sup.status === 'starting' && live() === 1);
+    const t0 = Date.now();
+    await sup.stop();
+    await starting;
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(sup.status).toBe('stopped');
+    await waitFor(() => live() === 0);
   });
 
   it('does not restart after an explicit stop', async () => {
