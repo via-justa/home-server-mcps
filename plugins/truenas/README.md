@@ -37,6 +37,8 @@ Every method is classified when the catalog syncs. Admins can override a classif
 - **Write** by name: `.create`, `.update`, `.delete`, `set_…`, and run/start/stop/restart/install/upgrade/reboot/shutdown/wipe/attach/detach/export/remove/replace.
 - **Anything else is a write** (fail closed), shown with the reason `default:ambiguous` so an admin can reclassify it.
 
+Not in the catalog at all: login/session methods, and every `core.*` method except `core.get_jobs`, `core.get_methods`, `core.ping` and `core.job_abort`. Methods such as `core.bulk` and `core.download` call other methods, so exposing them would bypass the locked list.
+
 Access groups are namespaces (`pool.dataset`, `app`, `sharing.smb`). New groups start at Read.
 
 ## Pre-approval rules

@@ -64,6 +64,14 @@ describe('buildCatalog', () => {
     expect(catalog.methods.has('pool.query')).toBe(true);
   });
 
+  it('only exposes allowlisted core.* methods, so dispatchers cannot bypass the locked list', () => {
+    for (const m of ['core.bulk', 'core.download', 'core.debug', 'core.some_future_method']) {
+      expect(buildCatalog({ ...METHODS, [m]: {} }).methods.has(m), m).toBe(false);
+    }
+    expect(catalog.methods.has('core.get_jobs')).toBe(true);
+    expect(catalog.methods.has('core.ping')).toBe(true);
+  });
+
   it('records jobs, schemas, docs, match profiles and typed confirmation', () => {
     expect(catalog.jobs.has('app.upgrade')).toBe(true);
     expect(catalog.jobs.has('pool.query')).toBe(false);

@@ -39,10 +39,17 @@ const EXCLUDED = new Set([
   'auth.login_with_api_key',
   'auth.login_with_token',
   'auth.logout',
-  'core.subscribe',
-  'core.unsubscribe',
-  'core.set_options',
 ]);
+
+/**
+ * `core.*` is middleware plumbing, and some of it dispatches other methods (`core.bulk`,
+ * `core.download`) or opens a debugger (`core.debug`), which would bypass the locked list. Only these
+ * are exposed; anything else under `core`, including methods a future TrueNAS adds, is excluded.
+ */
+const CORE_ALLOWED = new Set(['core.get_jobs', 'core.get_methods', 'core.ping', 'core.job_abort']);
+
+const excluded = (method: string) =>
+  EXCLUDED.has(method) || (method.startsWith('core.') && !CORE_ALLOWED.has(method));
 
 const READ_LAST = new Set(['query', 'get_instance', 'config', 'status', 'choices', 'info']);
 const READ_VERBS = new Set(['list', 'listdir', 'get', 'search']);
@@ -149,7 +156,7 @@ export function buildCatalog(methods: Record<string, MethodInfo>): Catalog {
   const jobs = new Set<string>();
   const names = new Set<string>();
   for (const [method, info] of Object.entries(methods).sort(([a], [b]) => a.localeCompare(b))) {
-    if (EXCLUDED.has(method) || !/^[a-z0-9_.]+$/i.test(method)) continue;
+    if (excluded(method) ||!/^[a-z0-9_.]+$/i.test(method)) continue;
     names.add(method);
     if (info?.job) jobs.add(method);
     operations.push(describe(method, method, info ?? {}));

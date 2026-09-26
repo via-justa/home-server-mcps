@@ -46,6 +46,8 @@ describe('TrueNAS plugin', () => {
         { fn: 'call', args: ['no.such.method'] },
         { fn: 'call', args: [42] },
         { fn: 'call', args: ['auth.login_with_api_key', 'x'] },
+        { fn: 'call', args: ['core.bulk', 'pool.dataset.delete', [['tank/media']]] },
+        { fn: 'call', args: ['core.download', 'config.save', [], 'config.db'] },
         { fn: 'other', args: ['pool.query'] },
       ],
     });
