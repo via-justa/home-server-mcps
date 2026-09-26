@@ -257,16 +257,25 @@ export class UserService {
     });
   }
 
+  /**
+   * A TOTP code only (replay-protected), for checks that must not accept, or use up, a recovery code
+   * (the approval page).
+   */
+  verifyTotpCode(userId: string, code: string): boolean {
+    const user = this.get(userId);
+    const secret = this.totpSecret(user);
+    if (!user.totpEnabled || !secret) return false;
+    const step = verifyTotp(secret, code, { lastStep: user.totpLastStep });
+    if (step === null) return false;
+    this.db.update(users).set({ totpLastStep: step }).where(eq(users.id, userId)).run();
+    return true;
+  }
+
   /** Second factor: a TOTP code (replay-protected) or a single-use recovery code. */
   verifySecondFactor(userId: string, code: string): 'totp' | 'recovery' | null {
     const user = this.get(userId);
-    const secret = this.totpSecret(user);
-    if (!user.totpEnabled || !secret) return null;
-    const step = verifyTotp(secret, code, { lastStep: user.totpLastStep });
-    if (step !== null) {
-      this.db.update(users).set({ totpLastStep: step }).where(eq(users.id, userId)).run();
-      return 'totp';
-    }
+    if (!user.totpEnabled || !this.totpSecret(user)) return null;
+    if (this.verifyTotpCode(userId, code)) return 'totp';
     const hashed = sha256(code.trim().toLowerCase());
     const remaining = user.recoveryCodesHash ?? [];
     if (remaining.includes(hashed)) {

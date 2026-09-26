@@ -103,7 +103,8 @@ export function registerApprovalRoutes(app: Hono, ctx: AppContext) {
       const user = session.user;
       if (ctx.throttle.lockedFor(user.username, 'mcp') > 0)
         return render(c, token, data, session, 'Too many attempts; try again later.');
-      if (ctx.users.verifySecondFactor(user.id, String(body.totp ?? '')) !== 'totp') {
+      // TOTP only: a recovery code typed here must neither count nor be used up.
+      if (!ctx.users.verifyTotpCode(user.id, String(body.totp ?? ''))) {
         if (ctx.throttle.fail(user.username, 'mcp'))
           ctx.events.emit('auth.lockout', {
             username: user.username,

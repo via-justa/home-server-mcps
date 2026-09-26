@@ -62,10 +62,11 @@ async function withPendingCall(code: string, opts: { totp?: boolean; lockedAsk?:
 
   const admin = await ctx.users.create({ username: 'admin', password: PASSWORD });
   let secret = '';
+  let recoveryCodes: string[] = [];
   const step = currentStep();
   if (opts.totp !== false) {
     secret = ctx.users.beginTotp(admin.id).secret;
-    ctx.users.confirmTotp(admin.id, totpAt(secret, step - 1));
+    recoveryCodes = ctx.users.confirmTotp(admin.id, totpAt(secret, step - 1));
   }
 
   const instance = await ctx.instances.create({ pluginId: 'echo', slug: 'echo', connection: {} });
@@ -121,6 +122,8 @@ async function withPendingCall(code: string, opts: { totp?: boolean; lockedAsk?:
     signIn,
     page: opened[0]!.path,
     nextCode: () => totpAt(secret, step + 1),
+    recoveryCodes,
+    adminId: admin.id,
     advance: (ms: number) => (clock += ms),
   };
 }
@@ -180,6 +183,29 @@ describe('approval page', () => {
     // The code above was accepted, so only the decision is left; deny it.
     expect(await (await t.browse(t.page, { decision: 'deny', csrf })).text()).toContain('was denied');
     await expect(t.run).resolves.toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+  });
+
+  it('never accepts or uses up a recovery code in place of a TOTP code', async () => {
+    const t = await withPendingCall(`return (await echo.call('echo.delete', { name: 'tank/x' })).key;`, {
+      lockedAsk: true,
+    });
+    await t.signIn(t.page);
+    t.advance(6 * 60_000);
+    const csrf = hidden(await (await t.browse(t.page)).text(), 'csrf');
+    const before = t.ctx.users.get(t.adminId).recoveryCodesHash?.length;
+    const res = await t.browse(t.page, {
+      decision: 'approve',
+      confirm: 'tank/x',
+      totp: t.recoveryCodes[0]!,
+      csrf,
+    });
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain('valid authenticator code');
+    expect(t.ctx.users.get(t.adminId).recoveryCodesHash?.length).toBe(before);
+    // Still good for signing in.
+    expect(t.ctx.users.verifySecondFactor(t.adminId, t.recoveryCodes[0]!)).toBe('recovery');
+    t.ctx.approvals.cancelAll();
+    await t.run;
   });
 
   it('refuses users without TOTP', async () => {
