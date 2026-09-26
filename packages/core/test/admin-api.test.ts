@@ -215,6 +215,15 @@ describe('instances and access', () => {
     expect(JSON.stringify(conn)).not.toContain('a-long-secret');
     expect((await t.b.put(`/api/instances/${t.id}/connection`, { config: { mode: 5 } })).status).toBe(400);
     expect(await (await t.b.post(`/api/instances/${t.id}/connection/test`)).json()).toMatchObject({ ok: true });
+    // Malformed JSON is the client's error, not a 500 (review L19).
+    const cookie = [...t.b.jar].map(([k, v]) => `${k}=${v}`).join('; ');
+    const bad = await t.app.request(`/api/instances/${t.id}/connection/test`, {
+      method: 'POST',
+      headers: { cookie, 'x-csrf-token': t.b.jar.get('hsm_csrf')!, 'content-type': 'application/json' },
+      body: '{"config": ',
+    });
+    expect(bad.status).toBe(400);
+    expect(await bad.json()).toMatchObject({ error: 'invalid_json' });
     expect(
       await (await t.b.post(`/api/instances/${t.id}/connection/test`, { config: { mode: 'fail-init' } })).json(),
     ).toMatchObject({ ok: false });

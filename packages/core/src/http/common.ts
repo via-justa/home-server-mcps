@@ -1,7 +1,7 @@
 import { getConnInfo } from '@hono/node-server/conninfo';
 import type { Context } from 'hono';
 import { ZodError } from 'zod';
-import type { z } from 'zod';
+import { z } from 'zod';
 import { ServiceError, ValidationError } from '../errors.js';
 import { PluginTimeoutError, PluginUnavailableError } from '../plugins/process.js';
 
@@ -47,14 +47,18 @@ export function requestOrigin(c: Context, trustProxy: number | boolean): string 
 }
 
 export async function readJson<S extends z.ZodType>(c: Context, schema: S): Promise<z.infer<S>> {
-  let body: unknown = {};
+  return schema.parse((await readOptionalJson(c, z.unknown())) ?? {});
+}
+
+/** Like `readJson`, but an empty body is `undefined` rather than `{}`. Malformed JSON is a 400. */
+export async function readOptionalJson<S extends z.ZodType>(c: Context, schema: S): Promise<z.infer<S> | undefined> {
   const text = await c.req.text();
-  if (text) {
-    try {
-      body = JSON.parse(text);
-    } catch {
-      throw new ValidationError('invalid_json', 'Request body must be JSON');
-    }
+  if (!text) return undefined;
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw new ValidationError('invalid_json', 'Request body must be JSON');
   }
   return schema.parse(body);
 }

@@ -18,7 +18,7 @@ import { operationGroups, operations } from '../../db/schema.js';
 import { ValidationError } from '../../errors.js';
 import { ACCESS_LEVELS, effectiveAccess } from '../../gate/access.js';
 import { AUTH_MODES } from '../../instances/manager.js';
-import { clientIp, readJson } from '../common.js';
+import { clientIp, readJson, readOptionalJson } from '../common.js';
 import type { AdminEnv } from './auth.js';
 import { createRedactor, GLOBAL_SENSITIVE_KEYS } from '../../gate/redact.js';
 
@@ -85,8 +85,7 @@ export function registerInstanceRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
     if (!ctx.throttle.allowIp(clientIp(c, ctx.config.TRUST_PROXY))) {
       return c.json({ error: 'rate_limited', message: 'Too many attempts; try again later' }, 429);
     }
-    const text = await c.req.text();
-    const candidate = text ? Connection.parse(JSON.parse(text)) : undefined;
+    const candidate = await readOptionalJson(c, Connection);
     return c.json(await ctx.instances.testConnection(c.req.param('id'), candidate));
   });
 
