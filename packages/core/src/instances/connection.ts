@@ -1,6 +1,6 @@
 import type { Manifest } from '@home-server-mcps/plugin-sdk';
 import { Ajv } from 'ajv';
-import type { ErrorObject } from 'ajv';
+import type { ErrorObject, ValidateFunction } from 'ajv';
 import * as ajvFormats from 'ajv-formats';
 import { ValidationError } from '../errors.js';
 
@@ -11,6 +11,27 @@ const addFormats = ((ajvFormats as unknown as { default: { default?: FormatsPlug
 
 const ajv = new Ajv({ allErrors: true, strict: false, useDefaults: true });
 addFormats(ajv);
+
+/**
+ * Compiled validators by schema content: compiled once per plugin version, not per request (ajv keeps
+ * every compiled schema, and a second compile of a schema with an `$id` throws).
+ */
+const compiled = new Map<string, ValidateFunction>();
+const MAX_COMPILED = 200;
+
+function validatorFor(schema: Manifest['connection']['schema']): ValidateFunction {
+  const key = JSON.stringify(schema);
+  let validate = compiled.get(key);
+  if (!validate) {
+    validate = ajv.compile(schema);
+    // Unregister the `$id` so another version of the same plugin can compile its own schema under it.
+    const id = (schema as { $id?: unknown }).$id;
+    if (typeof id === 'string') ajv.removeSchema(id);
+    if (compiled.size >= MAX_COMPILED) compiled.delete(compiled.keys().next().value!);
+    compiled.set(key, validate);
+  }
+  return validate;
+}
 
 /**
  * Connection config handling (design §7.2, §8.3). Fields marked `writeOnly` in the plugin's
@@ -33,7 +54,7 @@ export function validateConnection(
   manifest: Manifest,
   input: Record<string, unknown>,
 ): { config: Record<string, unknown>; secrets: Record<string, string> } {
-  const validate = ajv.compile(manifest.connection.schema);
+  const validate = validatorFor(manifest.connection.schema);
   const candidate = structuredClone(input);
   if (!validate(candidate)) {
     throw new ValidationError('invalid_connection', 'Connection settings are invalid', describeErrors(validate.errors));
