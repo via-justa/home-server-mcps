@@ -15,6 +15,10 @@
         "mode": {
           "type": "string"
         },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
         "version": {
           "type": "string"
         },

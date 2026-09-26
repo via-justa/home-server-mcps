@@ -168,6 +168,24 @@ describe('instances and access', () => {
     expect(
       await (await t.b.post(`/api/instances/${t.id}/connection/test`, { config: { mode: 'fail-init' } })).json(),
     ).toMatchObject({ ok: false });
+
+    // Pointing the connection somewhere else never takes the stored secret along.
+    const moved = await t.b.post(`/api/instances/${t.id}/connection/test`, {
+      config: { url: 'https://attacker.example' },
+    });
+    expect(moved.status).toBe(400);
+    expect(await moved.json()).toMatchObject({ error: 'secrets_required', details: ['token'] });
+    expect(
+      (await t.b.put(`/api/instances/${t.id}/connection`, { config: { url: 'https://attacker.example' } })).status,
+    ).toBe(400);
+    expect(
+      await (
+        await t.b.post(`/api/instances/${t.id}/connection/test`, {
+          config: { url: 'https://nas.example' },
+          secrets: { token: 'a-fresh-secret-value' },
+        })
+      ).json(),
+    ).toMatchObject({ ok: true });
   });
 
   it('syncs, shows groups with reasons, and enforces write acknowledgement', async () => {

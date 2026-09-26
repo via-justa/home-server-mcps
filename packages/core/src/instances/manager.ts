@@ -18,7 +18,7 @@ import type { InstanceRuntime } from '../gate/pipeline.js';
 import { PluginProcess, PluginUnavailableError } from '../plugins/process.js';
 import { PluginSupervisor } from '../plugins/supervisor.js';
 import type { InstanceStatus } from '../plugins/supervisor.js';
-import { mergeSecrets, summarizeSecrets, validateConnection } from './connection.js';
+import { mergeSecrets, storedSecretsFor, summarizeSecrets, validateConnection } from './connection.js';
 import { parseInstanceSettings } from './settings.js';
 import type { InstanceSettings } from './settings.js';
 
@@ -342,7 +342,12 @@ export class InstanceManager {
   ) {
     const row = this.row(id);
     const manifest = this.plugin(row.pluginId).parsed;
-    const secrets = mergeSecrets(manifest, this.readSecrets(row), input.secrets ?? {});
+    const stored = storedSecretsFor(
+      manifest,
+      { config: row.config as Record<string, unknown>, secrets: this.readSecrets(row) },
+      input,
+    );
+    const secrets = mergeSecrets(manifest, stored, input.secrets ?? {});
     const validated = validateConnection(manifest, { ...input.config, ...secrets });
     this.db.transaction((tx) => {
       tx.update(pluginInstances)
@@ -377,9 +382,11 @@ export class InstanceManager {
   ) {
     const row = this.row(id);
     const plugin = this.plugin(row.pluginId);
-    const secrets = mergeSecrets(plugin.parsed, this.readSecrets(row), candidate?.secrets ?? {});
+    const current = { config: row.config as Record<string, unknown>, secrets: this.readSecrets(row) };
+    const stored = candidate ? storedSecretsFor(plugin.parsed, current, candidate) : current.secrets;
+    const secrets = mergeSecrets(plugin.parsed, stored, candidate?.secrets ?? {});
     const validated = validateConnection(plugin.parsed, {
-      ...(candidate?.config ?? (row.config as object)),
+      ...(candidate?.config ?? current.config),
       ...secrets,
     });
     const proc = new PluginProcess({

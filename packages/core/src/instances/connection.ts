@@ -84,3 +84,42 @@ export function summarizeSecrets(manifest: Manifest, secrets: Record<string, str
     }),
   );
 }
+
+const ADDRESS_FORMATS = new Set(['uri', 'url', 'hostname', 'ipv4', 'ipv6', 'idn-hostname', 'iri']);
+const ADDRESS_NAME = /(url|uri|host|server|endpoint|address|domain|origin)/i;
+
+/** Non-secret fields that say where the upstream is: changing one decides where the secrets are sent. */
+export function addressFieldNames(manifest: Manifest): string[] {
+  const props = (manifest.connection.schema.properties ?? {}) as Record<
+    string,
+    { writeOnly?: boolean; format?: string }
+  >;
+  return Object.entries(props)
+    .filter(([k, p]) => p?.writeOnly !== true && (ADDRESS_FORMATS.has(p?.format ?? '') || ADDRESS_NAME.test(k)))
+    .map(([k]) => k);
+}
+
+/**
+ * The stored secrets a candidate connection may use (design §7.2). If the candidate changes where the
+ * upstream is, stored secrets are not carried over: otherwise "Test connection" or a save with an
+ * attacker's URL would send the stored API key there. The caller must enter them again.
+ */
+export function storedSecretsFor(
+  manifest: Manifest,
+  current: { config: Record<string, unknown>; secrets: Record<string, string> },
+  candidate: { config: Record<string, unknown>; secrets?: Record<string, string | null> },
+): Record<string, string> {
+  const moved = addressFieldNames(manifest).filter(
+    (k) => JSON.stringify(candidate.config[k] ?? null) !== JSON.stringify(current.config[k] ?? null),
+  );
+  if (moved.length === 0) return current.secrets;
+  const missing = Object.keys(current.secrets).filter((k) => !candidate.secrets?.[k]);
+  if (missing.length > 0) {
+    throw new ValidationError(
+      'secrets_required',
+      `Changing ${moved.join(', ')} changes where credentials are sent: enter ${missing.join(', ')} again`,
+      missing,
+    );
+  }
+  return {};
+}
