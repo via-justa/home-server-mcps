@@ -10,8 +10,12 @@ export const InstanceSettingsSchema = z
       .min(10_000)
       .max(24 * 60 * 60_000)
       .default(15 * 60_000),
-    /** When the client can't elicit, still wait for a portal/link decision instead of denying at once. */
-    allowPortalOnlyApprovals: z.boolean().default(true),
+    /**
+     * Let MCP clients that only support form prompts approve plain writes (never locked or
+     * typed-confirmation operations). Off by default: any client on this endpoint could then approve
+     * its own writes. URL prompts (a signed-in human on the approval page) always work.
+     */
+    formElicitationApprovals: z.enum(['off', 'writes']).default('off'),
     executePerMinute: z.number().int().min(1).max(10_000).default(30),
     writesPerMinute: z.number().int().min(1).max(10_000).default(10),
     sandbox: z

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { eq } from 'drizzle-orm';
 import { afterEach, describe, expect, it } from 'vitest';
+import { ApprovalLinkService } from '../src/approvals/links.js';
 import { ApprovalService } from '../src/approvals/service.js';
 import { setGroupLevel } from '../src/catalog/groups.js';
 import { SecretBox } from '../src/crypto/index.js';
@@ -187,14 +188,12 @@ describe('InstanceManager', () => {
       .map((o) => o.id);
     setGroupLevel(t.db, inst.id, 'echo', 'write', { acknowledge: opIds });
 
-    const approvals = new ApprovalService(t.db);
+    const approvals = new ApprovalService(t.db, new ApprovalLinkService(t.db));
     cleanup.push(() => approvals.cancelAll());
     const deps = { db: t.db, approvals, limiter: new SlidingWindowLimiter(), attestationKey: randomBytes(32) };
     const rt = t.manager.runtime(inst.id);
-    const caller = {
-      client: { kind: 'mcp_client' as const, id: 'c' },
-      elicit: async () => ({ action: 'accept' as const, content: { approve: true } }),
-    };
+    // Level Write with every write acknowledged: echo.guided runs without anyone approving it.
+    const caller = { client: { kind: 'mcp_client' as const, id: 'c' }, principal: { ceiling: 'write' as const } };
 
     const guide = await searchCode(deps, rt, caller, `return await guides.get('echo.guided');`);
     expect(guide).toMatchObject({ ok: true, value: { required: true, version: 'v1', content: 'Read me first.' } });

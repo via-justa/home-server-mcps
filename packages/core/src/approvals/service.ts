@@ -1,19 +1,26 @@
 import { randomUUID } from 'node:crypto';
-import { EventEmitter } from 'node:events';
 import { and, eq } from 'drizzle-orm';
 import { writeAudit } from '../audit.js';
 import type { Db } from '../db/index.js';
 import { pendingApprovals } from '../db/schema.js';
 import { ConflictError, NotFoundError, ValidationError } from '../errors.js';
+import type { ApprovalLinkService } from './links.js';
 
 /**
- * Human approval (design §5.3). A request is offered on every available channel at once: MCP
- * elicitation (if the client supports it), the portal inbox, and notifier links. The first decision
- * wins. Unanswered requests are denied at the timeout; nothing is ever approved by default.
+ * Human approval (design §5.3). Approvals happen only through the MCP client's own prompts, and an
+ * answer the client relays is never taken as a human's approval of a risky call:
+ *
+ * - **URL mode** (the approval path): the client is asked to open our approval page. A signed-in
+ *   human with TOTP decides there; the client never sees the decision form. Its own reply only says
+ *   whether the user opened the page (`accept`) or refused (`decline`/`cancel` → denied).
+ * - **Form mode**, only where the endpoint opted in (`formElicitationApprovals`) and the operation is
+ *   a plain write (not locked, no typed confirmation): the client's answer decides.
+ * - Anything else is denied at once. Unanswered requests are denied at the timeout; nothing is ever
+ *   approved by default.
  */
 
 export type DecisionOutcome = 'approved' | 'denied' | 'timed_out' | 'cancelled';
-export type DecisionChannel = 'elicitation' | 'portal' | 'link';
+export type DecisionChannel = 'elicitation' | 'url';
 
 export interface Decision {
   outcome: DecisionOutcome;
@@ -22,23 +29,39 @@ export interface Decision {
   reason?: string;
 }
 
-/** What the MCP layer asks the client to show; `confirm` is present for typed-confirmation ops. */
-export interface ElicitRequest {
+export interface UrlPromptRequest {
+  approvalId: string;
+  /** Path of the approval page on the MCP listener; the MCP layer makes it absolute. */
+  path: string;
+  message: string;
+}
+
+export interface UrlPromptResponse {
+  action: 'accept' | 'decline' | 'cancel';
+}
+
+export interface FormPromptRequest {
   approvalId: string;
   message: string;
   requestedSchema: {
     type: 'object';
-    properties: Record<string, { type: 'boolean' | 'string'; title: string; description?: string }>;
+    properties: Record<string, { type: 'boolean'; title: string; description?: string }>;
     required: string[];
   };
 }
 
-export interface ElicitResponse {
+export interface FormPromptResponse {
   action: 'accept' | 'decline' | 'cancel';
-  content?: { approve?: unknown; confirm?: unknown };
+  content?: { approve?: unknown };
 }
 
-export type ElicitFn = (req: ElicitRequest) => Promise<ElicitResponse>;
+/** What the connected MCP client can show; present only for a live session that advertised it. */
+export interface ClientPrompts {
+  url?: (req: UrlPromptRequest) => Promise<UrlPromptResponse>;
+  /** Tells the client a URL prompt was decided, so it can close it. */
+  urlComplete?: (approvalId: string) => void;
+  form?: (req: FormPromptRequest) => Promise<FormPromptResponse>;
+}
 
 export interface ApprovalRequestInput {
   instanceId: string;
@@ -55,15 +78,9 @@ export interface ApprovalRequestInput {
   client: { kind: string; id?: string };
   mcpSessionId?: string;
   timeoutMs: number;
-  /** Present only when the MCP client advertised elicitation and the session is live. */
-  elicit?: ElicitFn;
-  /** When no elicitation is possible: wait for portal/link (true) or deny immediately (false). */
-  allowPortalOnly: boolean;
-}
-
-export interface ApprovalEvents {
-  pending: [approval: { id: string; instanceId: string; operationKey: string; summary: string; expiresAt: Date }];
-  decided: [approval: { id: string; instanceId: string; operationKey: string; decision: Decision }];
+  prompts?: ClientPrompts;
+  /** The endpoint lets form prompts approve, and this is a plain write (not locked, no typed confirmation). */
+  formApprovals: boolean;
 }
 
 interface Live {
@@ -71,15 +88,14 @@ interface Live {
   settle: (d: Decision) => void;
 }
 
-export class ApprovalService extends EventEmitter<ApprovalEvents> {
+export class ApprovalService {
   private readonly live = new Map<string, Live>();
 
   constructor(
     private readonly db: Db,
+    private readonly links: ApprovalLinkService,
     private readonly now: () => Date = () => new Date(),
-  ) {
-    super();
-  }
+  ) {}
 
   /**
    * Called once at startup: pending rows from a previous process can never be approved, because the
@@ -109,10 +125,6 @@ export class ApprovalService extends EventEmitter<ApprovalEvents> {
     });
   }
 
-  get pendingCount(): number {
-    return this.live.size;
-  }
-
   request(input: ApprovalRequestInput): { id: string; decision: Promise<Decision> } {
     const now = this.now();
     const id = randomUUID();
@@ -138,12 +150,16 @@ export class ApprovalService extends EventEmitter<ApprovalEvents> {
       decidedAt: null,
     };
 
-    if (!input.elicit && !input.allowPortalOnly) {
+    const prompts = input.prompts ?? {};
+    const channel = prompts.url ? 'url' : prompts.form && input.formApprovals ? 'form' : null;
+    if (!channel) {
+      // A form-only client can't carry a human's approval for this call; no prompts at all is worse.
+      const reason = prompts.form ? 'client_cannot_approve' : 'no_approval_path';
       this.db
         .insert(pendingApprovals)
         .values({ ...row, status: 'denied', decidedAt: now })
         .run();
-      return { id, decision: Promise.resolve({ outcome: 'denied', reason: 'no_approval_path' }) };
+      return { id, decision: Promise.resolve({ outcome: 'denied', reason }) };
     }
 
     this.db.insert(pendingApprovals).values(row).run();
@@ -158,71 +174,70 @@ export class ApprovalService extends EventEmitter<ApprovalEvents> {
           .set({ status, decidedBy: d.decidedBy ?? null, decidedVia: d.via ?? null, decidedAt: this.now() })
           .where(and(eq(pendingApprovals.id, id), eq(pendingApprovals.status, 'pending')))
           .run();
-        this.emit('decided', { id, instanceId: input.instanceId, operationKey: input.operationKey, decision: d });
+        this.links.consumeAll(id);
+        if (channel === 'url') prompts.urlComplete?.(id);
         resolve(d);
       };
       this.live.set(id, { row, settle });
     });
 
-    this.emit('pending', {
-      id,
-      instanceId: input.instanceId,
-      operationKey: input.operationKey,
-      summary: input.summary,
-      expiresAt: row.expiresAt,
-    });
-    if (input.elicit) this.offerElicitation(id, input);
+    if (channel === 'url') this.offerUrl(id, row.expiresAt, input);
+    else this.offerForm(id, input);
     return { id, decision };
   }
 
-  private offerElicitation(id: string, input: ApprovalRequestInput) {
-    const properties: ElicitRequest['requestedSchema']['properties'] = {
-      approve: { type: 'boolean', title: 'Approve this call?' },
-    };
-    const required = ['approve'];
-    if (input.confirmLiteral) {
-      properties.confirm = {
-        type: 'string',
-        title: `Type "${input.confirmLiteral}" to confirm`,
-        description: 'Required for this operation. Anything else denies the call.',
-      };
-      required.push('confirm');
-    }
-    const message = [
-      input.summary,
-      '',
-      `Operation: ${input.operationKey} (${input.classification})`,
-      `Parameters: ${JSON.stringify(input.paramsDisplay)}`,
-      ...(input.diff ? [`Changes: ${JSON.stringify(input.diff)}`] : []),
-    ].join('\n');
+  private message(input: ApprovalRequestInput, trailer: string) {
+    return [input.summary, '', `Operation: ${input.operationKey} (${input.classification})`, '', trailer].join('\n');
+  }
 
-    input.elicit!({ approvalId: id, message, requestedSchema: { type: 'object', properties, required } }).then(
+  private offerUrl(id: string, expiresAt: Date, input: ApprovalRequestInput) {
+    const token = this.links.create(id, expiresAt);
+    const clientDenied = (reason: string): Decision => ({
+      outcome: 'denied',
+      via: 'elicitation',
+      decidedBy: input.client.id,
+      reason,
+    });
+    input.prompts!.url!({
+      approvalId: id,
+      path: `/a/${token}`,
+      message: this.message(input, 'Open the approval page to review the details and approve or deny.'),
+    }).then(
       (res) => {
-        const live = this.live.get(id);
-        if (!live) return;
-        if (res.action === 'cancel') return; // dismissed without deciding: portal/link/timeout still apply
-        if (res.action === 'decline' || res.content?.approve !== true) {
-          return live.settle({ outcome: 'denied', via: 'elicitation', decidedBy: input.client.id });
-        }
-        if (input.confirmLiteral && res.content?.confirm !== input.confirmLiteral) {
-          return live.settle({
-            outcome: 'denied',
-            via: 'elicitation',
-            decidedBy: input.client.id,
-            reason: 'confirmation_mismatch',
-          });
-        }
-        live.settle({ outcome: 'approved', via: 'elicitation', decidedBy: input.client.id });
+        // `accept` only means the page was opened; the decision is made there.
+        if (res.action !== 'accept') this.live.get(id)?.settle(clientDenied('declined'));
       },
-      () => undefined, // client can't/didn't elicit: the other channels still apply
+      // The client could not show the prompt: nobody can reach the page, so don't wait for the timeout.
+      () => this.live.get(id)?.settle(clientDenied('prompt_failed')),
     );
   }
 
-  /** Portal / approval-link decision. A wrong typed confirmation is rejected so the admin can retry. */
-  decide(
-    id: string,
-    input: { approve: boolean; confirm?: string; decidedBy: string; via: 'portal' | 'link' },
-  ): Decision {
+  private offerForm(id: string, input: ApprovalRequestInput) {
+    const message = this.message(
+      input,
+      `Parameters: ${JSON.stringify(input.paramsDisplay)}${input.diff ? `\nChanges: ${JSON.stringify(input.diff)}` : ''}`,
+    );
+    input.prompts!.form!({
+      approvalId: id,
+      message,
+      requestedSchema: {
+        type: 'object',
+        properties: { approve: { type: 'boolean', title: 'Approve this call?' } },
+        required: ['approve'],
+      },
+    }).then(
+      (res) => {
+        const live = this.live.get(id);
+        if (!live) return;
+        const approved = res.action === 'accept' && res.content?.approve === true;
+        live.settle({ outcome: approved ? 'approved' : 'denied', via: 'elicitation', decidedBy: input.client.id });
+      },
+      () => this.live.get(id)?.settle({ outcome: 'denied', reason: 'prompt_failed' }),
+    );
+  }
+
+  /** The approval page's decision. A wrong typed confirmation is rejected so the approver can retry. */
+  decide(id: string, input: { approve: boolean; confirm?: string; decidedBy: string }): Decision {
     const live = this.live.get(id);
     if (!live) {
       const row = this.db.select().from(pendingApprovals).where(eq(pendingApprovals.id, id)).get();
@@ -234,7 +249,7 @@ export class ApprovalService extends EventEmitter<ApprovalEvents> {
     }
     const decision: Decision = {
       outcome: input.approve ? 'approved' : 'denied',
-      via: input.via,
+      via: 'url',
       decidedBy: input.decidedBy,
     };
     live.settle(decision);

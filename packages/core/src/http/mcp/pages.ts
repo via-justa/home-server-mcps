@@ -139,6 +139,8 @@ export interface ConsentView {
   username: string;
   endpoints: { resource: string; slug: string; name: string; checked: boolean }[];
   formToken: string;
+  /** Pre-selected access ceiling; read-only unless the user picks otherwise. */
+  access: 'read' | 'write';
   error?: string;
 }
 
@@ -165,9 +167,26 @@ export function consentPage(c: Context, v: ConsentView) {
               </li>`,
           )}
         </ul>
+        <label>Access</label>
+        <ul class="endpoints">
+          <li>
+            <label style="display:flex;gap:8px;align-items:center;margin:0;color:inherit;font-weight:500">
+              <input type="radio" name="access" value="read" ${v.access === 'write' ? '' : 'checked'} />
+              <span><strong>Read only</strong> · this client can never call a write operation</span>
+            </label>
+          </li>
+          <li>
+            <label style="display:flex;gap:8px;align-items:center;margin:0;color:inherit;font-weight:500">
+              <input type="radio" name="access" value="write" ${v.access === 'write' ? 'checked' : ''} />
+              <span
+                ><strong>Read &amp; write</strong> · writes allowed where the endpoint's access levels allow them</span
+              >
+            </label>
+          </li>
+        </ul>
         <p class="muted">
-          Tools still go through the endpoint's access levels and approval rules. You can revoke this later under
-          Clients & Tokens.
+          Tools still go through the endpoint's access levels and approvals. To change this later, revoke the client
+          under Clients & Tokens and connect again.
         </p>
         ${v.error ? html`<p class="error" role="alert">${v.error}</p>` : ''}
         <div class="row">
@@ -192,8 +211,8 @@ export interface ApprovalView {
   diff: unknown;
   expiresAt: Date;
   confirmLiteral: string | null;
-  /** The button the notification link pointed at; only highlights it, never decides. */
-  intent: 'approve' | 'deny' | 'view';
+  /** Ask for a TOTP code with the decision (locked operations without a recent one). */
+  needsTotp: boolean;
   status: string;
   error?: string;
 }
@@ -233,19 +252,23 @@ export function approvalPage(c: Context, v: ApprovalView, status: 200 | 400 = 20
                         ><input id="confirm" type="text" name="confirm" autocomplete="off" />`
                     : ''
                 }
+                ${
+                  v.needsTotp
+                    ? html`<label for="totp">Authenticator code (required to approve a locked operation)</label
+                        ><input
+                          id="totp"
+                          type="text"
+                          name="totp"
+                          inputmode="numeric"
+                          autocomplete="one-time-code"
+                          pattern="[0-9]{6}"
+                        />`
+                    : ''
+                }
                 ${v.error ? html`<p class="error" role="alert">${v.error}</p>` : ''}
                 <div class="row">
-                  <button
-                    class="${v.intent === 'deny' ? 'primary' : 'danger'}"
-                    type="submit"
-                    name="decision"
-                    value="deny"
-                  >
-                    Deny
-                  </button>
-                  <button class="${v.intent === 'deny' ? '' : 'primary'}" type="submit" name="decision" value="approve">
-                    Approve
-                  </button>
+                  <button class="danger" type="submit" name="decision" value="deny">Deny</button>
+                  <button class="primary" type="submit" name="decision" value="approve">Approve</button>
                 </div>
               </form>`
           : html`<p class="error" role="status">This request is ${v.status.replace('_', ' ')}.</p>`

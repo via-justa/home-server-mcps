@@ -1,24 +1,25 @@
 import type { Context, Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 import type { AppContext } from '../../app.js';
+import type { ValidSession } from '../../auth/sessions.js';
 import { operations, pendingApprovals, pluginInstances } from '../../db/schema.js';
 import { ServiceError } from '../../errors.js';
 import { clientIp } from '../common.js';
-import { checkUiCsrf, renderLogin, uiCsrf, uiSession } from './oauth-routes.js';
+import { checkUiCsrf, recordTotpProof, renderLogin, sinceTotpProof, uiCsrf, uiSession } from './oauth-routes.js';
 import { approvalPage, errorPage } from './pages.js';
 
+/** A locked operation needs a TOTP code proved this recently (design §5.3). */
+export const LOCKED_TOTP_MAX_AGE_MS = 5 * 60_000;
+
 /**
- * Approval-link pages (design §9.2). A link from a notification only opens this page: deciding still
- * needs a signed-in portal user and a CSRF-protected POST, so a leaked or prefetched link decides nothing.
+ * The approval page (design §5.3). The MCP client is asked to open it (URL-mode elicitation); the
+ * link only opens this page. Deciding needs a signed-in user with TOTP enrolled, a TOTP proof in this
+ * session (a fresh one for locked operations) and a CSRF-protected POST, so neither the client that
+ * holds the link nor a prefetch can decide anything.
  */
 export function registerApprovalRoutes(app: Hono, ctx: AppContext) {
   const gone = (c: Context) =>
-    errorPage(
-      c,
-      'Link expired',
-      'This approval link has expired or was already used. Open the admin portal to review approvals.',
-      404,
-    );
+    errorPage(c, 'Link expired', 'This approval request has expired or was already decided.', 404);
 
   const load = (c: Context, token: string) => {
     const link = ctx.links.resolve(token);
@@ -36,20 +37,29 @@ export function registerApprovalRoutes(app: Hono, ctx: AppContext) {
       .get();
     return row ? { link, ...row } : null;
   };
+  type Loaded = NonNullable<ReturnType<typeof load>>;
 
-  const render = (
-    c: Context,
-    token: string,
-    data: NonNullable<ReturnType<typeof load>>,
-    username: string,
-    error?: string,
-  ) =>
+  /** Every approval needs a TOTP proof in this session (OIDC sign-ins have none); locked ops a fresh one. */
+  const needsTotp = (session: ValidSession, data: Loaded) => {
+    const since = sinceTotpProof(ctx, session);
+    return data.op.locked ? since > LOCKED_TOTP_MAX_AGE_MS : since === Infinity;
+  };
+
+  const noTotp = (c: Context) =>
+    errorPage(
+      c,
+      'Two-factor authentication required',
+      'Approving calls needs an authenticator app on your account. Set it up in the admin portal under Profile, then open this link again.',
+      403,
+    );
+
+  const render = (c: Context, token: string, data: Loaded, session: ValidSession, error?: string) =>
     approvalPage(
       c,
       {
         token,
         csrf: uiCsrf(ctx, c),
-        username,
+        username: session.user.username,
         slug: data.instance.slug,
         instanceName: data.instance.displayName,
         operationKey: data.op.key,
@@ -60,7 +70,7 @@ export function registerApprovalRoutes(app: Hono, ctx: AppContext) {
         diff: data.approval.diff,
         expiresAt: data.approval.expiresAt,
         confirmLiteral: data.approval.confirmLiteral,
-        intent: data.link.action,
+        needsTotp: needsTotp(session, data),
         status: data.approval.status,
         error,
       },
@@ -73,7 +83,8 @@ export function registerApprovalRoutes(app: Hono, ctx: AppContext) {
     if (!data) return gone(c);
     const session = uiSession(ctx, c);
     if (!session) return renderLogin(ctx, c, `/a/${token}`, 'Sign in to review this approval request.');
-    return render(c, token, data, session.user.username);
+    if (!session.user.totpEnabled) return noTotp(c);
+    return render(c, token, data, session);
   });
 
   app.post('/a/:token', async (c) => {
@@ -83,27 +94,38 @@ export function registerApprovalRoutes(app: Hono, ctx: AppContext) {
     if (!data) return gone(c);
     const session = uiSession(ctx, c);
     if (!session) return renderLogin(ctx, c, `/a/${token}`, 'Your sign-in expired. Sign in again to decide.');
-    if (!checkUiCsrf(c, body.csrf))
-      return render(c, token, data, session.user.username, 'The form expired; try again.');
+    if (!session.user.totpEnabled) return noTotp(c);
+    if (!checkUiCsrf(c, body.csrf)) return render(c, token, data, session, 'The form expired; try again.');
     const approve = body.decision === 'approve';
-    if (!approve && body.decision !== 'deny')
-      return render(c, token, data, session.user.username, 'Choose approve or deny.');
+    if (!approve && body.decision !== 'deny') return render(c, token, data, session, 'Choose approve or deny.');
+
+    if (approve && needsTotp(session, data)) {
+      const user = session.user;
+      if (ctx.throttle.lockedFor(user.username) > 0)
+        return render(c, token, data, session, 'Too many attempts; try again later.');
+      if (ctx.users.verifySecondFactor(user.id, String(body.totp ?? '')) !== 'totp') {
+        if (ctx.throttle.fail(user.username))
+          ctx.events.emit('auth.lockout', { username: user.username, ip: clientIp(c, ctx.config.TRUST_PROXY) });
+        return render(c, token, data, session, 'Enter a valid authenticator code to approve.');
+      }
+      ctx.throttle.succeed(user.username);
+      recordTotpProof(ctx, session.idHash);
+    }
+
     try {
       ctx.approvals.decide(data.approval.id, {
         approve,
         confirm: typeof body.confirm === 'string' ? body.confirm : undefined,
         decidedBy: session.user.username,
-        via: 'link',
       });
     } catch (err) {
-      if (err instanceof ServiceError) return render(c, token, data, session.user.username, err.message);
+      if (err instanceof ServiceError) return render(c, token, data, session, err.message);
       throw err;
     }
-    ctx.links.consumeAll(data.approval.id);
     return errorPage(
       c,
       approve ? 'Approved' : 'Denied',
-      `${data.op.key} on /${data.instance.slug} was ${approve ? 'approved' : 'denied'}.`,
+      `${data.op.key} on /${data.instance.slug} was ${approve ? 'approved' : 'denied'}. You can close this page.`,
       200,
     );
   });

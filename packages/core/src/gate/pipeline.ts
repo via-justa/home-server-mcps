@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { Manifest, ResolvedTarget } from '@home-server-mcps/plugin-sdk';
 import { and, eq } from 'drizzle-orm';
-import type { ApprovalService, Decision, ElicitFn } from '../approvals/service.js';
+import type { ApprovalService, ClientPrompts, Decision } from '../approvals/service.js';
 import { writeAudit } from '../audit.js';
 import type { AuditEvent } from '../audit.js';
 import { resolveAccess } from '../catalog/groups.js';
 import type { Db } from '../db/index.js';
+import type { AccessPrincipal } from './access.js';
 import { operations } from '../db/schema.js';
 import type { InstanceSettings } from '../instances/settings.js';
 import { PluginProtocolError, PluginRpcError, PluginTimeoutError, PluginUnavailableError } from '../plugins/process.js';
@@ -21,8 +22,10 @@ import type { Redactor } from './redact.js';
 /**
  * The permission gate (design §5.2): the only path from sandboxed code to a plugin's `invoke`.
  *
- *   resolveOperation → attestation → access → resolveTargets → prepareWrite → classification
- *   → pre-approval (never for locked) → human approval → invoke → redact → audit
+ *   resolveOperation → attestation → access level → resolveTargets → prepareWrite
+ *   → [level ask: pre-approval rule (never for locked) → human approval] → invoke → redact → audit
+ *
+ * Reads run straight away; acknowledged writes at level `write` are auto-approved.
  *
  * Every branch, including every rejection, writes one `call` audit event. Calls within one
  * `execute` run strictly one at a time, so a pending approval blocks the whole script (TN §3.1).
@@ -49,8 +52,10 @@ export interface InstanceRuntime {
 export interface CallerContext {
   client: { kind: 'mcp_client'; id?: string };
   mcpSessionId?: string;
-  /** Present only when the MCP client supports elicitation and the session is live. */
-  elicit?: ElicitFn;
+  /** The authenticated principal's access ceiling (consent page / bearer token). */
+  principal: AccessPrincipal;
+  /** Present only for a live session whose client advertised elicitation. */
+  prompts?: ClientPrompts;
 }
 
 type OperationRow = typeof operations.$inferSelect;
@@ -81,12 +86,20 @@ function toBindingError(err: unknown): BindingError {
 
 const DISABLED_MESSAGES: Record<string, string> = {
   group_missing: 'is not available on this endpoint',
-  group_none: 'is disabled on this endpoint (its group is set to None)',
-  group_read_only: 'is a write, and its group is read-only on this endpoint',
-  excluded: 'has been excluded by the administrator',
+  level_none: 'is disabled on this endpoint (access level None)',
+  read_only: 'is a write, and its access level on this endpoint is Read',
+  token_read_only: 'is a write, and this connection was granted read-only access',
   locked_not_opted_in: 'is a protected operation that the administrator has not enabled',
-  pending_review: 'is new and waiting for administrator review',
   unknown_operation: 'is not in the current catalog',
+};
+
+const DENIAL_MESSAGES: Record<string, string> = {
+  no_approval_path: 'needs approval, and this MCP client cannot show approval prompts',
+  client_cannot_approve:
+    'needs approval on a web page, and this MCP client only supports form prompts; use a client that supports URL elicitation',
+  declined: 'was declined in the client',
+  prompt_failed: 'needs approval, but the client could not show the approval prompt',
+  confirmation_mismatch: 'was denied (confirmation mismatch)',
 };
 
 export function createGateBindings(
@@ -171,8 +184,9 @@ export function createGateBindings(
         }
       }
 
-      // 2. Access: group level + per-op state. Unknown/stale ops fail here too.
-      const access = resolveAccess(deps.db, rt.instanceId, resolved.key);
+      // 2. Access level (operation's own, else its group's) under the principal's ceiling. Unknown or
+      //    stale ops fail here too.
+      const access = resolveAccess(deps.db, rt.instanceId, resolved.key, caller.principal);
       if (!access.reachable || !op) {
         const reason = access.reachable ? 'unknown_operation' : access.reason;
         reject(
@@ -187,7 +201,8 @@ export function createGateBindings(
         );
       }
       const operation = op!;
-      const isWrite = operation.locked || operation.classification === 'write';
+      const mode = access.reachable ? access.mode : 'run';
+      const isWrite = mode !== 'run';
       audit.classification = operation.locked ? 'locked' : operation.classification;
 
       // 3. Concrete targets, so rules and approvers see exactly what will be touched. Fails closed.
@@ -219,9 +234,13 @@ export function createGateBindings(
           );
         }
 
-        // 6. Pre-approval rules; locked ops always need a live human (TN §3.4).
+        // 6. Level `write`: acknowledged writes are auto-approved. Level `ask`: pre-approval rules, which
+        //    never cover locked ops (TN §3.4) nor writes still waiting for acknowledgement.
         let preapproved = false;
-        if (!operation.locked) {
+        if (mode === 'auto') {
+          preapproved = true;
+          decision = 'auto-approved:level';
+        } else if (!operation.locked && access.reachable && access.level === 'ask') {
           const outcome = evaluatePreApproval(
             deps.db,
             { instanceId: rt.instanceId, operationId: operation.id, params, targets },
@@ -266,8 +285,9 @@ export function createGateBindings(
             client: caller.client,
             mcpSessionId: caller.mcpSessionId,
             timeoutMs: rt.settings.approvalTimeoutMs,
-            elicit: caller.elicit,
-            allowPortalOnly: rt.settings.allowPortalOnlyApprovals,
+            prompts: caller.prompts,
+            formApprovals:
+              rt.settings.formElicitationApprovals === 'writes' && !operation.locked && !operation.typedConfirmation,
           });
           audit.detail.approvalId = request.id;
           budget.pause();
@@ -286,8 +306,16 @@ export function createGateBindings(
                 'PERMISSION_DENIED',
                 approval.outcome === 'timed_out'
                   ? `Approval for ${operation.key} timed out and was denied`
-                  : `${operation.key} was denied${approval.reason ? ` (${approval.reason})` : ''}`,
+                  : `${operation.key} ${(approval.reason && DENIAL_MESSAGES[approval.reason]) ?? `was denied${approval.reason ? ` (${approval.reason})` : ''}`}`,
               ),
+            );
+          }
+          // The admin may have lowered the level while the approval was open: the call must still be allowed.
+          const after = resolveAccess(deps.db, rt.instanceId, operation.key, caller.principal);
+          if (!after.reachable || after.mode === 'run') {
+            reject(
+              'rejected:access_changed',
+              new BindingError('OPERATION_DISABLED', `${operation.key} was disabled while waiting for approval`),
             );
           }
           decision = 'human-approved';

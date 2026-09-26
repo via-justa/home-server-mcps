@@ -5,20 +5,6 @@ import { EventEmitter } from 'node:events';
  * never need to know who is listening. Payloads never carry raw params or secrets.
  */
 export interface CoreEventMap {
-  'approval.pending': [
-    { approvalId: string; instanceId: string; slug: string; operationKey: string; summary: string; expiresAt: Date },
-  ];
-  'approval.decided': [
-    {
-      approvalId: string;
-      instanceId: string;
-      slug: string;
-      operationKey: string;
-      outcome: string;
-      via?: string;
-      decidedBy?: string;
-    },
-  ];
   'instance.status': [{ instanceId: string; slug: string; status: string; error?: string }];
   'plugin.crashed': [{ instanceId: string; slug: string; error: string }];
   'sync.completed': [{ instanceId: string; slug: string; added: number; pendingReview: string[]; newGroups: string[] }];
@@ -29,8 +15,6 @@ export interface CoreEventMap {
 export type CoreEventName = keyof CoreEventMap;
 
 export const CORE_EVENT_NAMES: CoreEventName[] = [
-  'approval.pending',
-  'approval.decided',
   'instance.status',
   'plugin.crashed',
   'sync.completed',

@@ -7,7 +7,6 @@ import { createAppContext } from '../src/app.js';
 import { base32Decode, currentStep, totpAt } from '../src/auth/totp.js';
 import { loadConfig } from '../src/config/env.js';
 import { createAdminApp } from '../src/http/admin-app.js';
-import { executeCode } from '../src/runtime/index.js';
 import { browser } from './admin-client.js';
 
 const PLUGINS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/plugins');
@@ -175,12 +174,12 @@ describe('instances and access', () => {
     const t = await withInstance();
     expect(await (await t.b.post(`/api/instances/${t.id}/sync`)).json()).toMatchObject({ added: 5 });
     expect(await (await t.b.get(`/api/instances/${t.id}/groups`)).json()).toMatchObject([
-      { key: 'echo', level: 'read', counts: { read: 1, write: 2, locked: 2, pendingReview: 2 } },
+      { key: 'echo', level: 'read', counts: { read: 1, write: 2, locked: 2, pendingReview: 0 } },
     ]);
-    const ops = (await (await t.b.get(`/api/instances/${t.id}/operations?reason=group_read_only`)).json()) as {
+    const ops = (await (await t.b.get(`/api/instances/${t.id}/operations?reason=read_only`)).json()) as {
       key: string;
     }[];
-    expect(ops.map((o) => o.key)).toEqual(['echo.delete', 'echo.guided', 'echo.nolit', 'echo.set']);
+    expect(ops.map((o) => o.key)).toEqual(['echo.guided', 'echo.set']);
 
     const refused = await t.b.patch(`/api/instances/${t.id}/groups/echo`, { level: 'write' });
     expect(refused.status).toBe(409);
@@ -233,7 +232,7 @@ describe('instances and access', () => {
       rateLimit: 10,
     });
     expect(created.status).toBe(201);
-    expect(await created.json()).toMatchObject({ windowSeconds: 3600, inert: 'group_read_only' });
+    expect(await created.json()).toMatchObject({ windowSeconds: 3600, inert: 'read_only' });
     const [rule] = (await (await t.b.get(`/api/instances/${t.id}/rules`)).json()) as { id: string }[];
     expect(
       await (await t.b.patch(`/api/instances/${t.id}/rules/${rule!.id}`, { enabled: false })).json(),
@@ -241,53 +240,39 @@ describe('instances and access', () => {
     expect((await t.b.del(`/api/instances/${t.id}/rules/${rule!.id}`)).status).toBe(204);
   });
 
-  it('lists pending approvals and decides them from the portal, with typed confirmation', async () => {
+  it('sets per-operation levels, keeps locked ops off Write, and has no portal approval inbox', async () => {
     const t = await withInstance();
     await t.b.post(`/api/instances/${t.id}/sync`);
-    const ops = (await (await t.b.get(`/api/instances/${t.id}/operations`)).json()) as { id: string; key: string }[];
-    const opId = (k: string) => ops.find((o) => o.key === k)!.id;
-    const preview = (await (await t.b.get(`/api/instances/${t.id}/groups/bulk-level/preview?level=write`)).json()) as {
-      acknowledge: string[];
-    };
-    await t.b.post(`/api/instances/${t.id}/groups/bulk-level`, {
-      level: 'write',
-      confirm: 'echo',
-      acknowledge: preview.acknowledge,
-    });
-    await t.b.patch(`/api/instances/${t.id}/operations/${opId('echo.delete')}`, { lockedOptIn: true });
+    type Op = { id: string; key: string; level: string; levelOverride: string | null; mode: string | null };
+    const list = async () => (await (await t.b.get(`/api/instances/${t.id}/operations`)).json()) as Op[];
+    const opId = async (k: string) => (await list()).find((o) => o.key === k)!.id;
+    const patch = async (key: string, body: unknown) =>
+      t.b.patch(`/api/instances/${t.id}/operations/${await opId(key)}`, body);
 
-    const run = executeCode(
-      t.ctx.gateDeps(),
-      t.ctx.instances.runtime(t.id),
-      { client: { kind: 'mcp_client', id: 'claude' } },
-      `return (await echo.call('echo.delete', { name: 'tank/x' })).key;`,
-    );
-    let pending: { id: string; requiresConfirmation: boolean; confirmLiteral: string; summary: string }[] = [];
-    for (let i = 0; i < 100 && pending.length === 0; i++) {
-      await new Promise((r) => setTimeout(r, 20));
-      pending = (await (await t.b.get('/api/approvals')).json()) as typeof pending;
-    }
-    expect(pending[0]).toMatchObject({
-      requiresConfirmation: true,
-      confirmLiteral: 'tank/x',
-      operation: { key: 'echo.delete', classification: 'locked' },
+    expect((await patch('echo.delete', { level: 'write' })).status).toBe(409);
+    expect(await (await patch('echo.delete', { level: 'ask' })).json()).toMatchObject({ levelOverride: 'ask' });
+    expect(await (await patch('echo.set', { level: 'write' })).json()).toMatchObject({
+      levelOverride: 'write',
+      writeAcknowledged: true,
     });
-    expect(pending[0]).not.toHaveProperty('paramsHash');
-    expect(
-      await (await t.b.post(`/api/approvals/${pending[0]!.id}/approve`, { confirm: 'wrong' })).json(),
-    ).toMatchObject({ error: 'confirmation_mismatch' });
-    expect(
-      await (await t.b.post(`/api/approvals/${pending[0]!.id}/approve`, { confirm: 'tank/x' })).json(),
-    ).toMatchObject({ outcome: 'approved', via: 'portal' });
-    await expect(run).resolves.toMatchObject({ ok: true, value: 'echo.delete' });
+    expect((await patch('echo.set', { level: 'admin' })).status).toBe(400);
+    const byKey = Object.fromEntries((await list()).map((o) => [o.key, o]));
+    expect(byKey['echo.delete']).toMatchObject({ level: 'ask', mode: 'approve' });
+    expect(byKey['echo.set']).toMatchObject({ level: 'write', mode: 'auto' });
+    expect(byKey['echo.guided']).toMatchObject({ level: 'read', levelOverride: null, mode: null });
 
-    const audit = (await (await t.b.get(`/api/audit?kind=call&instance=${t.id}`)).json()) as {
-      rows: { decision: string; decidedBy: string }[];
-    };
-    expect(audit.rows[0]).toMatchObject({ decision: 'human-approved', decidedBy: 'admin' });
+    expect(await (await patch('echo.set', { level: null })).json()).toMatchObject({ levelOverride: null });
+    const group = ((await (await t.b.get(`/api/instances/${t.id}/groups`)).json()) as { counts: object }[])[0];
+    expect(group?.counts).toMatchObject({ overridden: 1 });
+
+    // Approvals are decided only on the approval page the MCP client opens.
+    expect((await t.b.get('/api/approvals')).status).toBe(404);
+    const overview = (await (await t.b.get('/api/overview')).json()) as Record<string, unknown>;
+    expect(overview).not.toHaveProperty('pendingApprovals');
+
     const csv = await (await t.b.get('/api/audit/export.csv?kind=config')).text();
     expect(csv.split('\n')[0]).toMatch(/^id,at,kind,/);
-    expect(csv).toContain('instance_created');
+    expect(csv).toContain('operation_updated');
   });
 
   it('issues MCP bearer tokens once and never lists their value', async () => {

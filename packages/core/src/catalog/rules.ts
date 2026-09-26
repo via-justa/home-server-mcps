@@ -64,8 +64,11 @@ function describe(db: Db, instanceId: string, rule: RuleRow, op: OperationRow) {
   return {
     ...rule,
     operation: { id: op.id, key: op.key, locked: op.locked, matchProfile: op.matchProfile },
-    /** A rule on an unreachable operation never fires; the UI flags it (design §5.2.1). */
-    inert: rule.enabled && !access.reachable ? access.reason : null,
+    /**
+     * Rules only apply at level `ask`: on an unreachable operation, or one at level `write`, a rule
+     * never fires; the UI flags it (design §5.2.1).
+     */
+    inert: !rule.enabled ? null : !access.reachable ? access.reason : access.level === 'write' ? 'level_write' : null,
   };
 }
 

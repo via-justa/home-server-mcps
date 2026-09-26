@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { and, asc, eq, inArray, isNull, lt, or } from 'drizzle-orm';
 import { z } from 'zod';
+import type { AccessCeiling } from '../gate/access.js';
 import { writeAudit } from '../audit.js';
 import type { Db } from '../db/index.js';
 import { oauthClients, oauthCodes, oauthGrants, oauthTokens, users } from '../db/schema.js';
@@ -209,6 +210,8 @@ export class OAuthService {
     client: ClientRow;
     userId: string;
     resources: string[];
+    /** Chosen on the consent page; carried by every token issued from this grant, refreshes included. */
+    access: AccessCeiling;
     codeChallenge: string;
     redirectUri: string;
   }): string {
@@ -222,6 +225,7 @@ export class OAuthService {
           clientId: input.client.id,
           userId: input.userId,
           resources: input.resources,
+          access: input.access,
           createdAt: now,
         })
         .run();
@@ -240,7 +244,12 @@ export class OAuthService {
         decision: 'oauth_consent_granted',
         actorKind: 'user',
         actorId: input.userId,
-        detail: { clientId: input.client.clientId, name: input.client.name, resources: input.resources },
+        detail: {
+          clientId: input.client.clientId,
+          name: input.client.name,
+          resources: input.resources,
+          access: input.access,
+        },
       });
     });
     return code;
@@ -406,7 +415,13 @@ export class OAuthService {
     const { token: t, grant, client, user } = found;
     if (t.revokedAt || grant.revokedAt || client.revokedAt || user.disabled) return null;
     if (t.expiresAt.getTime() <= this.now().getTime()) return null;
-    return { inAudience: t.resources.includes(canonicalResource(resource)), client, user, grantId: grant.id };
+    return {
+      inAudience: t.resources.includes(canonicalResource(resource)),
+      client,
+      user,
+      grantId: grant.id,
+      access: grant.access,
+    };
   }
 
   purgeExpired(): number {

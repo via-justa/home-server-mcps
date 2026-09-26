@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { ApprovalLinkService } from './approvals/links.js';
 import { ApprovalService } from './approvals/service.js';
 import { McpTokenService } from './auth/mcp-tokens.js';
 import { OAuthService } from './auth/oauth.js';
@@ -16,7 +17,6 @@ import type { GateDeps } from './gate/pipeline.js';
 import { InstanceManager } from './instances/manager.js';
 import { runHousekeeping } from './maintenance.js';
 import type { ManagerOptions } from './instances/manager.js';
-import { ApprovalLinkService } from './notify/links.js';
 import { NotifierService } from './notify/service.js';
 import type { FetchLike } from './notify/service.js';
 import { discoverPlugins, syncPluginRegistry } from './plugins/discovery.js';
@@ -91,51 +91,20 @@ export async function createAppContext(config: Config, opts: AppOptions = {}): P
   if (boot === 'ignored') warnings.push('ADMIN_BOOTSTRAP_* is set but users already exist; it is ignored — remove it');
 
   const instances = new InstanceManager({ db, secrets, events, now, supervisor: opts.supervisor });
-  const approvals = new ApprovalService(db, now);
-  const slugOf = (instanceId: string) => {
-    try {
-      return instances.get(instanceId).slug;
-    } catch {
-      return '';
-    }
-  };
-  approvals.on('pending', (a) =>
-    events.emit('approval.pending', {
-      approvalId: a.id,
-      instanceId: a.instanceId,
-      slug: slugOf(a.instanceId),
-      operationKey: a.operationKey,
-      summary: a.summary,
-      expiresAt: a.expiresAt,
-    }),
-  );
-  approvals.on('decided', (a) =>
-    events.emit('approval.decided', {
-      approvalId: a.id,
-      instanceId: a.instanceId,
-      slug: slugOf(a.instanceId),
-      operationKey: a.operationKey,
-      outcome: a.decision.outcome,
-      via: a.decision.via,
-      decidedBy: a.decision.decidedBy,
-    }),
-  );
+  const links = new ApprovalLinkService(db, now);
+  const approvals = new ApprovalService(db, links, now);
 
   const keys = {
     attestation: secrets.deriveKey('attestation'),
     state: secrets.deriveKey('signed-state'),
   };
   const limiter = new SlidingWindowLimiter();
-  const links = new ApprovalLinkService(db, now);
-  const notifier = new NotifierService(db, secrets, links, {
-    publicMcpUrl: config.PUBLIC_MCP_URL,
+  const notifier = new NotifierService(db, secrets, {
     fetch: opts.notifyFetch,
     retryDelaysMs: opts.notifyRetryDelaysMs,
     now,
   });
   const unsubscribeNotifier = notifier.subscribe(events);
-  if (!config.PUBLIC_MCP_URL)
-    warnings.push('PUBLIC_MCP_URL is not set: approval notifications will not include approve/deny links');
   const discover = () =>
     syncPluginRegistry(
       db,

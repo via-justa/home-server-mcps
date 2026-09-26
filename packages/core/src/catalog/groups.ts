@@ -4,8 +4,8 @@ import { writeAudit } from '../audit.js';
 import type { Db, DbLike } from '../db/index.js';
 import { operationGroupAliases, operationGroups, operations, pluginInstances } from '../db/schema.js';
 import { ConflictError, NotFoundError, ValidationError } from '../errors.js';
-import { ACCESS_LEVELS, effectiveAccess } from '../gate/access.js';
-import type { AccessDecision, AccessLevel } from '../gate/access.js';
+import { ACCESS_LEVELS, FULL_ACCESS, effectiveAccess, isAccessLevel, minLevel } from '../gate/access.js';
+import type { AccessDecision, AccessLevel, AccessPrincipal } from '../gate/access.js';
 
 /**
  * Group-level access management (design §5.2.1). All mutations are audited `config` events.
@@ -19,26 +19,30 @@ export interface Actor {
   userId?: string;
 }
 
-const LEVEL_RANK: Record<AccessLevel, number> = { none: 0, read: 1, write: 2 };
-const lowerLevel = (a: AccessLevel, b: AccessLevel) => (LEVEL_RANK[a] <= LEVEL_RANK[b] ? a : b);
-
-function assertLevel(level: string): asserts level is AccessLevel {
-  if (!(ACCESS_LEVELS as readonly string[]).includes(level)) {
+function assertLevel(level: unknown): asserts level is AccessLevel {
+  if (!isAccessLevel(level)) {
     throw new ValidationError('invalid_level', `Level must be one of ${ACCESS_LEVELS.join(', ')}`);
   }
 }
 
-const accessInput = (op: OperationRow) => ({
+export const accessInput = (op: OperationRow) => ({
   classification: op.classification,
   locked: op.locked,
-  excluded: op.excluded,
-  lockedOptIn: op.lockedOptIn,
+  levelOverride: op.levelOverride,
   writeAcknowledged: op.writeAcknowledged,
 });
 
-/** Writes a move to `write` would expose that nobody has acknowledged yet (locked ops excluded: they need opt-in). */
-function isPendingWrite(op: OperationRow): boolean {
-  return !op.stale && !op.excluded && !op.locked && op.classification === 'write' && !op.writeAcknowledged;
+const isPlainWrite = (op: OperationRow) => !op.stale && !op.locked && op.classification === 'write';
+
+/**
+ * Writes that would run without asking once their group is at `write`: plain writes that follow the
+ * group. Raising a group to `write` must acknowledge exactly these (locked ops never auto-run).
+ */
+const followsGroupWrite = (op: OperationRow) => isPlainWrite(op) && op.levelOverride === null;
+
+/** Writes whose effective level is `write` but that nobody acknowledged yet: they ask until someone does. */
+function isPendingWrite(op: OperationRow, group: GroupRow | undefined): boolean {
+  return isPlainWrite(op) && !op.writeAcknowledged && (op.levelOverride ?? group?.level) === 'write';
 }
 
 const sameSet = (a: readonly string[] = [], b: readonly string[]) =>
@@ -74,7 +78,7 @@ export interface GroupSummary {
   label: string;
   level: AccessLevel;
   stale: boolean;
-  counts: { read: number; write: number; locked: number; pendingReview: number };
+  counts: { read: number; write: number; locked: number; pendingReview: number; overridden: number };
 }
 
 export function listGroups(db: DbLike, instanceId: string): GroupSummary[] {
@@ -99,7 +103,8 @@ export function listGroups(db: DbLike, instanceId: string): GroupSummary[] {
         read: mine.filter((o) => !o.locked && o.classification === 'read').length,
         write: mine.filter((o) => !o.locked && o.classification === 'write').length,
         locked: mine.filter((o) => o.locked).length,
-        pendingReview: mine.filter(isPendingWrite).length,
+        pendingReview: mine.filter((o) => isPendingWrite(o, g)).length,
+        overridden: mine.filter((o) => o.levelOverride !== null).length,
       },
     };
   });
@@ -110,6 +115,7 @@ export function resolveAccess(
   db: DbLike,
   instanceId: string,
   key: string,
+  principal: AccessPrincipal = FULL_ACCESS,
 ): AccessDecision | { reachable: false; reason: 'unknown_operation' } {
   const op = db
     .select()
@@ -118,14 +124,15 @@ export function resolveAccess(
     .get();
   if (!op || op.stale) return { reachable: false, reason: 'unknown_operation' };
   const group = db.select().from(operationGroups).where(eq(operationGroups.id, op.groupId)).get();
-  return effectiveAccess(accessInput(op), group);
+  return effectiveAccess(accessInput(op), group, principal);
 }
 
 // ── group level ──────────────────────────────────────────────────────────────────────────────────
 
 /**
- * Sets one group's level. Raising to `write` must carry `acknowledge` = exactly the pending writes
- * the admin was shown; if a sync changed that list in between, this fails with 409 and the fresh list.
+ * Sets one group's level; operations with their own level keep it. Raising to `write` must carry
+ * `acknowledge` = exactly the writes that will then run without asking (the list the admin was
+ * shown); if a sync changed that list in between, this fails with 409 and the fresh list.
  */
 export function setGroupLevel(
   db: Db,
@@ -141,15 +148,25 @@ export function setGroupLevel(
     const group = getGroup(tx, instanceId, key);
     let acknowledged: string[] = [];
     if (level === 'write') {
-      const pending = opsInGroups(tx, [group.id]).filter(isPendingWrite);
-      const expected = pending.map((o) => o.id);
+      const autoRun = opsInGroups(tx, [group.id]).filter(followsGroupWrite);
+      const expected = autoRun.map((o) => o.id);
       if (!sameSet(opts.acknowledge, expected)) {
-        throw new ConflictError('acknowledgement_mismatch', 'Acknowledge exactly the writes this change exposes', {
-          expected: pending.map((o) => ({ id: o.id, key: o.key })),
-        });
+        throw new ConflictError(
+          'acknowledgement_mismatch',
+          'Acknowledge exactly the writes that will run without asking',
+          {
+            expected: autoRun.map((o) => ({ id: o.id, key: o.key })),
+          },
+        );
       }
-      acknowledge(tx, expected, actor, now);
-      acknowledged = pending.map((o) => o.key);
+      const fresh = autoRun.filter((o) => !o.writeAcknowledged);
+      acknowledge(
+        tx,
+        fresh.map((o) => o.id),
+        actor,
+        now,
+      );
+      acknowledged = fresh.map((o) => o.key);
     }
     if (group.level === level && acknowledged.length === 0) return;
     tx.update(operationGroups)
@@ -174,6 +191,7 @@ export function setGroupLevel(
 
 export interface BulkPreview {
   level: AccessLevel;
+  /** `exposes`: writes that will run without asking at `write` (only listed for a `write` preview). */
   groups: { key: string; label: string; from: AccessLevel; exposes: { id: string; key: string }[] }[];
   /** Pass back unchanged as `acknowledge` when applying a bulk `write`. */
   acknowledge: string[];
@@ -192,7 +210,7 @@ export function previewBulkLevel(db: DbLike, instanceId: string, level: string):
       ? opsInGroups(
           db,
           groups.map((g) => g.id),
-        ).filter(isPendingWrite)
+        ).filter(followsGroupWrite)
       : [];
   const preview = groups.map((g) => ({
     key: g.key,
@@ -204,9 +222,9 @@ export function previewBulkLevel(db: DbLike, instanceId: string, level: string):
 }
 
 /**
- * Sets every group of an instance to one level. `none`/`read` only reduce access and apply directly.
- * `write` requires `confirm` = the instance slug and `acknowledge` = the current preview's list.
- * Locked operations are never exposed by this; they keep needing a per-operation opt-in.
+ * Sets every group of an instance to one level (operations with their own level keep it).
+ * `none`/`read`/`ask` apply directly. `write` requires `confirm` = the instance slug and
+ * `acknowledge` = the current preview's list. Locked operations never auto-run.
  */
 export function applyBulkLevel(
   db: Db,
@@ -230,7 +248,22 @@ export function applyBulkLevel(
           preview,
         });
       }
-      acknowledge(tx, preview.acknowledge, actor, now);
+      acknowledge(
+        tx,
+        opsInGroups(
+          tx,
+          tx
+            .select({ id: operationGroups.id })
+            .from(operationGroups)
+            .where(eq(operationGroups.instanceId, instanceId))
+            .all()
+            .map((g) => g.id),
+        )
+          .filter((o) => followsGroupWrite(o) && !o.writeAcknowledged)
+          .map((o) => o.id),
+        actor,
+        now,
+      );
     }
     tx.update(operationGroups)
       .set({ level, levelChangedAt: now, levelChangedBy: actor.userId ?? null })
@@ -298,7 +331,7 @@ export function mergeGroups(
       .from(operationGroups)
       .where(and(eq(operationGroups.instanceId, instanceId), eq(operationGroups.key, into)))
       .get();
-    const level = [...sources, ...(target ? [target] : [])].map((g) => g.level).reduce(lowerLevel);
+    const level = [...sources, ...(target ? [target] : [])].map((g) => g.level).reduce(minLevel);
     if (!target) {
       target = {
         id: randomUUID(),
@@ -365,15 +398,16 @@ export function mergeGroups(
 // ── per-operation state ──────────────────────────────────────────────────────────────────────────
 
 export interface OperationPatch {
-  excluded?: boolean;
-  lockedOptIn?: boolean;
+  /** The operation's own level; `null` makes it follow its group again. */
+  level?: AccessLevel | null;
   acknowledged?: boolean;
   classification?: 'read' | 'write';
 }
 
 /**
- * Exclude-only overrides plus locked opt-in, acknowledgement and classification override.
- * Locked classification is immutable (409). Opting in, or overriding to write, acknowledges the op.
+ * Per-operation level, acknowledgement and classification override. Locked operations can't be set
+ * to `write` and can't change classification (409). Setting a write to `write`, or overriding an
+ * operation's classification to write, acknowledges it.
  */
 export function updateOperation(
   db: Db,
@@ -399,13 +433,16 @@ export function updateOperation(
       set.classification = patch.classification;
       set.classificationSource = 'override';
     }
-    if (patch.excluded !== undefined) set.excluded = patch.excluded;
-    if (patch.lockedOptIn !== undefined) {
-      if (!op.locked)
-        throw new ValidationError('not_locked', `${op.key} is not locked; opt-in only applies to locked operations`);
-      set.lockedOptIn = patch.lockedOptIn;
+    if (patch.level !== undefined && patch.level !== op.levelOverride) {
+      if (patch.level !== null) assertLevel(patch.level);
+      if (patch.level === 'write' && op.locked) {
+        throw new ConflictError('operation_locked', `${op.key} is locked; it always asks for approval`);
+      }
+      set.levelOverride = patch.level;
     }
-    const acknowledges = patch.acknowledged === true || patch.lockedOptIn === true || set.classification === 'write';
+    const isWrite = (set.classification ?? op.classification) === 'write';
+    const acknowledges =
+      patch.acknowledged === true || set.classification === 'write' || (patch.level === 'write' && isWrite);
     if (acknowledges && !op.writeAcknowledged) {
       Object.assign(set, { writeAcknowledged: true, acknowledgedAt: now, acknowledgedBy: actor.userId ?? null });
     }
@@ -426,8 +463,7 @@ export function updateOperation(
         actorId: actor.userId,
         detail: {
           before: {
-            excluded: op.excluded,
-            lockedOptIn: op.lockedOptIn,
+            level: op.levelOverride,
             writeAcknowledged: op.writeAcknowledged,
             classification: op.classification,
           },

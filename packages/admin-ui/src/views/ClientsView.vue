@@ -5,7 +5,9 @@ import ModalDialog from '../components/ModalDialog.vue';
 import PageHeader from '../components/PageHeader.vue';
 import { ago, formatDate } from '../format';
 import { useAppStore } from '../stores/app';
-import type { Grant, OAuthClient, Token } from '../types';
+import type { Ceiling, Grant, OAuthClient, Token } from '../types';
+
+const ACCESS_LABELS: Record<Ceiling, string> = { read: 'Read only', write: 'Read & write' };
 
 const app = useAppStore();
 const tokens = ref<Token[]>([]);
@@ -55,7 +57,14 @@ async function revoke(kind: 'tokens' | 'oauth/clients' | 'oauth/grants', id: str
 }
 
 // ── new token ──
-const newToken = ref<{ name: string; all: boolean; scope: string[]; expiresAt: string; note?: string }>();
+const newToken = ref<{
+  name: string;
+  all: boolean;
+  scope: string[];
+  access: Ceiling;
+  expiresAt: string;
+  note?: string;
+}>();
 const createdSecret = ref<{ title: string; lines: [string, string][] }>();
 const canCreateToken = computed(
   () => !!newToken.value?.name.trim() && (newToken.value.all || newToken.value.scope.length > 0),
@@ -67,6 +76,7 @@ async function createToken() {
     const res = await http.post<Token & { token: string }>('/api/tokens', {
       name: t.name.trim(),
       scope: t.all ? ['*'] : t.scope,
+      access: t.access,
       expiresAt: t.expiresAt ? new Date(t.expiresAt).toISOString() : null,
     });
     newToken.value = undefined;
@@ -122,7 +132,7 @@ async function createClient() {
         <button
           class="btn btn-primary btn-sm"
           type="button"
-          @click="newToken = { name: '', all: false, scope: [], expiresAt: '' }"
+          @click="newToken = { name: '', all: false, scope: [], access: 'read', expiresAt: '' }"
         >
           New token
         </button>
@@ -133,6 +143,7 @@ async function createClient() {
             <tr>
               <th>Name</th>
               <th>Endpoints</th>
+              <th>Access</th>
               <th>Created</th>
               <th>Last used</th>
               <th>Expires</th>
@@ -143,6 +154,7 @@ async function createClient() {
             <tr v-for="t in live(tokens)" :key="t.id" :class="{ off: t.revokedAt }">
               <td>{{ t.name }}</td>
               <td class="mono small">{{ scopeText(t.scope) }}</td>
+              <td class="small">{{ ACCESS_LABELS[t.access] }}</td>
               <td class="small">{{ formatDate(t.createdAt) }}</td>
               <td class="small">{{ ago(t.lastUsedAt) }}</td>
               <td class="small">{{ t.expiresAt ? formatDate(t.expiresAt) : 'never' }}</td>
@@ -217,6 +229,7 @@ async function createClient() {
               <th>Client</th>
               <th>User</th>
               <th>Endpoints</th>
+              <th>Access</th>
               <th>Granted</th>
               <th />
             </tr>
@@ -226,6 +239,7 @@ async function createClient() {
               <td>{{ g.client.name }}</td>
               <td>{{ g.user.username }}</td>
               <td class="mono small">{{ g.resources.map(resourcePath).join(', ') }}</td>
+              <td class="small">{{ ACCESS_LABELS[g.access] }}</td>
               <td class="small">{{ formatDate(g.createdAt) }}</td>
               <td class="right">
                 <span v-if="g.revokedAt" class="pill">revoked</span>
@@ -261,6 +275,14 @@ async function createClient() {
           </label>
         </template>
       </div>
+      <fieldset class="access">
+        <legend>Access</legend>
+        <label class="row small"><input v-model="newToken.access" type="radio" value="read" /> Read only</label>
+        <label class="row small"
+          ><input v-model="newToken.access" type="radio" value="write" /> Read &amp; write, where the endpoint's access
+          levels allow writes</label
+        >
+      </fieldset>
       <div class="field">
         <label for="t-exp">Expires</label>
         <input id="t-exp" v-model="newToken.expiresAt" type="datetime-local" />
@@ -322,6 +344,21 @@ async function createClient() {
 </template>
 
 <style scoped>
+.access {
+  border: none;
+  padding: 0;
+  margin: 0 0 14px;
+}
+.access legend {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 5px;
+  padding: 0;
+}
+.access label + label {
+  margin-top: 4px;
+}
 .off td {
   opacity: 0.55;
 }

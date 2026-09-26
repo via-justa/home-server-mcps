@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { and, asc, eq } from 'drizzle-orm';
 import { writeAudit } from '../audit.js';
-import { listGroups } from '../catalog/groups.js';
+import { accessInput, listGroups } from '../catalog/groups.js';
 import { findRegistryEntries } from '../catalog/registry.js';
 import type { Db } from '../db/index.js';
 import { guides, operationGroups, operations } from '../db/schema.js';
 import { effectiveAccess } from '../gate/access.js';
+import type { AccessPrincipal } from '../gate/access.js';
 import { currentGuide, issueAttestationKey } from '../gate/attestation.js';
 import { createGateBindings } from '../gate/pipeline.js';
 import type { CallerContext, GateDeps, InstanceRuntime } from '../gate/pipeline.js';
@@ -50,7 +51,12 @@ function describeOp(op: OperationRow, groupKey: string | undefined, access: Retu
     displayName: op.displayName ?? undefined,
     group: groupKey,
     classification: op.locked ? 'locked' : op.classification,
-    needsApproval: op.locked || op.classification === 'write',
+    // Whether a call runs straight away, waits for a human, or is auto-approved at level `write`.
+    approval: access.reachable
+      ? ({ run: 'none', approve: 'required', auto: 'auto' } as const)[access.mode]
+      : op.locked || op.classification === 'write'
+        ? 'required'
+        : 'none',
     typedConfirmation: op.typedConfirmation,
     attestationRequired: op.attestationRequired,
     summary: (op.docs as { summary?: string } | null)?.summary,
@@ -58,7 +64,7 @@ function describeOp(op: OperationRow, groupKey: string | undefined, access: Retu
   };
 }
 
-function catalogBindings(db: Db, instanceId: string): Record<string, Binding> {
+function catalogBindings(db: Db, instanceId: string, principal: AccessPrincipal): Record<string, Binding> {
   const load = () => {
     const groups = new Map(
       db
@@ -77,16 +83,7 @@ function catalogBindings(db: Db, instanceId: string): Record<string, Binding> {
     return { groups, ops };
   };
   const accessOf = (op: OperationRow, groups: Map<string, typeof operationGroups.$inferSelect>) =>
-    effectiveAccess(
-      {
-        classification: op.classification,
-        locked: op.locked,
-        excluded: op.excluded,
-        lockedOptIn: op.lockedOptIn,
-        writeAcknowledged: op.writeAcknowledged,
-      },
-      groups.get(op.groupId),
-    );
+    effectiveAccess(accessInput(op), groups.get(op.groupId), principal);
 
   return {
     find: async ([rawQuery]) => {
@@ -173,8 +170,14 @@ function guideBindings(deps: GateDeps, rt: InstanceRuntime): Record<string, Bind
   };
 }
 
-function searchBindings(deps: GateDeps, rt: InstanceRuntime): Record<string, Record<string, Binding>> {
-  const bindings: Record<string, Record<string, Binding>> = { catalog: catalogBindings(deps.db, rt.instanceId) };
+function searchBindings(
+  deps: GateDeps,
+  rt: InstanceRuntime,
+  caller: CallerContext,
+): Record<string, Record<string, Binding>> {
+  const bindings: Record<string, Record<string, Binding>> = {
+    catalog: catalogBindings(deps.db, rt.instanceId, caller.principal),
+  };
   if (rt.manifest.capabilities.registry) {
     bindings.registry = {
       find: async ([q]) =>
@@ -193,7 +196,7 @@ export async function searchCode(
 ): Promise<SandboxResult> {
   const result = await runInSandbox({
     code,
-    bindings: searchBindings(deps, rt),
+    bindings: searchBindings(deps, rt, caller),
     limits: rt.settings.sandbox,
   });
   writeAudit(

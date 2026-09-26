@@ -2,12 +2,11 @@ import { randomUUID } from 'node:crypto';
 import type { Manifest } from '@home-server-mcps/plugin-sdk';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
-import type { ElicitRequestFormParams } from '@modelcontextprotocol/sdk/types.js';
 import type { Context } from 'hono';
 import { z } from 'zod';
 import type { AppContext } from '../../app.js';
-import type { ElicitFn } from '../../approvals/service.js';
-import { authenticateMcp } from '../../auth/mcp-auth.js';
+import type { ClientPrompts } from '../../approvals/service.js';
+import { authenticateMcp, publicMcpBase } from '../../auth/mcp-auth.js';
 import type { McpIdentity } from '../../auth/mcp-auth.js';
 import type { OAuthService } from '../../auth/oauth.js';
 import type { CallerContext } from '../../gate/pipeline.js';
@@ -69,7 +68,7 @@ export function describeSearch(manifest: Manifest): string {
   const apis = [
     `catalog.find({ text?, group?, kind?, classification?: 'read'|'write'|'locked', includeDisabled?, limit? }) → ${ops} you can call (with includeDisabled, also the unavailable ones and why)`,
     'catalog.get(key) → one entry with its parameter schema and docs',
-    'catalog.groups() → access groups with their level (none/read/write) and counts',
+    'catalog.groups() → access groups with their level (none/read/ask/write) and counts',
   ];
   if (manifest.capabilities.registry)
     apis.push(
@@ -93,7 +92,7 @@ export function describeExecute(manifest: Manifest): string {
   const fns = manifest.binding.functions.map((f) => `${ns}.${f}(…)`).join(', ');
   return [
     `Run code against ${manifest.name}. \`code\` is the body of an async JavaScript function; \`await\` ${fns} and return a JSON-serializable result.`,
-    'Reads run immediately. Writes may pause until a human approves; denials and other refusals throw an Error with `err.code` (e.g. OPERATION_DISABLED, PERMISSION_DENIED, UPSTREAM_ERROR) that your code can catch.',
+    'Reads run immediately. Writes either run straight away or pause until a human approves them on an approval page the client is asked to open (see `approval` in catalog entries); denials and other refusals throw an Error with `err.code` (e.g. OPERATION_DISABLED, PERMISSION_DENIED, UPSTREAM_ERROR) that your code can catch.',
     'Calls run one at a time. There is no network, filesystem or timer access. Secrets in results are redacted.',
   ].join('\n');
 }
@@ -132,7 +131,7 @@ export class McpEndpoints {
     await Promise.all([...this.sessions.keys()].map((id) => this.closeSession(id)));
   }
 
-  private buildServer(instanceId: string, identity: McpIdentity): McpServer {
+  private buildServer(instanceId: string, identity: McpIdentity, publicBase: string): McpServer {
     const rt = () => this.ctx.instances.runtime(instanceId);
     const manifest = rt().manifest;
     const server = new McpServer(
@@ -142,22 +141,45 @@ export class McpEndpoints {
       },
     );
 
-    const caller = (sessionId: string | undefined): CallerContext => {
-      const runtime = rt();
-      const elicit: ElicitFn | undefined = server.server.getClientCapabilities()?.elicitation
-        ? async (req) => {
-            const res = await server.server.elicitInput(
-              {
-                message: req.message,
-                requestedSchema: req.requestedSchema as ElicitRequestFormParams['requestedSchema'],
-              },
-              { timeout: runtime.settings.approvalTimeoutMs },
-            );
-            return { action: res.action, content: res.content as { approve?: unknown; confirm?: unknown } | undefined };
-          }
-        : undefined;
-      return { client: { kind: 'mcp_client', id: identity.label }, mcpSessionId: sessionId, elicit };
+    // Approval prompts (design §5.3): URL mode sends the human to our approval page; form mode is only
+    // used where the endpoint opted in. `elicitation: {}` from older clients means form support.
+    const prompts = (): ClientPrompts | undefined => {
+      const caps = server.server.getClientCapabilities()?.elicitation;
+      if (!caps) return undefined;
+      const timeout = rt().settings.approvalTimeoutMs;
+      const out: ClientPrompts = {};
+      if (caps.url) {
+        out.url = async (req) => {
+          const res = await server.server.elicitInput(
+            { mode: 'url', elicitationId: req.approvalId, url: `${publicBase}${req.path}`, message: req.message },
+            { timeout },
+          );
+          return { action: res.action };
+        };
+        out.urlComplete = (approvalId) => {
+          void server.server
+            .createElicitationCompletionNotifier(approvalId)()
+            .catch(() => undefined);
+        };
+      }
+      if (caps.form || !caps.url) {
+        out.form = async (req) => {
+          const res = await server.server.elicitInput(
+            { mode: 'form', message: req.message, requestedSchema: req.requestedSchema },
+            { timeout },
+          );
+          return { action: res.action, content: res.content as { approve?: unknown } | undefined };
+        };
+      }
+      return out;
     };
+
+    const caller = (sessionId: string | undefined): CallerContext => ({
+      client: { kind: 'mcp_client', id: identity.label },
+      mcpSessionId: sessionId,
+      principal: { ceiling: identity.access },
+      prompts: prompts(),
+    });
 
     const run = async (fn: typeof searchCode, code: string, sessionId: string | undefined) => {
       try {
@@ -181,12 +203,23 @@ export class McpEndpoints {
     };
     server.registerTool(
       'search',
-      { title: `Search ${manifest.name}`, description: describeSearch(manifest), inputSchema: input },
+      {
+        title: `Search ${manifest.name}`,
+        description: describeSearch(manifest),
+        inputSchema: input,
+        annotations: { readOnlyHint: true, openWorldHint: false },
+      },
       ({ code }, extra) => run(searchCode, code, extra.sessionId),
     );
     server.registerTool(
       'execute',
-      { title: `Execute on ${manifest.name}`, description: describeExecute(manifest), inputSchema: input },
+      {
+        title: `Execute on ${manifest.name}`,
+        description: describeExecute(manifest),
+        inputSchema: input,
+        // Hints for clients that confirm tool calls themselves; the gate never relies on them.
+        annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+      },
       ({ code }, extra) => run(executeCode, code, extra.sessionId),
     );
     return server;
@@ -226,7 +259,7 @@ export class McpEndpoints {
       );
     }
 
-    const server = this.buildServer(instance.id, auth.identity);
+    const server = this.buildServer(instance.id, auth.identity, publicMcpBase(this.ctx, c));
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (id) => {

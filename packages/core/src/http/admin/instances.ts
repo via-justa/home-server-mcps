@@ -10,12 +10,13 @@ import {
   renameGroup,
   setGroupLevel,
   updateOperation,
+  accessInput,
 } from '../../catalog/groups.js';
 import { findRegistryEntries } from '../../catalog/registry.js';
 import { createRule, deleteRule, listRules, updateRule } from '../../catalog/rules.js';
 import { operationGroups, operations } from '../../db/schema.js';
 import { ValidationError } from '../../errors.js';
-import { effectiveAccess } from '../../gate/access.js';
+import { ACCESS_LEVELS, effectiveAccess } from '../../gate/access.js';
 import { AUTH_MODES } from '../../instances/manager.js';
 import { clientIp, readJson } from '../common.js';
 import type { AdminEnv } from './auth.js';
@@ -164,25 +165,20 @@ export function registerInstanceRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
       .all()
       .map((op) => {
         const group = groups.get(op.groupId);
-        const access = effectiveAccess(
-          {
-            classification: op.classification,
-            locked: op.locked,
-            excluded: op.excluded,
-            lockedOptIn: op.lockedOptIn,
-            writeAcknowledged: op.writeAcknowledged,
-          },
-          group,
-        );
+        const access = effectiveAccess(accessInput(op), group);
         return {
           ...op,
           group: group?.key ?? null,
+          /** The level in force: the operation's own, else its group's. */
+          level: op.levelOverride ?? group?.level ?? 'none',
           reachable: access.reachable,
+          mode: access.reachable ? access.mode : null,
+          pendingReview: access.reachable && access.pendingReview === true,
           reason: access.reachable ? null : access.reason,
         };
       })
       .filter((op) => (!q.group || op.group === q.group) && (!q.reason || op.reason === q.reason))
-      .filter((op) => (q.needsReview === '1' ? op.needsReview || op.reason === 'pending_review' : true))
+      .filter((op) => (q.needsReview === '1' ? op.needsReview || op.pendingReview : true))
       .filter(
         (op) => !text || op.key.toLowerCase().includes(text) || (op.displayName ?? '').toLowerCase().includes(text),
       );
@@ -193,8 +189,7 @@ export function registerInstanceRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
     const body = await readJson(
       c,
       z.object({
-        excluded: z.boolean().optional(),
-        lockedOptIn: z.boolean().optional(),
+        level: z.enum(ACCESS_LEVELS).nullable().optional(),
         acknowledged: z.boolean().optional(),
         classification: z.enum(['read', 'write']).optional(),
       }),

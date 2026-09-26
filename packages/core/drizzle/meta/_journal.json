@@ -15,6 +15,20 @@
       "when": 1790352513867,
       "tag": "0001_totp_last_step",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1790398552722,
+      "tag": "0002_access_levels",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1790398553995,
+      "tag": "0003_drop_exclusion_flags",
+      "breakpoints": true
     }
   ]
 }

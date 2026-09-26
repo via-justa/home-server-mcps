@@ -30,7 +30,7 @@ const instance = {
     labels: { operation: 'Method', operations: 'Methods' },
   },
 };
-const overview = { instances: [instance], plugins: [], pendingApprovals: 0, warnings: [], publicMcpUrl: null };
+const overview = { instances: [instance], plugins: [], warnings: [], publicMcpUrl: null };
 
 const op = (key: string, extra: Record<string, unknown> = {}) => ({
   id: `op-${key}`,
@@ -44,13 +44,15 @@ const op = (key: string, extra: Record<string, unknown> = {}) => ({
   inferredReason: null,
   locked: false,
   attestationRequired: false,
-  excluded: false,
-  lockedOptIn: false,
-  writeAcknowledged: false,
+  levelOverride: null,
+  level: 'ask',
+  writeAcknowledged: true,
   needsReview: false,
   matchProfile: null,
   group: 'app',
   reachable: true,
+  mode: 'run',
+  pendingReview: false,
   reason: null,
   ...extra,
 });
@@ -64,48 +66,78 @@ describe('Access page', () => {
         {
           key: 'app',
           label: 'Apps',
-          level: 'read',
+          level: 'ask',
           stale: false,
-          counts: { read: 1, write: 2, locked: 1, pendingReview: 2 },
+          counts: { read: 1, write: 3, locked: 1, pendingReview: 0, overridden: 1 },
         },
         {
           key: 'pool',
           label: 'Pools',
           level: 'none',
           stale: false,
-          counts: { read: 1, write: 0, locked: 0, pendingReview: 0 },
+          counts: { read: 1, write: 0, locked: 0, pendingReview: 0, overridden: 0 },
         },
       ],
       'GET /api/instances/i1/operations': [
         op('app.query'),
-        op('app.start', { classification: 'write', reachable: false, reason: 'group_read_only' }),
-        op('app.stop', { classification: 'write', reachable: false, reason: 'group_read_only' }),
-        op('app.delete', { classification: 'write', locked: true, reachable: false, reason: 'group_read_only' }),
-        op('pool.query', { group: 'pool', reachable: false, reason: 'group_none' }),
+        op('app.start', { classification: 'write', mode: 'approve' }),
+        op('app.stop', { classification: 'write', mode: 'approve', writeAcknowledged: false }),
+        op('app.redeploy', {
+          classification: 'write',
+          levelOverride: 'none',
+          level: 'none',
+          reachable: false,
+          mode: null,
+          reason: 'level_none',
+        }),
+        op('app.delete', {
+          classification: 'write',
+          locked: true,
+          reachable: false,
+          mode: null,
+          reason: 'locked_not_opted_in',
+        }),
+        op('pool.query', { group: 'pool', level: 'none', reachable: false, mode: null, reason: 'level_none' }),
       ],
       ...extra,
     });
   }
 
-  it('raising a group to Write lists exactly the writes it exposes and acknowledges them', async () => {
+  it('offers None / Read / Ask / Write per group and sets Ask without a dialog', async () => {
+    const { calls } = api({ 'PATCH /api/instances/i1/groups/pool': {} });
+    const { wrapper } = await mountAt('/endpoints/nas/access');
+    const pool = wrapper.get('[data-group="pool"]');
+    expect(pool.findAll('[role="radio"]').map((b) => b.text())).toEqual(['None', 'Read', 'Ask', 'Write']);
+    expect(wrapper.get('[data-group="app"]').text()).toContain('1 with their own level');
+    await pool
+      .findAll('[role="radio"]')
+      .find((b) => b.text() === 'Ask')!
+      .trigger('click');
+    await flushPromises();
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
+    expect(calls.find((c) => c.method === 'PATCH')).toMatchObject({
+      path: '/api/instances/i1/groups/pool',
+      body: { level: 'ask' },
+    });
+  });
+
+  it('lists exactly the writes that will run without asking before setting a group to Write', async () => {
     const { calls } = api({ 'PATCH /api/instances/i1/groups/app': {} });
     const { wrapper } = await mountAt('/endpoints/nas/access');
-    expect(wrapper.text()).toContain('2 new write operations wait for review');
-
-    const app = wrapper.get('[data-group="app"]');
-    await app
+    await wrapper
+      .get('[data-group="app"]')
       .findAll('[role="radio"]')
       .find((b) => b.text() === 'Write')!
       .trigger('click');
     const dialog = wrapper.get('[role="dialog"]');
+    expect(dialog.text()).toContain('run without asking');
     expect(dialog.text()).toContain('app.start');
     expect(dialog.text()).toContain('app.stop');
-    expect(dialog.text()).not.toContain('app.delete');
-    expect(dialog.text()).toContain('1 locked operation(s) stay off');
-
+    expect(dialog.text()).not.toContain('app.redeploy'); // has its own level
+    expect(dialog.text()).not.toContain('app.delete'); // locked never auto-runs
     await dialog
       .findAll('button')
-      .find((b) => b.text() === 'Allow writes')!
+      .find((b) => b.text() === 'Set to Write')!
       .trigger('click');
     await flushPromises();
     expect(calls.find((c) => c.method === 'PATCH')).toMatchObject({
@@ -118,16 +150,16 @@ describe('Access page', () => {
     api({
       'PATCH /api/instances/i1/groups/app': json(409, {
         error: 'acknowledgement_mismatch',
-        message: 'Acknowledge exactly the writes this change exposes',
+        message: 'Acknowledge exactly the writes that will run without asking',
         details: { expected: [{ id: 'op-app.upgrade', key: 'app.upgrade' }] },
       }),
     });
     const { wrapper } = await mountAt('/endpoints/nas/access');
-    await wrapper.get('[data-group="app"]').findAll('[role="radio"]')[2]!.trigger('click');
+    await wrapper.get('[data-group="app"]').findAll('[role="radio"]')[3]!.trigger('click');
     await wrapper
       .get('[role="dialog"]')
       .findAll('button')
-      .find((b) => b.text() === 'Allow writes')!
+      .find((b) => b.text() === 'Set to Write')!
       .trigger('click');
     await flushPromises();
     const dialog = wrapper.get('[role="dialog"]');
@@ -139,7 +171,7 @@ describe('Access page', () => {
     const { calls } = api({
       'GET /api/instances/i1/groups/bulk-level/preview': {
         level: 'write',
-        groups: [{ key: 'app', label: 'Apps', from: 'read', exposes: [{ id: 'op-app.start', key: 'app.start' }] }],
+        groups: [{ key: 'app', label: 'Apps', from: 'ask', exposes: [{ id: 'op-app.start', key: 'app.start' }] }],
         acknowledge: ['op-app.start'],
       },
       'POST /api/instances/i1/groups/bulk-level': [],
@@ -151,6 +183,7 @@ describe('Access page', () => {
       .trigger('click');
     await flushPromises();
     const dialog = wrapper.get('[role="dialog"]');
+    expect(dialog.text()).toContain('Ask → Write');
     const confirm = dialog.findAll('button').find((b) => b.text() === 'Set all to Write')!;
     expect(confirm.attributes('disabled')).toBeDefined();
     await dialog.get('input#bulk-confirm').setValue('nas');
@@ -164,14 +197,43 @@ describe('Access page', () => {
     });
   });
 
-  it('offers "Allow…" for locked operations only when the group is at Write', async () => {
+  it('gives operations their own level, never Write for locked ones', async () => {
+    const { calls } = api({
+      'PATCH /api/instances/i1/operations/op-app.delete': {},
+      'PATCH /api/instances/i1/operations/op-app.redeploy': {},
+    });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { wrapper } = await mountAt('/endpoints/nas/access');
+    await wrapper.get('[data-group="app"] .caret').trigger('click');
+
+    const locked = wrapper.get('[data-op="app.delete"]');
+    expect(locked.text()).toContain('Locked — not enabled');
+    const lockedLevel = locked.get('select.level');
+    const write = lockedLevel.findAll('option').find((o) => o.attributes('value') === 'write')!;
+    expect(write.attributes('disabled')).toBeDefined();
+    expect(locked.findAll('select')).toHaveLength(1); // classification of locked ops can't change
+    await lockedLevel.setValue('ask');
+    await flushPromises();
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('fresh authenticator code'));
+    expect(calls.find((c) => c.path === '/api/instances/i1/operations/op-app.delete')?.body).toEqual({ level: 'ask' });
+
+    // "Follow group" resets an operation's own level.
+    const redeploy = wrapper.get('[data-op="app.redeploy"] select.level');
+    expect((redeploy.element as HTMLSelectElement).value).toBe('none');
+    await redeploy.setValue('');
+    await flushPromises();
+    expect(calls.find((c) => c.path === '/api/instances/i1/operations/op-app.redeploy')?.body).toEqual({
+      level: null,
+    });
+  });
+
+  it('shows what each call does now', async () => {
     api();
     const { wrapper } = await mountAt('/endpoints/nas/access');
     await wrapper.get('[data-group="app"] .caret').trigger('click');
-    const row = wrapper.get('[data-op="app.delete"]');
-    expect(row.text()).toContain('locked');
-    expect(row.findAll('button').some((b) => b.text() === 'Allow…')).toBe(false);
-    expect(row.find('select').exists()).toBe(false); // classification of locked ops can't change
+    expect(wrapper.get('[data-op="app.query"]').text()).toContain('Runs');
+    expect(wrapper.get('[data-op="app.start"]').text()).toContain('Asks');
+    expect(wrapper.get('[data-op="app.redeploy"]').text()).toContain('Level None');
   });
 });
 
@@ -244,45 +306,35 @@ describe('SchemaForm', () => {
   });
 });
 
-describe('Pending approvals', () => {
-  it('keeps Approve disabled until the typed confirmation matches', async () => {
+describe('Endpoint settings', () => {
+  it('warns before letting form-only clients approve writes, and saves the opt-in', async () => {
+    const settings = {
+      approvalTimeoutMs: 900_000,
+      formElicitationApprovals: 'off',
+      executePerMinute: 30,
+      writesPerMinute: 10,
+      sandbox: { timeoutMs: 10_000, memoryMb: 64, maxResultBytes: 65_536 },
+      extraRedactKeys: [],
+      syncMaxAgeMs: 3_600_000,
+      memoryMb: 256,
+    };
     const { calls } = fakeApi({
       'GET /api/session': signedIn,
-      'GET /api/overview': { ...overview, pendingApprovals: 1 },
-      'GET /api/approvals': [
-        {
-          id: 'a1',
-          instanceId: 'i1',
-          operationId: 'op',
-          paramsDisplay: { name: 'tank/x', password: '[REDACTED]' },
-          resolvedTargets: null,
-          summary: 'Delete dataset tank/x',
-          confirmLiteral: 'tank/x',
-          diff: null,
-          clientKind: 'mcp_client',
-          clientId: 'claude',
-          requestedAt: new Date().toISOString(),
-          expiresAt: new Date(Date.now() + 600_000).toISOString(),
-          status: 'pending',
-          decidedBy: null,
-          decidedVia: null,
-          decidedAt: null,
-          requiresConfirmation: true,
-          operation: { key: 'pool.dataset.delete', classification: 'locked' },
-          instance: { id: 'i1', slug: 'nas', displayName: 'TrueNAS' },
-        },
-      ],
-      'POST /api/approvals/a1/approve': { outcome: 'approved' },
+      'GET /api/overview': { ...overview, instances: [{ ...instance, settings }] },
+      'PATCH /api/instances/i1': { ...instance, settings },
     });
-    const { wrapper } = await mountAt('/approvals');
-    const card = wrapper.get('[data-approval="a1"]');
-    expect(card.text()).toContain('Delete dataset tank/x');
-    const approve = card.findAll('button').find((b) => b.text() === 'Approve')!;
-    expect(approve.attributes('disabled')).toBeDefined();
-    await card.get('input.confirm').setValue('tank/x');
-    expect(approve.attributes('disabled')).toBeUndefined();
-    await card.get('form').trigger('submit');
+    const { wrapper } = await mountAt('/endpoints/nas/settings');
+    expect(wrapper.text()).not.toContain('could then approve its own writes');
+    const box = wrapper
+      .findAll('label')
+      .find((l) => l.text().includes('only show forms'))!
+      .get('input');
+    await box.setValue(true);
+    expect(wrapper.text()).toContain('could then approve its own writes');
+    await wrapper.get('form').trigger('submit');
     await flushPromises();
-    expect(calls.find((c) => c.path === '/api/approvals/a1/approve')?.body).toEqual({ confirm: 'tank/x' });
+    expect(calls.find((c) => c.method === 'PATCH')?.body).toMatchObject({
+      settings: { formElicitationApprovals: 'writes' },
+    });
   });
 });

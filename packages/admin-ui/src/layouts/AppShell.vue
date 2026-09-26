@@ -20,7 +20,6 @@ const endpoints = computed(() => app.instances);
 
 const globalNav = [
   { to: '/', label: 'Overview' },
-  { to: '/approvals', label: 'Pending Approvals', badge: () => app.pendingCount },
   { to: '/audit', label: 'Audit Log' },
 ];
 const adminNav = [
@@ -48,7 +47,6 @@ async function logout() {
       <div class="brand">
         <div class="logo">M</div>
         <div class="name">MCP Admin</div>
-        <span v-if="app.pendingCount" class="badge mobile-only">{{ app.pendingCount }}</span>
         <button class="menu mobile-only" type="button" :aria-expanded="menuOpen" @click="menuOpen = !menuOpen">
           {{ menuOpen ? 'Close' : 'Menu' }}
         </button>
@@ -57,7 +55,6 @@ async function logout() {
       <nav>
         <RouterLink v-for="item in globalNav" :key="item.to" :to="item.to" class="nav-item" exact-active-class="active">
           <span>{{ item.label }}</span>
-          <span v-if="item.badge?.()" class="badge">{{ item.badge() }}</span>
         </RouterLink>
 
         <div class="nav-section">Endpoints</div>
@@ -148,14 +145,6 @@ nav {
   background: var(--sidebar-active);
   color: #fff;
   font-weight: 600;
-}
-.badge {
-  background: var(--danger);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 700;
-  border-radius: 999px;
-  padding: 1px 6px;
 }
 .nav-section {
   margin: 16px 20px 6px;

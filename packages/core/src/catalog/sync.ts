@@ -140,7 +140,8 @@ export function applyCatalogSync(db: Db, instanceId: string, rawResult: unknown,
           // The plugin can add the attestation requirement; only an admin can remove it.
           attestationRequired: prev.attestationRequired || d.attestationRequired,
           ...(becameWrite ? { writeAcknowledged: false, acknowledgedAt: null, acknowledgedBy: null } : {}),
-          ...(becameLocked ? { lockedOptIn: false } : {}),
+          // A newly locked op starts closed again: it needs its own `ask` level to be callable.
+          ...(becameLocked ? { levelOverride: null } : {}),
         })
         .where(eq(operations.id, prev.id))
         .run();

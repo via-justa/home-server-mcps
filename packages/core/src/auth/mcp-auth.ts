@@ -5,6 +5,7 @@ import { getSettings } from '../settings.js';
 import { McpTokenService, TOKEN_PREFIX } from './mcp-tokens.js';
 import { ACCESS_PREFIX, canonicalResource } from './oauth.js';
 import type { OAuthService } from './oauth.js';
+import type { AccessCeiling } from '../gate/access.js';
 import type { AuthMode } from '../instances/manager.js';
 import { requestOrigin } from '../http/common.js';
 
@@ -19,6 +20,11 @@ export interface McpIdentity {
   principal: string;
   /** Human-readable, shown in audit and approvals: `token:Claude Code`, `oauth:Claude for admin`. */
   label: string;
+  /**
+   * Ceiling on what this principal can reach (design §6.3): chosen on the consent page for OAuth,
+   * set per bearer token. `external` mode trusts the fronting proxy, so it is not limited here.
+   */
+  access: AccessCeiling;
 }
 
 export type McpAuthResult =
@@ -73,11 +79,17 @@ export async function authenticateMcp(
           error: 'unauthorized',
           message: 'Cloudflare Access assertion missing or invalid',
         };
-      return { ok: true, identity: { kind: 'external', principal: `cf:${who}`, label: `external:${who}` } };
+      return {
+        ok: true,
+        identity: { kind: 'external', principal: `cf:${who}`, label: `external:${who}`, access: 'write' },
+      };
     }
     const header = settings.trustedIdentityHeader;
     const who = (header && c.req.header(header)?.trim().slice(0, 200)) || 'external';
-    return { ok: true, identity: { kind: 'external', principal: `ext:${who}`, label: `external:${who}` } };
+    return {
+      ok: true,
+      identity: { kind: 'external', principal: `ext:${who}`, label: `external:${who}`, access: 'write' },
+    };
   }
 
   const allowBearer = mode === 'bearer' || mode === 'bearer+oauth';
@@ -119,7 +131,10 @@ export async function authenticateMcp(
         message: 'This token is not valid for this endpoint',
       };
     }
-    return { ok: true, identity: { kind: 'token', principal: `token:${row.id}`, label: `token:${row.name}` } };
+    return {
+      ok: true,
+      identity: { kind: 'token', principal: `token:${row.id}`, label: `token:${row.name}`, access: row.access },
+    };
   }
 
   if (allowOauth && token.startsWith(ACCESS_PREFIX)) {
@@ -146,6 +161,7 @@ export async function authenticateMcp(
         kind: 'oauth',
         principal: `grant:${found.grantId}`,
         label: `oauth:${found.client.name} (${found.user.username})`,
+        access: found.access,
       },
     };
   }

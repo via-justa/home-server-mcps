@@ -55,11 +55,30 @@ export const checkUiCsrf = (c: Context, submitted: unknown) => {
   return !!cookie && typeof submitted === 'string' && safeEqual(cookie, submitted);
 };
 
+/**
+ * When each MCP-port session last proved a TOTP code (design §5.3). Approvals need one; locked
+ * operations need a recent one. Kept in memory: after a restart the page simply asks again.
+ */
+const totpProofs = new Map<string, number>();
+
+export function recordTotpProof(ctx: AppContext, idHash: string) {
+  const now = ctx.now().getTime();
+  for (const [k, at] of totpProofs) if (now - at > UI_LIMITS.absoluteMs) totpProofs.delete(k);
+  totpProofs.set(idHash, now);
+}
+
+/** Milliseconds since this session last proved TOTP, or Infinity if it never did. */
+export function sinceTotpProof(ctx: AppContext, session: ValidSession): number {
+  const at = totpProofs.get(session.idHash);
+  return at === undefined ? Infinity : ctx.now().getTime() - at;
+}
+
 function startUiSession(ctx: AppContext, c: Context, userId: string, method: string) {
   const raw = ctx.sessions.create(userId, 'oauth_ui', UI_LIMITS, {
     ip: clientIp(c, ctx.config.TRUST_PROXY),
     userAgent: c.req.header('user-agent'),
   });
+  if (method === 'password+totp') recordTotpProof(ctx, ctx.sessions.hashId(raw));
   // Lax: the browser must send it when an OIDC provider redirects back into the consent flow.
   setCookie(c, UI_COOKIE, raw, {
     httpOnly: true,
@@ -239,6 +258,7 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
       username: session.user.username,
       endpoints: offered.map((e) => ({ ...e, checked: requested.includes(e.resource) })),
       formToken: signPayload(ctx.keys.state, form, FORM_TTL_MS),
+      access: 'read',
     });
   });
 
@@ -280,6 +300,7 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
           .filter((e) => form.offered.includes(e.resource))
           .map((e) => ({ ...e, checked: false })),
         formToken: signPayload(ctx.keys.state, form, FORM_TTL_MS),
+        access: body.access === 'write' ? 'write' : 'read',
         error: 'Pick at least one endpoint, or deny.',
       });
     }
@@ -287,13 +308,15 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
       client,
       userId: session.user.id,
       resources,
+      // Anything but an explicit "Read & write" choice is read-only (design §6.3).
+      access: body.access === 'write' ? 'write' : 'read',
       codeChallenge: form.codeChallenge,
       redirectUri: form.redirectUri,
     });
     return back({ code });
   });
 
-  // ── MCP-port sign-in (also used by approval links) ──
+  // ── MCP-port sign-in (also used by the approval page) ──
 
   app.post('/oauth/login', async (c) => {
     const body = await c.req.parseBody();

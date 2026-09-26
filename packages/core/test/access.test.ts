@@ -2,30 +2,30 @@ import { describe, expect, it } from 'vitest';
 import { effectiveAccess } from '../src/gate/access.js';
 import type { AccessLevel, AccessOperation } from '../src/gate/access.js';
 
-const read: AccessOperation = {
-  classification: 'read',
-  locked: false,
-  excluded: false,
-  lockedOptIn: false,
-  writeAcknowledged: false,
-};
+const read: AccessOperation = { classification: 'read', locked: false, levelOverride: null, writeAcknowledged: false };
 const write: AccessOperation = { ...read, classification: 'write', writeAcknowledged: true };
-const locked: AccessOperation = { ...write, locked: true, lockedOptIn: true };
+const locked: AccessOperation = { ...write, locked: true };
 
 const at = (level: AccessLevel) => ({ level });
+const readOnly = { ceiling: 'read' as const };
 
 describe('effectiveAccess', () => {
   it.each([
-    ['read op, group none', read, 'none', 'group_none'],
-    ['read op, group read', read, 'read', null],
-    ['read op, group write', read, 'write', null],
-    ['write op, group none', write, 'none', 'group_none'],
-    ['write op, group read', write, 'read', 'group_read_only'],
-    ['write op, group write', write, 'write', null],
-    ['locked op, group read', locked, 'read', 'group_read_only'],
-    ['locked op (opted in), group write', locked, 'write', null],
-  ] as const)('%s', (_name, op, level, reason) => {
-    expect(effectiveAccess(op, at(level))).toEqual(reason ? { reachable: false, reason } : { reachable: true });
+    // [name, op, group level, expected]
+    ['read op, none', read, 'none', { reachable: false, reason: 'level_none' }],
+    ['read op, read', read, 'read', { reachable: true, mode: 'run', level: 'read' }],
+    ['read op, ask', read, 'ask', { reachable: true, mode: 'run', level: 'ask' }],
+    ['read op, write', read, 'write', { reachable: true, mode: 'run', level: 'write' }],
+    ['write op, none', write, 'none', { reachable: false, reason: 'level_none' }],
+    ['write op, read', write, 'read', { reachable: false, reason: 'read_only' }],
+    ['write op, ask', write, 'ask', { reachable: true, mode: 'approve', level: 'ask' }],
+    ['write op, write', write, 'write', { reachable: true, mode: 'auto', level: 'write' }],
+    ['locked op, none', locked, 'none', { reachable: false, reason: 'level_none' }],
+    ['locked op, read', locked, 'read', { reachable: false, reason: 'locked_not_opted_in' }],
+    ['locked op, ask (group only)', locked, 'ask', { reachable: false, reason: 'locked_not_opted_in' }],
+    ['locked op, write (group only)', locked, 'write', { reachable: false, reason: 'locked_not_opted_in' }],
+  ] as const)('%s', (_name, op, level, expected) => {
+    expect(effectiveAccess(op, at(level))).toEqual(expected);
   });
 
   it('fails closed when the group row is missing or has an unknown level', () => {
@@ -34,37 +34,87 @@ describe('effectiveAccess', () => {
       reachable: false,
       reason: 'group_missing',
     });
+    // An unknown override is treated as None, never as "follow the group".
+    expect(effectiveAccess({ ...read, levelOverride: 'admin' as AccessLevel }, at('write'))).toEqual({
+      reachable: false,
+      reason: 'level_none',
+    });
   });
 
-  it('lets an exclusion override any group level', () => {
-    for (const op of [read, write, locked]) {
-      expect(effectiveAccess({ ...op, excluded: true }, at('write'))).toEqual({ reachable: false, reason: 'excluded' });
-    }
+  it('lets an operation’s own level win over its group, in both directions', () => {
+    expect(effectiveAccess({ ...write, levelOverride: 'none' }, at('write'))).toEqual({
+      reachable: false,
+      reason: 'level_none',
+    });
+    expect(effectiveAccess({ ...write, levelOverride: 'write' }, at('read'))).toEqual({
+      reachable: true,
+      mode: 'auto',
+      level: 'write',
+    });
+    expect(effectiveAccess({ ...write, levelOverride: 'ask' }, at('write'))).toEqual({
+      reachable: true,
+      mode: 'approve',
+      level: 'ask',
+    });
+    expect(effectiveAccess({ ...read, levelOverride: 'read' }, at('none'))).toEqual({
+      reachable: true,
+      mode: 'run',
+      level: 'read',
+    });
   });
 
-  it('keeps locked ops off at write level until opted in', () => {
-    expect(effectiveAccess({ ...locked, lockedOptIn: false }, at('write'))).toEqual({
+  it('opens a locked op only with its own Ask, and always asks', () => {
+    // The operation's own level wins, even over a group at None.
+    expect(effectiveAccess({ ...locked, levelOverride: 'ask' }, at('none'))).toEqual({
+      reachable: true,
+      mode: 'approve',
+      level: 'ask',
+    });
+    expect(effectiveAccess({ ...locked, levelOverride: 'ask' }, at('read'))).toEqual({
+      reachable: true,
+      mode: 'approve',
+      level: 'ask',
+    });
+    // `write` is refused at the API; even if a row carried it, a locked op never auto-approves.
+    expect(effectiveAccess({ ...locked, levelOverride: 'write' }, at('write'))).toEqual({
+      reachable: true,
+      mode: 'approve',
+      level: 'ask',
+    });
+    expect(effectiveAccess({ ...locked, levelOverride: 'read' }, at('write'))).toEqual({
       reachable: false,
       reason: 'locked_not_opted_in',
     });
   });
 
   it('treats a locked op as a write even if its row says read', () => {
-    expect(effectiveAccess({ ...locked, classification: 'read' }, at('read'))).toEqual({
+    expect(effectiveAccess({ ...locked, classification: 'read' }, at('write'))).toEqual({
       reachable: false,
-      reason: 'group_read_only',
+      reason: 'locked_not_opted_in',
     });
   });
 
-  it('quarantines unacknowledged writes, but not reads', () => {
+  it('asks for unacknowledged writes at Write until someone acknowledges them', () => {
     expect(effectiveAccess({ ...write, writeAcknowledged: false }, at('write'))).toEqual({
-      reachable: false,
-      reason: 'pending_review',
+      reachable: true,
+      mode: 'approve',
+      level: 'write',
+      pendingReview: true,
     });
-    expect(effectiveAccess({ ...locked, writeAcknowledged: false }, at('write'))).toEqual({
-      reachable: false,
-      reason: 'pending_review',
+    expect(effectiveAccess({ ...write, writeAcknowledged: false }, at('ask'))).toEqual({
+      reachable: true,
+      mode: 'approve',
+      level: 'ask',
     });
-    expect(effectiveAccess({ ...read, writeAcknowledged: false }, at('read'))).toEqual({ reachable: true });
+  });
+
+  it('caps a read-only principal at reads, whatever the levels say', () => {
+    expect(effectiveAccess(read, at('write'), readOnly)).toMatchObject({ reachable: true, mode: 'run' });
+    for (const op of [write, { ...locked, levelOverride: 'ask' as const }]) {
+      for (const level of ['ask', 'write'] as const) {
+        expect(effectiveAccess(op, at(level), readOnly)).toEqual({ reachable: false, reason: 'token_read_only' });
+      }
+    }
+    expect(effectiveAccess(write, at('none'), readOnly)).toEqual({ reachable: false, reason: 'level_none' });
   });
 });

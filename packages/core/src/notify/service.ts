@@ -8,17 +8,14 @@ import type { Db } from '../db/index.js';
 import { notifierChannels } from '../db/schema.js';
 import { NotFoundError, ValidationError } from '../errors.js';
 import type { CoreEventMap, CoreEventName, CoreEvents } from '../events.js';
-import type { ApprovalLinkService } from './links.js';
 
 /**
  * Notification channels (design §9): ntfy and signed webhooks, subscribed to core events and
- * optionally filtered by instance. Payloads carry summaries and links, never raw params or secrets.
+ * optionally filtered by instance. Informational only: approvals happen in the MCP client (§5.3).
+ * Payloads carry summaries, never raw params or secrets.
  */
 
 export const NOTIFY_EVENTS = [
-  'approval.pending',
-  'approval.decided',
-  'approval.timed_out',
   'instance.error',
   'instance.recovered',
   'plugin.crashed',
@@ -27,6 +24,10 @@ export const NOTIFY_EVENTS = [
   'auth.lockout',
 ] as const;
 export type NotifyEvent = (typeof NOTIFY_EVENTS)[number];
+
+/** Channels saved before approval notifications were removed may still list those events. */
+const knownEvents = (events: string[]) =>
+  events.filter((e): e is NotifyEvent => NOTIFY_EVENTS.includes(e as NotifyEvent));
 
 const NtfyConfig = z.object({
   server: z.url().default('https://ntfy.sh'),
@@ -69,8 +70,6 @@ export interface Notification {
   title: string;
   message: string;
   data: Record<string, unknown>;
-  /** Approval notifications only: needs per-channel links, created lazily. */
-  approval?: { id: string; expiresAt: Date };
 }
 
 export type FetchLike = (
@@ -84,9 +83,7 @@ export class NotifierService {
   constructor(
     private readonly db: Db,
     private readonly box: SecretBox,
-    private readonly links: ApprovalLinkService,
     private readonly opts: {
-      publicMcpUrl?: string;
       fetch?: FetchLike;
       retryDelaysMs?: number[];
       now?: () => Date;
@@ -103,6 +100,7 @@ export class NotifierService {
     const s = this.secretsOf(row);
     return {
       ...row,
+      events: knownEvents(row.events),
       secretsEnc: undefined,
       secrets: {
         ...(row.kind === 'ntfy' ? { token: { set: !!s.token } } : {}),
@@ -142,7 +140,7 @@ export class NotifierService {
           kind: existing.kind,
           name: existing.name,
           config: existing.config,
-          events: existing.events,
+          events: knownEvents(existing.events),
           instanceFilter: existing.instanceFilter,
           enabled: existing.enabled,
           ...(raw as object),
@@ -231,37 +229,6 @@ export class NotifierService {
       events.on(name, listener);
       offs.push(() => events.off(name, listener));
     };
-    on(
-      'approval.pending',
-      (a) =>
-        void this.dispatch({
-          event: 'approval.pending',
-          instance: { id: a.instanceId, slug: a.slug },
-          title: `Approval needed: ${a.operationKey}`,
-          message: `${a.summary}\n\nEndpoint /${a.slug} · expires ${a.expiresAt.toISOString()}`,
-          data: { approvalId: a.approvalId, operation: a.operationKey, expiresAt: a.expiresAt.toISOString() },
-          approval: { id: a.approvalId, expiresAt: a.expiresAt },
-        }),
-    );
-    on('approval.decided', (a) => {
-      this.links.consumeAll(a.approvalId);
-      const timedOut = a.outcome === 'timed_out';
-      void this.dispatch({
-        event: timedOut ? 'approval.timed_out' : 'approval.decided',
-        instance: { id: a.instanceId, slug: a.slug },
-        title: timedOut ? `Approval timed out: ${a.operationKey}` : `${a.operationKey} ${a.outcome}`,
-        message: timedOut
-          ? 'Nobody answered in time; the call was denied.'
-          : `Decided ${a.outcome}${a.decidedBy ? ` by ${a.decidedBy}` : ''}${a.via ? ` via ${a.via}` : ''}.`,
-        data: {
-          approvalId: a.approvalId,
-          operation: a.operationKey,
-          outcome: a.outcome,
-          via: a.via ?? null,
-          decidedBy: a.decidedBy ?? null,
-        },
-      });
-    });
     on('instance.status', (s) => {
       const prev = this.lastStatus.get(s.instanceId);
       this.lastStatus.set(s.instanceId, s.status);
@@ -311,7 +278,7 @@ export class NotifierService {
         event: 'sync.pending_review',
         instance: { id: p.instanceId, slug: p.slug },
         title: `${p.pendingReview.length} new write operation(s) on /${p.slug}`,
-        message: `Waiting for review before they can be used: ${p.pendingReview.slice(0, 10).join(', ')}${p.pendingReview.length > 10 ? ', …' : ''}`,
+        message: `Where their level is Write they ask for approval until acknowledged: ${p.pendingReview.slice(0, 10).join(', ')}${p.pendingReview.length > 10 ? ', …' : ''}`,
         data: { operations: p.pendingReview },
       });
     });
@@ -345,20 +312,8 @@ export class NotifierService {
     await Promise.all(channels.map((ch) => this.deliver(ch, n)));
   }
 
-  private linksFor(n: Notification) {
-    if (!n.approval || !this.opts.publicMcpUrl) return undefined;
-    const base = this.opts.publicMcpUrl.replace(/\/+$/, '');
-    const tokens = this.links.create(n.approval.id, n.approval.expiresAt);
-    return {
-      approve: `${base}/a/${tokens.approve}`,
-      deny: `${base}/a/${tokens.deny}`,
-      view: `${base}/a/${tokens.view}`,
-    };
-  }
-
   private async deliver(row: ChannelRow, n: Notification): Promise<{ ok: boolean; error?: string }> {
     const secrets = this.secretsOf(row);
-    const links = this.linksFor(n);
     let request: { url: string; headers: Record<string, string>; body: string };
     if (row.kind === 'ntfy') {
       const cfg = NtfyConfig.parse(row.config);
@@ -373,18 +328,8 @@ export class NotifierService {
           topic: cfg.topic,
           title: n.title,
           message: n.message,
-          priority:
-            n.event === 'approval.pending' ? 4 : n.event.startsWith('instance') || n.event === 'plugin.crashed' ? 4 : 3,
+          priority: n.event.startsWith('instance') || n.event === 'plugin.crashed' ? 4 : 3,
           tags: [n.event.replace('.', '-')],
-          ...(links
-            ? {
-                click: links.view,
-                actions: [
-                  { action: 'view', label: 'Approve…', url: links.approve, clear: true },
-                  { action: 'view', label: 'Deny…', url: links.deny, clear: true },
-                ],
-              }
-            : {}),
         }),
       };
     } else {
@@ -397,7 +342,6 @@ export class NotifierService {
         title: n.title,
         message: n.message,
         data: n.data,
-        ...(links ? { links } : {}),
       });
       request = {
         url: cfg.url,

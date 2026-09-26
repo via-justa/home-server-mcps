@@ -2,14 +2,16 @@
 import { computed, onMounted, ref } from 'vue';
 import { ApiError, errorText, http, qs } from '../../api';
 import ModalDialog from '../../components/ModalDialog.vue';
-import { REASON_LABELS } from '../../format';
+import { LEVEL_HELP, LEVEL_LABELS, REASON_LABELS } from '../../format';
 import { useAppStore } from '../../stores/app';
+import { LEVELS } from '../../types';
 import type { BulkPreview, GroupSummary, Instance, Level, Operation } from '../../types';
 
 /**
- * Access page (design §5.2.1): one None | Read | Write control per group. Raising a group to Write
- * lists exactly the writes it exposes and acknowledges them; locked operations stay off until
- * individually allowed; new writes from later syncs wait in "pending review".
+ * Access page (design §5.2.1): one None | Read | Ask | Write control per group, which sets every
+ * operation in it; an operation given its own level keeps it. Ask: writes wait for a human. Write:
+ * writes run without asking, so raising a group to Write lists exactly those writes and acknowledges
+ * them. Locked operations never follow their group: each needs its own Ask, and can't be set to Write.
  */
 const props = defineProps<{ instance: Instance }>();
 const app = useAppStore();
@@ -20,7 +22,7 @@ const groups = ref<GroupSummary[]>([]);
 const ops = ref<Operation[]>([]);
 const expanded = ref<Set<string>>(new Set());
 const search = ref('');
-const reviewOnly = ref(false);
+const attentionOnly = ref(false);
 const error = ref<string>();
 
 async function load() {
@@ -36,13 +38,15 @@ async function load() {
 onMounted(load);
 
 const text = computed(() => search.value.trim().toLowerCase());
-/** A write nobody has acknowledged yet: unreachable at any level until reviewed (same rule as the server). */
-const isPending = (o: Operation) => o.classification === 'write' && !o.locked && !o.excluded && !o.writeAcknowledged;
+const isWrite = (o: Operation) => o.locked || o.classification === 'write';
+/** Plain writes that follow their group: they run without asking once it is at Write (same rule as the server). */
+const followsGroupWrite = (o: Operation) => !o.locked && o.classification === 'write' && o.levelOverride === null;
+const needsAttention = (o: Operation) => o.pendingReview || o.needsReview;
 const opsOf = (key: string) =>
   ops.value.filter(
     (o) =>
       o.group === key &&
-      (!reviewOnly.value || isPending(o) || o.needsReview) &&
+      (!attentionOnly.value || needsAttention(o)) &&
       (!text.value ||
         o.key.toLowerCase().includes(text.value) ||
         (o.displayName ?? '').toLowerCase().includes(text.value)),
@@ -50,17 +54,14 @@ const opsOf = (key: string) =>
 const visibleGroups = computed(() =>
   groups.value.filter(
     (g) =>
-      (!reviewOnly.value || g.counts.pendingReview > 0) &&
+      (!attentionOnly.value || opsOf(g.key).length > 0) &&
       (!text.value ||
         g.key.includes(text.value) ||
         g.label.toLowerCase().includes(text.value) ||
         opsOf(g.key).length > 0),
   ),
 );
-const totals = computed(() => ({
-  pending: groups.value.reduce((n, g) => n + g.counts.pendingReview, 0),
-  write: groups.value.filter((g) => g.level === 'write').length,
-}));
+const pendingTotal = computed(() => groups.value.reduce((n, g) => n + g.counts.pendingReview, 0));
 
 function toggle(key: string) {
   const next = new Set(expanded.value);
@@ -82,7 +83,7 @@ async function act(fn: () => Promise<unknown>) {
 
 // ── single-group level ──
 
-const raising = ref<{ group: GroupSummary; exposes: { id: string; key: string }[]; note?: string }>();
+const raising = ref<{ group: GroupSummary; autoRun: { id: string; key: string }[]; note?: string }>();
 
 function setLevel(group: GroupSummary, level: Level) {
   if (level === group.level) return;
@@ -90,8 +91,10 @@ function setLevel(group: GroupSummary, level: Level) {
     void act(() => http.patch(`${base.value}/groups/${encodeURIComponent(group.key)}`, { level }));
     return;
   }
-  const exposes = ops.value.filter((o) => o.group === group.key && isPending(o)).map((o) => ({ id: o.id, key: o.key }));
-  raising.value = { group, exposes };
+  const autoRun = ops.value
+    .filter((o) => o.group === group.key && followsGroupWrite(o))
+    .map((o) => ({ id: o.id, key: o.key }));
+  raising.value = { group, autoRun };
 }
 
 async function confirmRaise() {
@@ -100,14 +103,14 @@ async function confirmRaise() {
   try {
     await http.patch(`${base.value}/groups/${encodeURIComponent(r.group.key)}`, {
       level: 'write',
-      acknowledge: r.exposes.map((e) => e.id),
+      acknowledge: r.autoRun.map((e) => e.id),
     });
     raising.value = undefined;
     await load();
   } catch (err) {
     if (err instanceof ApiError && err.code === 'acknowledgement_mismatch') {
       const expected = (err.details as { expected: { id: string; key: string }[] }).expected;
-      raising.value = { ...r, exposes: expected, note: 'The list changed since this page loaded. Review it again.' };
+      raising.value = { ...r, autoRun: expected, note: 'The list changed since this page loaded. Review it again.' };
     } else {
       raising.value = { ...r, note: errorText(err) };
     }
@@ -119,7 +122,7 @@ async function confirmRaise() {
 const bulk = ref<{ preview: BulkPreview; confirm: string; note?: string }>();
 async function bulkLevel(level: Level) {
   if (level !== 'write') {
-    if (!window.confirm(`Set every group on /${props.instance.slug} to ${level === 'none' ? 'None' : 'Read'}?`)) return;
+    if (!window.confirm(`Set every group on /${props.instance.slug} to ${LEVEL_LABELS[level]}?`)) return;
     await act(() => http.post(`${base.value}/groups/bulk-level`, { level }));
     return;
   }
@@ -148,9 +151,7 @@ async function confirmBulk() {
     } else bulk.value = { ...b, note: errorText(err) };
   }
 }
-const bulkExposes = computed(
-  () => bulk.value?.preview.groups.filter((g) => g.from !== 'write' || g.exposes.length) ?? [],
-);
+const bulkGroups = computed(() => bulk.value?.preview.groups.filter((g) => g.exposes.length) ?? []);
 
 // ── regroup ──
 
@@ -182,14 +183,31 @@ function rename(g: GroupSummary) {
 const patchOp = (op: Operation, body: Record<string, unknown>) =>
   act(() => http.patch(`${base.value}/operations/${op.id}`, body));
 
-function allowLocked(op: Operation) {
-  if (
-    window.confirm(
-      `${op.key} is locked (destructive or irreversible). Allowing it makes it callable, always with a typed confirmation, and it can never be pre-approved. Allow it?`,
-    )
-  ) {
-    void patchOp(op, { lockedOptIn: true });
+/** Levels an operation can take: reads only need None/Read; locked ops can't be set to Write. */
+const levelsFor = (op: Operation): Level[] =>
+  !isWrite(op) ? ['none', 'read'] : op.locked ? ['none', 'read', 'ask'] : LEVELS;
+
+async function setOpLevel(op: Operation, value: string) {
+  const level = value === '' ? null : (value as Level);
+  const warning =
+    level === 'ask' && op.locked
+      ? `${op.key} is locked (destructive or irreversible). At Ask it becomes callable: every call needs your approval on the approval page, with a typed confirmation and a fresh authenticator code. Continue?`
+      : level === 'write' && isWrite(op)
+        ? `${op.key} will run without asking anyone. Continue?`
+        : null;
+  if (warning && !window.confirm(warning)) {
+    await load(); // put the select back
+    return;
   }
+  await patchOp(op, { level });
+}
+
+/** What a call does right now, in words. */
+function status(op: Operation): { text: string; tone: string } {
+  if (!op.reachable) return { text: REASON_LABELS[op.reason ?? ''] ?? op.reason ?? 'Off', tone: '' };
+  if (op.mode === 'run') return { text: 'Runs', tone: 'ok' };
+  if (op.mode === 'auto') return { text: 'Runs without asking', tone: 'danger' };
+  return op.pendingReview ? { text: 'Asks until acknowledged', tone: 'warn' } : { text: 'Asks', tone: 'warn' };
 }
 const kindLabel = (op: Operation) => (op.locked ? 'locked' : op.classification);
 </script>
@@ -203,16 +221,25 @@ const kindLabel = (op: Operation) => (op.locked ? 'locked' : op.classification);
         :placeholder="`Search groups and ${opLabel.toLowerCase()}`"
         aria-label="Search"
       />
-      <label class="row small check"><input v-model="reviewOnly" type="checkbox" /> Pending review only</label>
+      <label class="row small check"><input v-model="attentionOnly" type="checkbox" /> Needs attention only</label>
       <span class="grow" />
       <button class="btn btn-sm" type="button" @click="bulkLevel('none')">All → None</button>
       <button class="btn btn-sm" type="button" @click="bulkLevel('read')">All → Read</button>
+      <button class="btn btn-sm" type="button" @click="bulkLevel('ask')">All → Ask</button>
       <button class="btn btn-sm btn-danger" type="button" @click="bulkLevel('write')">All → Write…</button>
       <button class="btn btn-sm" type="button" @click="merging = { from: [], into: '', label: '' }">Regroup…</button>
     </div>
-    <p v-if="totals.pending" class="alert warn">
-      {{ totals.pending }} new write {{ totals.pending === 1 ? 'operation waits' : 'operations wait' }} for review. They
-      stay unreachable until acknowledged, even in groups at Write.
+    <p class="small muted">
+      <template v-for="l in LEVELS" :key="l"
+        ><strong>{{ LEVEL_LABELS[l] }}</strong
+        >: {{ LEVEL_HELP[l] }}. </template
+      >A group's level applies to every {{ instance.plugin.labels?.operation?.toLowerCase() ?? 'operation' }} in it,
+      except those you give their own level.
+    </p>
+    <p v-if="pendingTotal" class="alert warn">
+      {{ pendingTotal }} new write {{ pendingTotal === 1 ? 'operation is' : 'operations are' }} at Write but still
+      {{ pendingTotal === 1 ? 'asks' : 'ask' }} for approval until you acknowledge
+      {{ pendingTotal === 1 ? 'it' : 'them' }}.
     </p>
     <p v-if="error" class="alert error" role="alert">{{ error }}</p>
 
@@ -228,21 +255,23 @@ const kindLabel = (op: Operation) => (op.locked ? 'locked' : op.classification);
             <span v-if="g.stale" class="pill">stale</span>
             <div class="small muted">
               {{ g.counts.read }} read · {{ g.counts.write }} write · {{ g.counts.locked }} locked
-              <span v-if="g.counts.pendingReview" class="pill warn">{{ g.counts.pendingReview }} pending review</span>
+              <span v-if="g.counts.overridden" class="pill">{{ g.counts.overridden }} with their own level</span>
+              <span v-if="g.counts.pendingReview" class="pill warn">{{ g.counts.pendingReview }} to acknowledge</span>
             </div>
           </div>
           <button class="btn-link small" type="button" @click="rename(g)">Rename</button>
           <div class="segmented" role="radiogroup" :aria-label="`Access for ${g.label}`">
             <button
-              v-for="l in ['none', 'read', 'write'] as Level[]"
+              v-for="l in LEVELS"
               :key="l"
               type="button"
               role="radio"
+              :title="LEVEL_HELP[l]"
               :aria-checked="g.level === l"
               :class="{ on: g.level === l, write: l === 'write' }"
               @click="setLevel(g, l)"
             >
-              {{ l[0]!.toUpperCase() + l.slice(1) }}
+              {{ LEVEL_LABELS[l] }}
             </button>
           </div>
         </div>
@@ -262,41 +291,32 @@ const kindLabel = (op: Operation) => (op.locked ? 'locked' : op.classification);
                 <span v-if="op.classificationSource === 'override'" class="small muted"> (override)</span>
               </td>
               <td>
-                <span v-if="op.reachable" class="pill ok">callable</span>
-                <span v-else class="pill" :class="{ warn: op.reason === 'pending_review' }">
-                  {{ REASON_LABELS[op.reason ?? ''] ?? op.reason }}
-                </span>
+                <span class="pill status" :class="status(op).tone">{{ status(op).text }}</span>
               </td>
               <td class="right">
                 <div class="controls">
                   <button
-                    v-if="isPending(op)"
+                    v-if="op.pendingReview"
                     class="btn btn-sm btn-primary"
                     type="button"
                     @click="patchOp(op, { acknowledged: true })"
                   >
                     Acknowledge
                   </button>
-                  <template v-if="op.locked">
-                    <button
-                      v-if="!op.lockedOptIn && g.level === 'write'"
-                      class="btn btn-sm btn-danger"
-                      type="button"
-                      @click="allowLocked(op)"
-                    >
-                      Allow…
-                    </button>
-                    <button
-                      v-else-if="op.lockedOptIn"
-                      class="btn btn-sm"
-                      type="button"
-                      @click="patchOp(op, { lockedOptIn: false })"
-                    >
-                      Revoke
-                    </button>
-                  </template>
                   <select
-                    v-else
+                    class="cls level"
+                    :value="op.levelOverride ?? ''"
+                    :aria-label="`Level of ${op.key}`"
+                    @change="setOpLevel(op, ($event.target as HTMLSelectElement).value)"
+                  >
+                    <option value="">
+                      {{ op.locked ? 'Follow group (off)' : `Follow group (${LEVEL_LABELS[g.level]})` }}
+                    </option>
+                    <option v-for="l in levelsFor(op)" :key="l" :value="l">{{ LEVEL_LABELS[l] }}</option>
+                    <option v-if="op.locked" value="write" disabled>Write (not for locked)</option>
+                  </select>
+                  <select
+                    v-if="!op.locked"
                     class="cls"
                     :value="op.classification"
                     :aria-label="`Classification of ${op.key}`"
@@ -305,14 +325,6 @@ const kindLabel = (op: Operation) => (op.locked ? 'locked' : op.classification);
                     <option value="read">read</option>
                     <option value="write">write</option>
                   </select>
-                  <label class="small check">
-                    <input
-                      type="checkbox"
-                      :checked="op.excluded"
-                      @change="patchOp(op, { excluded: ($event.target as HTMLInputElement).checked })"
-                    />
-                    Exclude
-                  </label>
                 </div>
               </td>
             </tr>
@@ -327,35 +339,39 @@ const kindLabel = (op: Operation) => (op.locked ? 'locked' : op.classification);
       </div>
     </div>
 
-    <ModalDialog v-if="raising" :title="`Allow writes in ${raising.group.label}?`" @close="raising = undefined">
-      <p v-if="raising.exposes.length" class="small">
-        These write {{ opLabel.toLowerCase() }} become callable (each still asks for approval unless a pre-approval rule
-        matches):
+    <ModalDialog
+      v-if="raising"
+      :title="`Let writes in ${raising.group.label} run without asking?`"
+      @close="raising = undefined"
+    >
+      <p v-if="raising.autoRun.length" class="small">
+        At Write, these {{ opLabel.toLowerCase() }} run as soon as a client calls them, with nobody approving:
       </p>
-      <p v-else class="small">No new writes are exposed; already-acknowledged writes in this group become callable.</p>
+      <p v-else class="small">No writes in this group follow its level, so nothing starts running without asking.</p>
       <ul class="expose mono small">
-        <li v-for="e in raising.exposes" :key="e.id">{{ e.key }}</li>
+        <li v-for="e in raising.autoRun" :key="e.id">{{ e.key }}</li>
       </ul>
       <p v-if="raising.group.counts.locked" class="small muted">
-        {{ raising.group.counts.locked }} locked operation(s) stay off; allow them one by one.
+        {{ raising.group.counts.locked }} locked operation(s) never run without asking. Writes found by later syncs ask
+        until you acknowledge them.
       </p>
       <p v-if="raising.note" class="alert warn">{{ raising.note }}</p>
       <template #footer>
         <button class="btn" type="button" @click="raising = undefined">Cancel</button>
-        <button class="btn btn-danger-solid" type="button" @click="confirmRaise">Allow writes</button>
+        <button class="btn btn-danger-solid" type="button" @click="confirmRaise">Set to Write</button>
       </template>
     </ModalDialog>
 
     <ModalDialog v-if="bulk" :title="`Set every group on /${instance.slug} to Write?`" wide @close="bulk = undefined">
       <p class="small">
-        This exposes <strong>{{ bulk.preview.acknowledge.length }}</strong> write operation(s) across
-        {{ bulkExposes.length }} group(s). Locked operations stay off. Writes found by later syncs will still wait for
-        review.
+        <strong>{{ bulk.preview.acknowledge.length }}</strong> write operation(s) across
+        {{ bulkGroups.length }} group(s) will run without anyone approving them. Locked operations still ask. Writes
+        found by later syncs ask until you acknowledge them.
       </p>
       <div class="bulk-list">
-        <div v-for="g in bulkExposes" :key="g.key" class="small">
-          <strong>{{ g.label }}</strong> <span class="muted">({{ g.from }} → write)</span>
-          <span v-if="g.exposes.length" class="mono muted"> {{ g.exposes.map((e) => e.key).join(', ') }}</span>
+        <div v-for="g in bulkGroups" :key="g.key" class="small">
+          <strong>{{ g.label }}</strong> <span class="muted">({{ LEVEL_LABELS[g.from] }} → Write)</span>
+          <span class="mono muted"> {{ g.exposes.map((e) => e.key).join(', ') }}</span>
         </div>
       </div>
       <div class="field">
@@ -417,7 +433,6 @@ const kindLabel = (op: Operation) => (op.locked ? 'locked' : op.classification);
     </ModalDialog>
   </div>
 </template>
-
 <style scoped>
 .search {
   padding: 8px 11px;
@@ -491,6 +506,39 @@ const kindLabel = (op: Operation) => (op.locked ? 'locked' : op.classification);
 @media (max-width: 720px) {
   .group-row {
     flex-wrap: wrap;
+  }
+  /* The name takes the first line; Rename and the level control wrap onto the next. */
+  .name {
+    flex: 1 1 calc(100% - 40px);
+  }
+  .segmented {
+    margin-left: auto;
+  }
+  /* Operation rows stack: key on top, then kind + status, then the controls. */
+  .ops tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+    padding: 10px 14px;
+    background: var(--surface);
+  }
+  .ops tr + tr {
+    border-top: 1px solid var(--border);
+  }
+  .ops td {
+    display: block;
+    padding: 0;
+    border: none;
+  }
+  .ops td:first-child,
+  .ops td.right {
+    flex: 1 1 100%;
+  }
+  .ops td.right,
+  .controls {
+    text-align: left;
+    justify-content: flex-start;
   }
 }
 </style>

@@ -125,7 +125,7 @@ export const pluginInstances = sqliteTable('plugin_instances', {
 
 // ── catalog ──────────────────────────────────────────────────────────────────────────────────────
 
-/** One none/read/write level per group replaces per-operation toggles (design §5.2). */
+/** One none/read/ask/write level per group; operations follow it unless they carry their own level (design §5.2). */
 export const operationGroups = sqliteTable(
   'operation_groups',
   {
@@ -136,7 +136,7 @@ export const operationGroups = sqliteTable(
     key: text('key').notNull(),
     label: text('label').notNull(),
     /** New groups start read-only. */
-    level: text('level', { enum: ['none', 'read', 'write'] })
+    level: text('level', { enum: ['none', 'read', 'ask', 'write'] })
       .notNull()
       .default('read'),
     levelChangedAt: ts('level_changed_at'),
@@ -182,11 +182,9 @@ export const operations = sqliteTable(
     inferredClassification: text('inferred_classification', { enum: ['read', 'write'] }).notNull(),
     inferredReason: text('inferred_reason').notNull(),
     locked: flag('locked').notNull().default(false),
-    /** Exclude-only override: removes the op even when its group level would allow it. */
-    excluded: flag('excluded').notNull().default(false),
-    /** Locked ops stay unreachable at group level `write` until opted in individually. */
-    lockedOptIn: flag('locked_opt_in').notNull().default(false),
-    /** Writes discovered by sync are quarantined until acknowledged. */
+    /** Admin-set level for this operation; null follows the group. Locked ops only become callable at `ask`. */
+    levelOverride: text('level_override', { enum: ['none', 'read', 'ask', 'write'] }),
+    /** Writes at level `write` still ask for approval until an admin acknowledges them. */
     writeAcknowledged: flag('write_acknowledged').notNull().default(false),
     acknowledgedAt: ts('acknowledged_at'),
     acknowledgedBy: text('acknowledged_by').references(() => users.id),
@@ -297,7 +295,8 @@ export const pendingApprovals = sqliteTable('pending_approvals', {
     .notNull()
     .default('pending'),
   decidedBy: text('decided_by'),
-  decidedVia: text('decided_via', { enum: ['elicitation', 'portal', 'link'] }),
+  /** `url`: decided by a signed-in human on the approval page; `elicitation`: by the MCP client (opt-in). */
+  decidedVia: text('decided_via', { enum: ['elicitation', 'url'] }),
   decidedAt: ts('decided_at'),
 });
 
@@ -333,6 +332,10 @@ export const mcpTokens = sqliteTable('mcp_tokens', {
   tokenHash: text('token_hash').notNull().unique(),
   /** Instance ids, or ['*']. */
   scope: json('scope').$type<string[]>().notNull(),
+  /** Ceiling on what the token can reach: `read` hides and blocks every write. */
+  access: text('access', { enum: ['read', 'write'] })
+    .notNull()
+    .default('read'),
   createdBy: text('created_by').references(() => users.id),
   createdAt: createdAt(),
   expiresAt: ts('expires_at'),
@@ -360,6 +363,10 @@ export const oauthGrants = sqliteTable('oauth_grants', {
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
   resources: json('resources').$type<string[]>().notNull(),
+  /** Chosen on the consent page (design §6.3); `read` hides and blocks every write. */
+  access: text('access', { enum: ['read', 'write'] })
+    .notNull()
+    .default('read'),
   createdAt: createdAt(),
   revokedAt: ts('revoked_at'),
 });

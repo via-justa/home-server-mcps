@@ -4,33 +4,23 @@ import { approvalLinks } from '../db/schema.js';
 import { randomToken, sha256 } from '../auth/tokens.js';
 
 /**
- * Approval links (design §9.2): single-use, stored hashed, bound to one approval, expiring with it.
- * A link only opens the decision page on the MCP port — deciding still needs a signed-in human.
+ * Approval page tokens (design §5.3): single-use, stored hashed, bound to one approval, expiring with
+ * it. The MCP client receives the page URL in a URL-mode elicitation; the token only opens the page,
+ * and deciding still needs a signed-in human with TOTP, so the client holding it gains nothing.
  */
-
-export type LinkAction = 'approve' | 'deny' | 'view';
-
 export class ApprovalLinkService {
   constructor(
     private readonly db: Db,
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  create(
-    approvalId: string,
-    expiresAt: Date,
-    actions: LinkAction[] = ['approve', 'deny', 'view'],
-  ): Record<LinkAction, string> {
-    const out = {} as Record<LinkAction, string>;
-    for (const action of actions) {
-      const token = randomToken(32);
-      this.db
-        .insert(approvalLinks)
-        .values({ tokenHash: sha256(token), approvalId, action, expiresAt })
-        .run();
-      out[action] = token;
-    }
-    return out;
+  create(approvalId: string, expiresAt: Date): string {
+    const token = randomToken(32);
+    this.db
+      .insert(approvalLinks)
+      .values({ tokenHash: sha256(token), approvalId, action: 'view', expiresAt })
+      .run();
+    return token;
   }
 
   /** The live link row for a token, or null if unknown, used, or expired. */
@@ -51,7 +41,7 @@ export class ApprovalLinkService {
     );
   }
 
-  /** Burns every link of an approval once it has been decided (by any channel). */
+  /** Burns every link of an approval once it has been decided. */
   consumeAll(approvalId: string) {
     this.db
       .update(approvalLinks)

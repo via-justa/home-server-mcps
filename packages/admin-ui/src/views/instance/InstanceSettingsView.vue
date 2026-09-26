@@ -20,7 +20,7 @@ const form = ref({
   enabled: props.instance.enabled,
   authMode: (props.instance.authMode ?? '') as AuthMode | '',
   approvalTimeoutMin: s.approvalTimeoutMs / 60_000,
-  allowPortalOnlyApprovals: s.allowPortalOnlyApprovals,
+  formApprovals: s.formElicitationApprovals === 'writes',
   executePerMinute: s.executePerMinute,
   writesPerMinute: s.writesPerMinute,
   sandboxTimeoutS: s.sandbox.timeoutMs / 1000,
@@ -44,7 +44,7 @@ async function save() {
       authMode: f.authMode || null,
       settings: {
         approvalTimeoutMs: Math.round(f.approvalTimeoutMin * 60_000),
-        allowPortalOnlyApprovals: f.allowPortalOnlyApprovals,
+        formElicitationApprovals: f.formApprovals ? 'writes' : 'off',
         executePerMinute: f.executePerMinute,
         writesPerMinute: f.writesPerMinute,
         sandbox: {
@@ -123,12 +123,20 @@ async function remove() {
           <input id="s-writes" v-model.number="form.writesPerMinute" type="number" min="1" />
         </div>
       </div>
+      <p class="small muted">
+        Writes that ask are approved on an approval page: the MCP client asks you to open it, and you sign in with your
+        authenticator app there. Clients that can't open it get the call denied.
+      </p>
       <div class="field check">
         <label>
-          <input v-model="form.allowPortalOnlyApprovals" type="checkbox" />
-          When the client can't show an approval prompt, wait for a decision in the portal or a notification link
+          <input v-model="form.formApprovals" type="checkbox" />
+          Let clients that only show forms approve ordinary writes
         </label>
       </div>
+      <p v-if="form.formApprovals" class="alert warn" role="note">
+        Any client connected to this endpoint could then approve its own writes, with nobody checking. Locked operations
+        and ones that need a typed confirmation still need the approval page.
+      </p>
     </section>
 
     <section class="card">

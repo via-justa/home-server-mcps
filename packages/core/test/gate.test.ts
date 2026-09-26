@@ -3,14 +3,16 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseManifest } from '@home-server-mcps/plugin-sdk';
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { afterEach, describe, expect, it } from 'vitest';
+import { ApprovalLinkService } from '../src/approvals/links.js';
 import { ApprovalService } from '../src/approvals/service.js';
-import type { ElicitFn, ElicitRequest } from '../src/approvals/service.js';
-import { setGroupLevel, updateOperation } from '../src/catalog/groups.js';
+import type { ClientPrompts, FormPromptRequest, UrlPromptRequest } from '../src/approvals/service.js';
+import { previewBulkLevel, setGroupLevel, updateOperation } from '../src/catalog/groups.js';
 import { applyCatalogSync } from '../src/catalog/sync.js';
 import { openDatabase } from '../src/db/index.js';
-import { auditLog, guides, operations, pendingApprovals, preApprovalRules } from '../src/db/schema.js';
+import { approvalLinks, auditLog, guides, operations, pendingApprovals, preApprovalRules } from '../src/db/schema.js';
+import type { AccessCeiling, AccessLevel } from '../src/gate/access.js';
 import { issueAttestationKey } from '../src/gate/attestation.js';
 import type { CallerContext, GateDeps, InstanceRuntime } from '../src/gate/pipeline.js';
 import { SlidingWindowLimiter } from '../src/gate/rate-limit.js';
@@ -37,7 +39,7 @@ async function setup(settings: Partial<InstanceSettings> = {}) {
   await proc.call('init', { instanceId, config: {}, secrets: {}, sdkVersion: '1.0.0' });
   applyCatalogSync(db, instanceId, await proc.call('syncCatalog'));
 
-  const approvals = new ApprovalService(db);
+  const approvals = new ApprovalService(db, new ApprovalLinkService(db));
   cleanup.push(() => approvals.cancelAll());
   const deps: GateDeps = { db, approvals, limiter: new SlidingWindowLimiter(), attestationKey: randomBytes(32) };
   const rt: InstanceRuntime = {
@@ -49,26 +51,51 @@ async function setup(settings: Partial<InstanceSettings> = {}) {
     plugin: () => proc,
   };
   const opId = (key: string) => db.select().from(operations).where(eq(operations.key, key)).get()!.id;
-  const openWrites = () =>
-    setGroupLevel(db, instanceId, 'echo', 'write', {
-      acknowledge: [opId('echo.set'), opId('echo.delete'), opId('echo.nolit'), opId('echo.guided')].filter((id) => {
-        const o = db.select().from(operations).where(eq(operations.id, id)).get()!;
-        return !o.locked;
-      }),
+  const setLevel = (level: AccessLevel) =>
+    setGroupLevel(db, instanceId, 'echo', level, {
+      acknowledge: level === 'write' ? previewBulkLevel(db, instanceId, 'write').acknowledge : undefined,
     });
-  const caller = (elicit?: ElicitFn): CallerContext => ({ client: { kind: 'mcp_client', id: 'claude-test' }, elicit });
-  const exec = (code: string, elicit?: ElicitFn) => executeCode(deps, rt, caller(elicit), code);
+  const caller = (prompts?: ClientPrompts, ceiling: AccessCeiling = 'write'): CallerContext => ({
+    client: { kind: 'mcp_client', id: 'claude-test' },
+    principal: { ceiling },
+    prompts,
+  });
+  const exec = (code: string, prompts?: ClientPrompts, ceiling?: AccessCeiling) =>
+    executeCode(deps, rt, caller(prompts, ceiling), code);
   const audits = () => db.select().from(auditLog).where(eq(auditLog.kind, 'call')).all();
-  return { db, instanceId, proc, deps, rt, opId, openWrites, exec, audits, approvals, caller };
+  const pending = () => db.select().from(pendingApprovals).where(eq(pendingApprovals.status, 'pending')).all();
+  return { db, instanceId, proc, deps, rt, opId, setLevel, exec, audits, approvals, caller, pending };
 }
 
-const approveAll: ElicitFn = async (req) => ({
-  action: 'accept',
-  content: {
-    approve: true,
-    confirm: /Type "(.*)" to confirm/.exec(req.requestedSchema.properties.confirm?.title ?? '')?.[1],
-  },
-});
+/**
+ * A client that supports URL prompts. `onOpen` plays the human on the approval page; without it the
+ * page is opened and nobody decides.
+ */
+function urlClient(onOpen?: (req: UrlPromptRequest) => void, action: 'accept' | 'decline' | 'cancel' = 'accept') {
+  const opened: UrlPromptRequest[] = [];
+  const completed: string[] = [];
+  const prompts: ClientPrompts = {
+    url: async (req) => {
+      opened.push(req);
+      if (onOpen) setTimeout(() => onOpen(req), 5);
+      return { action };
+    },
+    urlComplete: (id) => completed.push(id),
+  };
+  return { prompts, opened, completed };
+}
+
+/** A form-only client that says yes to everything it is shown, the self-approval the review found. */
+function formClient() {
+  const asked: FormPromptRequest[] = [];
+  const prompts: ClientPrompts = {
+    form: async (req) => {
+      asked.push(req);
+      return { action: 'accept', content: { approve: true, confirm: 'tank/x' } as { approve: unknown } };
+    },
+  };
+  return { prompts, asked };
+}
 
 const waitFor = async (pred: () => boolean, ms = 3000) => {
   const until = Date.now() + ms;
@@ -94,16 +121,25 @@ describe('execute → gate → plugin', () => {
     ]);
   });
 
-  it('rejects writes in a read-only group with a catchable reason', async () => {
+  it('rejects writes at level Read with a catchable reason', async () => {
     const t = await setup();
     const r = await t.exec(
       `try { await echo.call('echo.set', { name: 'x' }); } catch (e) { return [e.code, e.message]; }`,
     );
     expect(r).toMatchObject({
       ok: true,
-      value: ['OPERATION_DISABLED', 'echo.set is a write, and its group is read-only on this endpoint'],
+      value: ['OPERATION_DISABLED', 'echo.set is a write, and its access level on this endpoint is Read'],
     });
-    expect(t.audits()[0]).toMatchObject({ decision: 'rejected:group_read_only', resultStatus: 'rejected' });
+    expect(t.audits()[0]).toMatchObject({ decision: 'rejected:read_only', resultStatus: 'rejected' });
+  });
+
+  it('rejects everything at level None', async () => {
+    const t = await setup();
+    t.setLevel('none');
+    await expect(t.exec(`await echo.call('echo.query');`)).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'OPERATION_DISABLED', message: expect.stringContaining('access level None') },
+    });
   });
 
   it('rejects operations the plugin does not know', async () => {
@@ -113,135 +149,225 @@ describe('execute → gate → plugin', () => {
     expect(t.audits()[0]).toMatchObject({ decision: 'rejected:unknown_operation' });
   });
 
-  it('asks a human over elicitation and runs the call once approved', async () => {
-    const t = await setup();
-    t.openWrites();
-    const asked: ElicitRequest[] = [];
-    const r = await t.exec(`return await echo.call('echo.set', { name: 'tank/a', password: 'pw' });`, async (req) => {
-      asked.push(req);
-      return { action: 'accept', content: { approve: true } };
+  describe('level Write', () => {
+    it('runs acknowledged writes without asking anyone', async () => {
+      const t = await setup();
+      t.setLevel('write');
+      const client = urlClient();
+      const r = await t.exec(`return (await echo.call('echo.set', { name: 'x' })).key;`, client.prompts);
+      expect(r).toMatchObject({ ok: true, value: 'echo.set' });
+      expect(client.opened).toEqual([]);
+      expect(t.db.select().from(pendingApprovals).all()).toEqual([]);
+      expect(t.audits()[0]).toMatchObject({ decision: 'auto-approved:level', classification: 'write' });
     });
-    expect(r).toMatchObject({ ok: true, value: { key: 'echo.set' } });
-    expect(asked[0]?.message).toContain('echo.set');
-    expect(asked[0]?.message).not.toContain('pw'); // redacted in the prompt
-    expect(asked[0]?.requestedSchema.required).toEqual(['approve']);
-    expect(t.audits()[0]).toMatchObject({
-      decision: 'human-approved',
-      decidedVia: 'elicitation',
-      classification: 'write',
+
+    it('asks for a write nobody acknowledged yet', async () => {
+      const t = await setup();
+      t.setLevel('write');
+      updateOperation(t.db, t.instanceId, t.opId('echo.set'), { acknowledged: false });
+      const client = urlClient((req) => t.approvals.decide(req.approvalId, { approve: true, decidedBy: 'admin' }));
+      await expect(t.exec(`await echo.call('echo.set', { name: 'x' });`, client.prompts)).resolves.toMatchObject({
+        ok: true,
+      });
+      expect(client.opened).toHaveLength(1);
+      expect(t.audits()[0]).toMatchObject({ decision: 'human-approved', decidedVia: 'url' });
     });
-    const row = t.db.select().from(pendingApprovals).get()!;
-    expect(row).toMatchObject({ status: 'approved', paramsDisplay: { name: 'tank/a', password: '[REDACTED]' } });
-    expect(row.paramsHash).toMatch(/^[0-9a-f]{64}$/);
-  });
 
-  it('surfaces a denial as a catchable PERMISSION_DENIED', async () => {
-    const t = await setup();
-    t.openWrites();
-    const r = await t.exec(
-      `try { await echo.call('echo.set', { name: 'x' }); } catch (e) { return e.code; }`,
-      async () => ({
-        action: 'decline',
-      }),
-    );
-    expect(r).toMatchObject({ ok: true, value: 'PERMISSION_DENIED' });
-    expect(t.audits()[0]).toMatchObject({ decision: 'denied', decidedVia: 'elicitation' });
-  });
-
-  it('waits for a portal decision when the client cannot elicit', async () => {
-    const t = await setup();
-    t.openWrites();
-    const run = t.exec(`return await echo.call('echo.set', { name: 'x' });`);
-    await waitFor(() => t.approvals.pendingCount === 1);
-    const row = t.db.select().from(pendingApprovals).where(eq(pendingApprovals.status, 'pending')).get()!;
-    t.approvals.decide(row.id, { approve: true, decidedBy: 'admin', via: 'portal' });
-    await expect(run).resolves.toMatchObject({ ok: true });
-    expect(t.audits()[0]).toMatchObject({ decision: 'human-approved', decidedBy: 'admin', decidedVia: 'portal' });
-  });
-
-  it('denies immediately when there is no approval path', async () => {
-    const t = await setup({ allowPortalOnlyApprovals: false });
-    t.openWrites();
-    const r = await t.exec(`await echo.call('echo.set', { name: 'x' });`);
-    expect(r).toMatchObject({
-      ok: false,
-      error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('no_approval_path') },
+    it('never auto-runs a locked operation', async () => {
+      const t = await setup();
+      t.setLevel('write');
+      await expect(t.exec(`await echo.call('echo.delete', { name: 'tank/x' });`)).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'OPERATION_DISABLED', message: expect.stringContaining('protected operation') },
+      });
+      updateOperation(t.db, t.instanceId, t.opId('echo.delete'), { level: 'ask' });
+      await expect(t.exec(`await echo.call('echo.delete', { name: 'tank/x' });`)).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'PERMISSION_DENIED' }, // it asked; this client has no way to answer
+      });
     });
   });
 
-  it('times out unanswered approvals as denials, without spending the sandbox budget', async () => {
-    const t = await setup({ approvalTimeoutMs: 300, sandbox: { timeoutMs: 150, memoryMb: 64, maxResultBytes: 65536 } });
-    t.openWrites();
-    const r = await t.exec(`try { await echo.call('echo.set', { name: 'x' }); } catch (e) { return e.message; }`);
-    expect(r).toMatchObject({ ok: true, value: 'Approval for echo.set timed out and was denied' });
-    expect(t.audits()[0]).toMatchObject({ decision: 'timed-out' });
-    expect(t.db.select().from(pendingApprovals).get()?.status).toBe('timed_out');
-  });
+  describe('level Ask: approvals', () => {
+    it('sends the human to the approval page (URL prompt) and runs the call once approved there', async () => {
+      const t = await setup();
+      t.setLevel('ask');
+      const client = urlClient((req) => t.approvals.decide(req.approvalId, { approve: true, decidedBy: 'admin' }));
+      const r = await t.exec(`return await echo.call('echo.set', { name: 'tank/a', password: 'pw' });`, client.prompts);
+      expect(r).toMatchObject({ ok: true, value: { key: 'echo.set' } });
 
-  it('serializes calls: a second write waits until the first is decided', async () => {
-    const t = await setup();
-    t.openWrites();
-    const run = t.exec(
-      `return await Promise.all([echo.call('echo.set', { name: 'a' }), echo.call('echo.set', { name: 'b' })]);`,
-    );
-    await waitFor(() => t.approvals.pendingCount === 1);
-    await new Promise((r) => setTimeout(r, 100));
-    expect(t.approvals.pendingCount).toBe(1);
-    const first = t.db.select().from(pendingApprovals).where(eq(pendingApprovals.status, 'pending')).get()!;
-    t.approvals.decide(first.id, { approve: true, decidedBy: 'admin', via: 'portal' });
-    await waitFor(
-      () => t.db.select().from(pendingApprovals).where(eq(pendingApprovals.status, 'pending')).all().length === 1,
-    );
-    const second = t.db.select().from(pendingApprovals).where(eq(pendingApprovals.status, 'pending')).get()!;
-    expect(second.paramsHash).not.toBe(first.paramsHash); // each approval is scoped to its own params
-    t.approvals.decide(second.id, { approve: true, decidedBy: 'admin', via: 'portal' });
-    await expect(run).resolves.toMatchObject({
-      ok: true,
-      value: [{ params: { name: 'a' } }, { params: { name: 'b' } }],
+      const [req] = client.opened;
+      expect(req?.path).toMatch(/^\/a\/[A-Za-z0-9_-]{20,}$/);
+      expect(req?.message).toContain('echo.set');
+      expect(req?.message).not.toContain('pw');
+      expect(client.completed).toEqual([req?.approvalId]);
+      // The page link is single-use: burnt once decided.
+      expect(t.db.select().from(approvalLinks).get()?.usedAt).toBeInstanceOf(Date);
+      expect(t.audits()[0]).toMatchObject({
+        decision: 'human-approved',
+        decidedVia: 'url',
+        decidedBy: 'admin',
+        classification: 'write',
+      });
+      const row = t.db.select().from(pendingApprovals).get()!;
+      expect(row).toMatchObject({ status: 'approved', paramsDisplay: { name: 'tank/a', password: '[REDACTED]' } });
+      expect(row.paramsHash).toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    it('treats a declined or dismissed URL prompt as a denial', async () => {
+      for (const action of ['decline', 'cancel'] as const) {
+        const t = await setup();
+        t.setLevel('ask');
+        const r = await t.exec(
+          `try { await echo.call('echo.set', { name: 'x' }); } catch (e) { return [e.code, e.message]; }`,
+          urlClient(undefined, action).prompts,
+        );
+        expect(r).toMatchObject({ ok: true, value: ['PERMISSION_DENIED', 'echo.set was declined in the client'] });
+        expect(t.audits()[0]).toMatchObject({ decision: 'denied', decidedVia: 'elicitation' });
+      }
+    });
+
+    it('never lets a form-only client approve its own call, whatever it answers', async () => {
+      const t = await setup();
+      t.setLevel('ask');
+      const client = formClient();
+      const r = await t.exec(`await echo.call('echo.set', { name: 'x' });`, client.prompts);
+      expect(r).toMatchObject({
+        ok: false,
+        error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('only supports form prompts') },
+      });
+      expect(client.asked).toEqual([]);
+    });
+
+    it('lets form prompts approve plain writes only where the endpoint opted in', async () => {
+      const t = await setup({ formElicitationApprovals: 'writes' });
+      t.setLevel('ask');
+      const client = formClient();
+      await expect(
+        t.exec(`return (await echo.call('echo.set', { name: 'x' })).key;`, client.prompts),
+      ).resolves.toMatchObject({ ok: true, value: 'echo.set' });
+      expect(client.asked[0]?.requestedSchema).toEqual({
+        type: 'object',
+        properties: { approve: { type: 'boolean', title: 'Approve this call?' } },
+        required: ['approve'],
+      });
+      expect(t.audits()[0]).toMatchObject({ decidedVia: 'elicitation', decidedBy: 'claude-test' });
+
+      // Locked (typed-confirmation) operations still need the approval page.
+      updateOperation(t.db, t.instanceId, t.opId('echo.delete'), { level: 'ask' });
+      await expect(
+        t.exec(`await echo.call('echo.delete', { name: 'tank/x' });`, client.prompts),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('only supports form') },
+      });
+      expect(client.asked).toHaveLength(1);
+    });
+
+    it('denies at once when the client cannot show prompts', async () => {
+      const t = await setup();
+      t.setLevel('ask');
+      await expect(t.exec(`await echo.call('echo.set', { name: 'x' });`)).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('cannot show approval prompts') },
+      });
+    });
+
+    it('denies when the client fails to show the prompt', async () => {
+      const t = await setup();
+      t.setLevel('ask');
+      const prompts: ClientPrompts = { url: () => Promise.reject(new Error('boom')) };
+      await expect(t.exec(`await echo.call('echo.set', { name: 'x' });`, prompts)).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('could not show') },
+      });
+    });
+
+    it('times out unanswered approvals as denials, without spending the sandbox budget', async () => {
+      const t = await setup({
+        approvalTimeoutMs: 300,
+        sandbox: { timeoutMs: 150, memoryMb: 64, maxResultBytes: 65536 },
+      });
+      t.setLevel('ask');
+      const r = await t.exec(
+        `try { await echo.call('echo.set', { name: 'x' }); } catch (e) { return e.message; }`,
+        urlClient().prompts,
+      );
+      expect(r).toMatchObject({ ok: true, value: 'Approval for echo.set timed out and was denied' });
+      expect(t.audits()[0]).toMatchObject({ decision: 'timed-out' });
+      expect(t.db.select().from(pendingApprovals).get()?.status).toBe('timed_out');
+    });
+
+    it('refuses an approved call whose access was lowered while it waited', async () => {
+      const t = await setup();
+      t.setLevel('ask');
+      const client = urlClient((req) => {
+        t.setLevel('read');
+        t.approvals.decide(req.approvalId, { approve: true, decidedBy: 'admin' });
+      });
+      await expect(t.exec(`await echo.call('echo.set', { name: 'x' });`, client.prompts)).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'OPERATION_DISABLED', message: 'echo.set was disabled while waiting for approval' },
+      });
+      expect(t.audits()[0]).toMatchObject({ decision: 'rejected:access_changed' });
+    });
+
+    it('serializes calls: a second write waits until the first is decided', async () => {
+      const t = await setup();
+      t.setLevel('ask');
+      const run = t.exec(
+        `return await Promise.all([echo.call('echo.set', { name: 'a' }), echo.call('echo.set', { name: 'b' })]);`,
+        urlClient().prompts,
+      );
+      await waitFor(() => t.pending().length === 1);
+      await new Promise((r) => setTimeout(r, 100));
+      expect(t.pending()).toHaveLength(1);
+      const first = t.pending()[0]!;
+      t.approvals.decide(first.id, { approve: true, decidedBy: 'admin' });
+      await waitFor(() => t.pending().length === 1 && t.pending()[0]!.id !== first.id);
+      const second = t.pending()[0]!;
+      expect(second.paramsHash).not.toBe(first.paramsHash); // each approval is scoped to its own params
+      t.approvals.decide(second.id, { approve: true, decidedBy: 'admin' });
+      await expect(run).resolves.toMatchObject({
+        ok: true,
+        value: [{ params: { name: 'a' } }, { params: { name: 'b' } }],
+      });
     });
   });
 
   describe('locked operations', () => {
-    it('stay unreachable at write level until opted in', async () => {
+    it('stay unreachable until the operation itself is set to Ask', async () => {
       const t = await setup();
-      t.openWrites();
-      const r = await t.exec(`await echo.call('echo.delete', { name: 'tank/x' });`, approveAll);
-      expect(r).toMatchObject({ ok: false, error: { code: 'OPERATION_DISABLED' } });
+      t.setLevel('ask');
+      await expect(t.exec(`await echo.call('echo.delete', { name: 'tank/x' });`)).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'OPERATION_DISABLED' },
+      });
     });
 
-    it('require the typed confirmation literal from the plugin', async () => {
+    it('require the typed confirmation literal on the approval page', async () => {
       const t = await setup();
-      t.openWrites();
-      updateOperation(t.db, t.instanceId, t.opId('echo.delete'), { lockedOptIn: true });
-
-      const asked: ElicitRequest[] = [];
-      const wrong = await t.exec(`await echo.call('echo.delete', { name: 'tank/x' });`, async (req) => {
-        asked.push(req);
-        return { action: 'accept', content: { approve: true, confirm: 'tank/y' } };
+      updateOperation(t.db, t.instanceId, t.opId('echo.delete'), { level: 'ask' });
+      const client = urlClient((req) => {
+        expect(() => t.approvals.decide(req.approvalId, { approve: true, confirm: 'tank/y', decidedBy: 'a' })).toThrow(
+          /Type "tank\/x" exactly/,
+        );
+        t.approvals.decide(req.approvalId, { approve: true, confirm: 'tank/x', decidedBy: 'a' });
       });
-      expect(asked[0]?.requestedSchema.required).toEqual(['approve', 'confirm']);
-      expect(asked[0]?.requestedSchema.properties.confirm?.title).toBe('Type "tank/x" to confirm');
-      expect(wrong).toMatchObject({
-        ok: false,
-        error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('confirmation_mismatch') },
-      });
-
-      const right = await t.exec(`return (await echo.call('echo.delete', { name: 'tank/x' })).key;`, approveAll);
-      expect(right).toMatchObject({ ok: true, value: 'echo.delete' });
+      const r = await t.exec(`return (await echo.call('echo.delete', { name: 'tank/x' })).key;`, client.prompts);
+      expect(r).toMatchObject({ ok: true, value: 'echo.delete' });
     });
 
     it('are refused when the plugin gives no confirmation literal', async () => {
       const t = await setup();
-      t.openWrites();
-      updateOperation(t.db, t.instanceId, t.opId('echo.nolit'), { lockedOptIn: true });
-      const r = await t.exec(`await echo.call('echo.nolit', {});`, approveAll);
+      updateOperation(t.db, t.instanceId, t.opId('echo.nolit'), { level: 'ask' });
+      const r = await t.exec(`await echo.call('echo.nolit', {});`, urlClient().prompts);
       expect(r).toMatchObject({ ok: false, error: { code: 'PLUGIN_ERROR' } });
     });
 
     it('are never pre-approved, even by a rule that slipped into the DB', async () => {
-      const t = await setup({ allowPortalOnlyApprovals: false });
-      t.openWrites();
-      updateOperation(t.db, t.instanceId, t.opId('echo.delete'), { lockedOptIn: true });
+      const t = await setup();
+      updateOperation(t.db, t.instanceId, t.opId('echo.delete'), { level: 'ask' });
       t.db
         .insert(preApprovalRules)
         .values({ id: randomUUID(), instanceId: t.instanceId, operationId: t.opId('echo.delete'), reason: 'x' })
@@ -268,9 +394,9 @@ describe('execute → gate → plugin', () => {
       return id;
     }
 
-    it('auto-approve matching calls and send the rest to a human', async () => {
-      const t = await setup({ allowPortalOnlyApprovals: false });
-      t.openWrites();
+    it('auto-approve matching calls at Ask and send the rest to a human', async () => {
+      const t = await setup();
+      t.setLevel('ask');
       const ruleId = addRule(t);
       await expect(
         t.exec(`return (await echo.call('echo.set', { name: 'tank/media/tv' })).key;`),
@@ -285,10 +411,11 @@ describe('execute → gate → plugin', () => {
 
     it('fall back to a human once the rate limit is hit', async () => {
       const t = await setup();
-      t.openWrites();
+      t.setLevel('ask');
       const ruleId = addRule(t, { rateLimit: 1, windowSeconds: 3600 });
       await t.exec(`await echo.call('echo.set', { name: 'tank/media/a' });`);
-      const r = await t.exec(`return (await echo.call('echo.set', { name: 'tank/media/b' })).key;`, approveAll);
+      const client = urlClient((req) => t.approvals.decide(req.approvalId, { approve: true, decidedBy: 'admin' }));
+      const r = await t.exec(`return (await echo.call('echo.set', { name: 'tank/media/b' })).key;`, client.prompts);
       expect(r).toMatchObject({ ok: true });
       const [first, second] = t.audits();
       expect(first?.decision).toBe(`auto-approved:rule:${ruleId}`);
@@ -299,8 +426,8 @@ describe('execute → gate → plugin', () => {
     });
 
     it('ignore expired and disabled rules', async () => {
-      const t = await setup({ allowPortalOnlyApprovals: false });
-      t.openWrites();
+      const t = await setup();
+      t.setLevel('ask');
       addRule(t, { expiresAt: new Date(Date.now() - 1000) });
       addRule(t, { enabled: false });
       await expect(t.exec(`await echo.call('echo.set', { name: 'tank/media/a' });`)).resolves.toMatchObject({
@@ -310,15 +437,27 @@ describe('execute → gate → plugin', () => {
     });
   });
 
+  describe('read-only principals', () => {
+    it('cannot call writes at any level, but still read', async () => {
+      const t = await setup();
+      t.setLevel('write');
+      await expect(t.exec(`await echo.call('echo.set', { name: 'x' });`, undefined, 'read')).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'OPERATION_DISABLED', message: expect.stringContaining('read-only access') },
+      });
+      expect(t.audits()[0]).toMatchObject({ decision: 'rejected:token_read_only' });
+      await expect(t.exec(`return (await echo.call('echo.query')).key;`, undefined, 'read')).resolves.toMatchObject({
+        ok: true,
+      });
+    });
+  });
+
   it('requires a current best-practice key for attested operations', async () => {
     const t = await setup();
-    t.openWrites();
+    t.setLevel('write');
     const opId = t.opId('echo.guided');
     const call = (key?: string) =>
-      t.exec(
-        `return (await echo.call('echo.guided', ${JSON.stringify(key ? { best_practice_key: key } : {})})).key;`,
-        approveAll,
-      );
+      t.exec(`return (await echo.call('echo.guided', ${JSON.stringify(key ? { best_practice_key: key } : {})})).key;`);
 
     await expect(call()).resolves.toMatchObject({ ok: false, error: { code: 'ATTESTATION_REQUIRED' } });
     t.db
@@ -374,46 +513,35 @@ describe('execute → gate → plugin', () => {
 describe('ApprovalService', () => {
   it('denies approvals left pending by a previous process', async () => {
     const t = await setup();
-    t.openWrites();
-    const run = t.exec(`await echo.call('echo.set', { name: 'x' });`);
-    await waitFor(() => t.approvals.pendingCount === 1);
+    t.setLevel('ask');
+    const run = t.exec(`await echo.call('echo.set', { name: 'x' });`, urlClient().prompts);
+    await waitFor(() => t.pending().length === 1);
     // Simulate a restart: a fresh process sees the row but has none of the in-memory state.
     expect(ApprovalService.denyOrphans(t.db)).toBe(1);
     expect(t.db.select().from(pendingApprovals).get()?.status).toBe('denied');
     const row = t.db.select().from(pendingApprovals).get()!;
-    expect(() => new ApprovalService(t.db).decide(row.id, { approve: true, decidedBy: 'a', via: 'portal' })).toThrow(
-      /already denied/,
-    );
+    const fresh = new ApprovalService(t.db, new ApprovalLinkService(t.db));
+    expect(() => fresh.decide(row.id, { approve: true, decidedBy: 'a' })).toThrow(/already denied/);
     t.approvals.cancelAll();
     await run;
   });
 
-  it('rejects a wrong portal confirmation but lets the admin retry', async () => {
+  it('refuses decisions on a closed approval', async () => {
     const t = await setup();
-    t.openWrites();
-    updateOperation(t.db, t.instanceId, t.opId('echo.delete'), { lockedOptIn: true });
-    const run = t.exec(`return (await echo.call('echo.delete', { name: 'tank/x' })).key;`);
-    await waitFor(() => t.approvals.pendingCount === 1);
-    const row = t.db
-      .select()
-      .from(pendingApprovals)
-      .where(and(eq(pendingApprovals.status, 'pending')))
-      .get()!;
-    expect(() =>
-      t.approvals.decide(row.id, { approve: true, confirm: 'nope', decidedBy: 'admin', via: 'portal' }),
-    ).toThrow(/Type "tank\/x" exactly/);
-    t.approvals.decide(row.id, { approve: true, confirm: 'tank/x', decidedBy: 'admin', via: 'portal' });
-    await expect(run).resolves.toMatchObject({ ok: true, value: 'echo.delete' });
-    expect(() => t.approvals.decide(row.id, { approve: false, decidedBy: 'admin', via: 'portal' })).toThrow(
-      /already approved/,
-    );
+    t.setLevel('ask');
+    const client = urlClient((req) => t.approvals.decide(req.approvalId, { approve: true, decidedBy: 'admin' }));
+    await t.exec(`await echo.call('echo.set', { name: 'x' });`, client.prompts);
+    const row = t.db.select().from(pendingApprovals).get()!;
+    expect(() => t.approvals.decide(row.id, { approve: false, decidedBy: 'admin' })).toThrow(/already approved/);
+    expect(() => t.approvals.decide('nope', { approve: false, decidedBy: 'admin' })).toThrow(/No such approval/);
   });
 });
 
 describe('search', () => {
-  it('lists reachable operations by default and explains hidden ones on request', async () => {
+  it('lists callable operations by default and explains hidden ones on request', async () => {
     const t = await setup();
-    const search = (code: string) => searchCode(t.deps, t.rt, t.caller(), code);
+    const search = (code: string, ceiling?: AccessCeiling) =>
+      searchCode(t.deps, t.rt, t.caller(undefined, ceiling), code);
 
     await expect(search(`return (await catalog.find()).map((o) => o.key);`)).resolves.toMatchObject({
       value: ['echo.query'],
@@ -423,22 +551,34 @@ describe('search', () => {
     );
     expect(all).toMatchObject({
       value: [
-        ['echo.delete', 'locked', 'group_read_only'],
-        ['echo.guided', 'write', 'group_read_only'],
-        ['echo.nolit', 'locked', 'group_read_only'],
+        ['echo.delete', 'locked', 'locked_not_opted_in'],
+        ['echo.guided', 'write', 'read_only'],
+        ['echo.nolit', 'locked', 'locked_not_opted_in'],
         ['echo.query', 'read', null],
-        ['echo.set', 'write', 'group_read_only'],
+        ['echo.set', 'write', 'read_only'],
       ],
-    });
-    await expect(search(`return (await catalog.get('echo.set')).needsApproval;`)).resolves.toMatchObject({
-      value: true,
     });
     await expect(
       search(`return (await catalog.groups()).map((g) => [g.key, g.level, g.counts]);`),
     ).resolves.toMatchObject({
-      value: [['echo', 'read', { read: 1, write: 2, locked: 2, pendingReview: 2 }]],
+      value: [['echo', 'read', { read: 1, write: 2, locked: 2, pendingReview: 0, overridden: 0 }]],
     });
     await expect(search(`return typeof echo;`)).resolves.toMatchObject({ value: 'undefined' }); // no upstream access from search
-    expect(t.db.select().from(auditLog).where(eq(auditLog.kind, 'search')).all()).toHaveLength(5);
+
+    // What a call would do: run, ask, or auto-approve.
+    t.setLevel('ask');
+    await expect(search(`return (await catalog.get('echo.set')).approval;`)).resolves.toMatchObject({
+      value: 'required',
+    });
+    t.setLevel('write');
+    await expect(search(`return (await catalog.get('echo.set')).approval;`)).resolves.toMatchObject({ value: 'auto' });
+    await expect(search(`return (await catalog.get('echo.query')).approval;`)).resolves.toMatchObject({
+      value: 'none',
+    });
+    // A read-only principal doesn't see writes at all.
+    await expect(search(`return (await catalog.find()).map((o) => o.key);`, 'read')).resolves.toMatchObject({
+      value: ['echo.query'],
+    });
+    expect(t.db.select().from(auditLog).where(eq(auditLog.kind, 'search')).all()).toHaveLength(8);
   });
 });

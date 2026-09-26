@@ -33,11 +33,21 @@ export const AUTH_MODE_LABELS: Record<string, string> = {
 };
 
 export const REASON_LABELS: Record<string, string> = {
-  group_none: 'Group is off',
-  excluded: 'Excluded',
-  group_read_only: 'Group is read-only',
-  locked_not_opted_in: 'Locked — not allowed',
-  pending_review: 'Pending review',
+  level_none: 'Level None',
+  read_only: 'Write at level Read',
+  token_read_only: 'Read-only connection',
+  locked_not_opted_in: 'Locked — not enabled',
+  level_write: 'Auto-approved at Write',
   group_missing: 'No group',
   unknown_operation: 'Unknown',
+};
+
+export const LEVEL_LABELS: Record<string, string> = { none: 'None', read: 'Read', ask: 'Ask', write: 'Write' };
+
+/** One line per level, shown as the control's tooltip and in help text. */
+export const LEVEL_HELP: Record<string, string> = {
+  none: 'Nothing is callable',
+  read: 'Reads run; writes are hidden',
+  ask: 'Reads run; every write asks for approval (pre-approval rules can cover some)',
+  write: 'Reads run; writes run without asking (locked operations still ask)',
 };
