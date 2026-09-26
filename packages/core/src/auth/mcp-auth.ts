@@ -7,7 +7,7 @@ import { ACCESS_PREFIX, canonicalResource } from './oauth.js';
 import type { OAuthService } from './oauth.js';
 import type { AccessCeiling } from '../gate/access.js';
 import type { AuthMode } from '../instances/manager.js';
-import { requestOrigin } from '../http/common.js';
+import { clientIp, requestOrigin } from '../http/common.js';
 
 /**
  * Authentication for `/{slug}` (design §6.2). The mode is the instance override or the global
@@ -89,10 +89,23 @@ export async function authenticateMcp(
       };
     }
     const header = settings.trustedIdentityHeader;
-    const who = (header && c.req.header(header)?.trim().slice(0, 200)) || 'external';
+    const named = header && c.req.header(header)?.trim().slice(0, 200);
+    if (named)
+      return {
+        ok: true,
+        identity: { kind: 'external', principal: `ext:${named}`, label: `external:${named}`, access: 'write' },
+      };
+    // Anonymous: without an identity, the client address is what keeps callers' sessions (and rate
+    // budgets) apart; otherwise every anonymous client would share one principal.
+    const ip = clientIp(c, ctx.config.TRUST_PROXY) ?? 'unknown';
     return {
       ok: true,
-      identity: { kind: 'external', principal: `ext:${who}`, label: `external:${who}`, access: 'write' },
+      identity: {
+        kind: 'external',
+        principal: `ext-anon:${ip}`,
+        label: `external (anonymous, ${ip})`,
+        access: 'write',
+      },
     };
   }
 

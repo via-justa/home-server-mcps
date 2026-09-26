@@ -367,6 +367,42 @@ describe('MCP endpoint with bearer tokens', () => {
     await client.close();
   });
 
+  it('keeps anonymous external clients apart by address (review L17)', async () => {
+    const config = ctx.config as { TRUST_PROXY: number | boolean };
+    const savedProxy = config.TRUST_PROXY;
+    config.TRUST_PROXY = 1;
+    updateSettings(ctx.db, 'mcp', { trustedIdentityHeader: '' });
+    await ctx.instances.update(otherInstanceId, { authMode: 'external' });
+    try {
+      const rpc = (ip: string, body: unknown, session?: string) =>
+        fetch(`${base}/echo-two`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            'x-forwarded-for': ip,
+            ...(session ? { 'mcp-session-id': session, 'mcp-protocol-version': '2025-06-18' } : {}),
+          },
+          body: JSON.stringify(body),
+        });
+      const init = await rpc('203.0.113.1', {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'a', version: '1' } },
+      });
+      expect(init.status).toBe(200);
+      const session = init.headers.get('mcp-session-id')!;
+      const list = { jsonrpc: '2.0', id: 2, method: 'tools/list' };
+      // Another anonymous caller can't ride on that session.
+      expect((await rpc('198.51.100.7', list, session)).status).toBe(404);
+      expect((await rpc('203.0.113.1', list, session)).status).toBe(200);
+    } finally {
+      config.TRUST_PROXY = savedProxy;
+      await ctx.instances.update(otherInstanceId, { authMode: null });
+    }
+  });
+
   it('serves external mode with a trusted identity header', async () => {
     updateSettings(ctx.db, 'mcp', { trustedIdentityHeader: 'remote-user' });
     await ctx.instances.update(otherInstanceId, { authMode: 'external' });
