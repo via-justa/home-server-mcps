@@ -29,10 +29,10 @@
   "sensitiveKeys": ["apiKey", "api_key", "password", "passphrase", "bindpw", "privatekey", "private_key"],
   "network": { "hosts": ["{{connection.baseUrl}}"] },
   "matchProfiles": {
-    "dataset-name-prefix": [{ "field": "/name", "label": "Name prefix", "op": "prefix", "widget": "prefix" }],
+    "dataset-name-prefix": [{ "field": "/0/name", "label": "Name prefix", "op": "prefix", "widget": "prefix" }],
     "app-name-in": [
       {
-        "field": "/app_name",
+        "field": "/0",
         "label": "App in",
         "op": "in",
         "widget": "multiselect",
