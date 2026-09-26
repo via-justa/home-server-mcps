@@ -373,6 +373,30 @@ describe('execute → gate → plugin', () => {
     });
   });
 
+  describe('targets', () => {
+    it('refuses an approved call whose targets changed while it waited', async () => {
+      const t = await setup();
+      t.setLevel('ask');
+      const client = urlClient((req) => t.approvals.decide(req.approvalId, { approve: true, decidedBy: 'admin' }));
+      const r = await t.exec(`await echo.call('echo.set', { name: 'x', drift: true });`, client.prompts);
+      expect(r).toMatchObject({ ok: false, error: { code: 'TARGETS_CHANGED' } });
+      const approval = t.db.select().from(pendingApprovals).get()!;
+      expect(approval.resolvedTargets).toMatchObject([{ id: 'light.e1' }]);
+      expect(t.audits()[0]).toMatchObject({
+        decision: 'rejected:targets_changed',
+        detail: expect.objectContaining({ targetsNow: [expect.objectContaining({ id: 'light.e2' })] }),
+      });
+    });
+
+    it('hands the plugin exactly the targets that were approved', async () => {
+      const t = await setup();
+      t.setLevel('ask');
+      const client = urlClient((req) => t.approvals.decide(req.approvalId, { approve: true, decidedBy: 'admin' }));
+      const r = await t.exec(`return await echo.call('echo.set', { name: 'x', action: 'context' });`, client.prompts);
+      expect(r).toMatchObject({ ok: true, value: { targets: [], callId: expect.any(String) } });
+    });
+  });
+
   describe('locked operations', () => {
     it('stay unreachable until the operation itself is set to Ask', async () => {
       const t = await setup();

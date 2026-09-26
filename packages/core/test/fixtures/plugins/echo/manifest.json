@@ -31,7 +31,8 @@
     }
   },
   "capabilities": {
-    "attestation": true
+    "attestation": true,
+    "targets": true
   },
   "sensitiveKeys": ["password"],
   "matchProfiles": {

@@ -19,6 +19,7 @@ const CATALOG = [
 ];
 
 let config = {};
+let resolutions = 0;
 let secrets = {};
 const reply = (id, result) => process.send({ jsonrpc: '2.0', id, result: result ?? null });
 const fail = (id, code, message) => process.send({ jsonrpc: '2.0', id, error: { code, message } });
@@ -43,12 +44,18 @@ const handlers = {
     if (!CATALOG.some((o) => o.key === key)) return fail(id, 'UNKNOWN_OPERATION', `unknown operation: ${key}`);
     reply(id, { key, params });
   },
+  // `drift: true` resolves to a different entity every time, like an area whose members change.
+  resolveTargets(id, { params }) {
+    if (!params?.drift) return reply(id, []);
+    resolutions++;
+    reply(id, [{ kind: 'entity', id: `light.e${resolutions}`, name: `Light ${resolutions}`, scopes: {} }]);
+  },
   summarize(id, { key, params }) {
     const confirmLiteral = key === 'echo.delete' ? params.name : undefined;
     reply(id, { text: `${key} ${JSON.stringify(params)}`, ...(confirmLiteral ? { confirmLiteral } : {}) });
   },
   getGuide: (id) => reply(id, { version: 'v1', content: 'Read me first.' }),
-  invoke(id, { key, params }) {
+  invoke(id, { key, params, context }) {
     const tryFs = (fn) => {
       try {
         fn();
@@ -57,6 +64,7 @@ const handlers = {
         return e.code;
       }
     };
+    if (params.action === 'context') return reply(id, context);
     switch (params.action) {
       case 'env':
         return reply(id, Object.keys(process.env).sort());

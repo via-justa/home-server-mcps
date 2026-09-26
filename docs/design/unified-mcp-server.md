@@ -474,10 +474,11 @@ An approval must come from a person, never from the client that made the call. M
    - Otherwise the call is **denied at once**: `client_cannot_approve` for a form-only client, `no_approval_path` for a client without prompts.
 3. **The approval page** (`/a/:token` on the MCP port) needs a signed-in portal user **with TOTP enrolled**, a TOTP proof in that session (password + TOTP sign-in counts; an OIDC sign-in is asked for a code when approving), and for **locked** operations a TOTP code from the last 5 minutes. Decisions are CSRF-protected POSTs; a GET or a prefetch decides nothing. `decided_by` is the username, `decided_via` is `url`.
 4. **Typed confirmation.** For `typedConfirmation` operations, an approval only counts if the approver typed `confirm_literal` exactly on the approval page; a mismatch is rejected (400) and they can retry. The literal comes from the plugin's `summarize`, which receives **redacted** params, so neither the summary nor the literal can carry a secret. If a typed-confirmation operation gets no literal, the call is refused.
-5. **Access is re-checked** after the approval: if an admin lowered the level while it was open, the approved call is still refused (`access_changed`).
-6. **Single use.** An approval authorizes exactly one `invoke` of exactly the `params_hash` it was created for (TN §3.3). A re-submitted call creates a new approval.
-7. **Timeout** → auto-deny, logged `timed-out`. It is never auto-allowed.
-8. **Tool annotations.** `search` is `readOnlyHint: true`; `execute` is `readOnlyHint: false, destructiveHint: true, openWorldHint: true`, so clients that confirm tool calls themselves do. The gate never relies on them.
+5. **Targets are re-checked** after a human approval, for plugins with `targets`: core resolves the params again right before `invoke`; if the set of targets differs from what the approver saw (an entity joined the area during the wait), the call is refused (`TARGETS_CHANGED`) and must be approved afresh. The approved set is passed to the plugin in `InvokeContext.targets`, which it should act on instead of resolving again.
+6. **Access is re-checked** after the approval: if an admin lowered the level while it was open, the approved call is still refused (`access_changed`).
+7. **Single use.** An approval authorizes exactly one `invoke` of exactly the `params_hash` it was created for (TN §3.3). A re-submitted call creates a new approval.
+8. **Timeout** → auto-deny, logged `timed-out`. It is never auto-allowed.
+9. **Tool annotations.** `search` is `readOnlyHint: true`; `execute` is `readOnlyHint: false, destructiveHint: true, openWorldHint: true`, so clients that confirm tool calls themselves do. The gate never relies on them.
 
 ### 5.4 Sandbox
 

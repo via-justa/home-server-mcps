@@ -29,6 +29,12 @@ export interface InvokeContext {
   expectedHash?: string;
   /** Milliseconds left in the sandbox budget. */
   deadlineMs: number;
+  /**
+   * For plugins with the `targets` capability: exactly the targets the approver saw (or a rule
+   * matched). Act on these rather than resolving the params again; core has already checked that a
+   * fresh resolution still gives the same set.
+   */
+  targets?: ResolvedTarget[];
 }
 
 /**

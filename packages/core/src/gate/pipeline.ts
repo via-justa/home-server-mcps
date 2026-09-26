@@ -93,6 +93,9 @@ const DISABLED_MESSAGES: Record<string, string> = {
   unknown_operation: 'is not in the current catalog',
 };
 
+/** Order-independent identity of a resolved target set. */
+const targetKey = (targets: ResolvedTarget[]) => JSON.stringify(targets.map((t) => `${t.kind}:${t.id}`).sort());
+
 const DENIAL_MESSAGES: Record<string, string> = {
   no_approval_path: 'needs approval, and this MCP client cannot show approval prompts',
   client_cannot_approve:
@@ -345,18 +348,41 @@ export function createGateBindings(
         }
       }
 
-      // 8. The real upstream call, within what's left of the sandbox budget.
+      // 8. The approver saw these targets; after a wait they may have moved (an entity joined the area).
+      //    Resolve again and refuse unless the set is unchanged, then hand the plugin the approved set.
       ensureRunning();
-      const remaining = Math.max(1, budget.remainingMs());
-      const result = await rt
-        .plugin()
-        .call(
-          'invoke',
-          { key: operation.key, params, context: { callId: randomUUID(), expectedHash, deadlineMs: remaining } },
-          remaining,
-        );
+      if (decision === 'human-approved' && rt.manifest.capabilities.targets) {
+        const now = await rt.plugin().call('resolveTargets', { key: operation.key, params });
+        if (targetKey(now) !== targetKey(targets)) {
+          audit.detail.targetsNow = now;
+          reject(
+            'rejected:targets_changed',
+            new BindingError(
+              'TARGETS_CHANGED',
+              `What ${operation.key} would act on changed while it waited for approval; call it again to get a fresh approval`,
+            ),
+          );
+        }
+      }
 
-      // 9–10. Redact, audit, hand back.
+      // 9. The real upstream call, within what's left of the sandbox budget.
+      const remaining = Math.max(1, budget.remainingMs());
+      const result = await rt.plugin().call(
+        'invoke',
+        {
+          key: operation.key,
+          params,
+          context: {
+            callId: randomUUID(),
+            expectedHash,
+            deadlineMs: remaining,
+            ...(rt.manifest.capabilities.targets ? { targets } : {}),
+          },
+        },
+        remaining,
+      );
+
+      // 10–11. Redact, audit, hand back.
       finish(decision, { resultStatus: 'ok' });
       return rt.redact(result);
     } catch (err) {
