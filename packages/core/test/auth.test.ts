@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { OidcService } from '../src/auth/oidc.js';
 import { SessionService } from '../src/auth/sessions.js';
 import { LoginThrottle } from '../src/auth/throttle.js';
+import { SlidingWindowLimiter } from '../src/gate/rate-limit.js';
 import { signPayload, verifyPayload } from '../src/auth/tokens.js';
 import { base32Decode, base32Encode, currentStep, totpAt, verifyTotp } from '../src/auth/totp.js';
 import { UserService } from '../src/auth/users.js';
@@ -71,6 +72,17 @@ describe('UserService', () => {
     expect(await t.users.bootstrap('x', PASSWORD)).toBe('ignored');
     const hash = t.db.select().from(users).get()!.passwordHash!;
     expect(hash).toMatch(/^\$argon2id\$v=19\$m=65536,t=3,p=1\$/);
+  });
+
+  it('lets only one of two concurrent first-run setups create a user (review L3)', async () => {
+    const t = setup();
+    const results = await Promise.allSettled([
+      t.users.setupFirstUser('operator', PASSWORD),
+      t.users.setupFirstUser('intruder', PASSWORD),
+    ]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.find((r) => r.status === 'rejected')).toMatchObject({ reason: expect.any(ConflictError) });
+    expect(t.users.count()).toBe(1);
   });
 
   it('verifies passwords without revealing which usernames exist', async () => {
@@ -167,6 +179,44 @@ describe('SessionService', () => {
 });
 
 describe('LoginThrottle', () => {
+  it('counts MCP-port failures separately, so the internet cannot lock the admin portal', () => {
+    const throttle = new LoginThrottle();
+    for (let i = 0; i < 5; i++) throttle.fail('admin', 'mcp');
+    expect(throttle.lockedFor('admin', 'mcp')).toBeGreaterThan(0);
+    expect(throttle.lockedFor('admin')).toBe(0);
+    expect(throttle.lockedFor('admin', 'admin')).toBe(0);
+  });
+
+  it('stays bounded under random usernames and IPs, keeping recent lockouts (review L15)', () => {
+    let now = 0;
+    const throttle = new LoginThrottle({}, () => now, 100);
+    // Looking up names that never failed stores nothing.
+    for (let i = 0; i < 1000; i++) expect(throttle.lockedFor(`nobody-${i}`, 'mcp')).toBe(0);
+    expect(throttle.size).toBe(0);
+
+    for (let i = 0; i < 5; i++) throttle.fail('admin', 'mcp');
+    for (let i = 0; i < 1000; i++) {
+      throttle.fail(`random-${i}`, 'mcp');
+      throttle.allowIp(`10.0.${i >> 8}.${i & 255}`);
+    }
+    expect(throttle.size).toBeLessThanOrEqual(200);
+    // Entries whose window has passed go first; a live lockout that keeps being checked stays.
+    now = 60_000;
+    expect(throttle.lockedFor('admin', 'mcp')).toBeGreaterThan(0);
+    for (let i = 0; i < 99; i++) throttle.fail(`later-${i}`, 'mcp');
+    expect(throttle.lockedFor('admin', 'mcp')).toBeGreaterThan(0);
+  });
+
+  it('bounds the rate limiter the same way', () => {
+    let now = 0;
+    const limiter = new SlidingWindowLimiter(() => now, 50);
+    for (let i = 0; i < 500; i++) limiter.take(`k${i}`, 10, 60_000);
+    expect(limiter.size).toBeLessThanOrEqual(50);
+    now = 120_000;
+    expect(limiter.take('k499', 1, 60_000)).toBe(true);
+    expect(limiter.take('k499', 1, 60_000)).toBe(false);
+  });
+
   it('locks a username after 5 failures for 15 minutes and limits IPs', () => {
     let now = 0;
     const throttle = new LoginThrottle({ ipLimit: 3 }, () => now);
@@ -190,7 +240,10 @@ describe('OidcService', () => {
   async function fakeIdp() {
     const { publicKey, privateKey } = await generateKeyPair('RS256');
     const jwk = { ...(await exportJWK(publicKey)), kid: 'k1', alg: 'RS256', use: 'sig' };
-    const codes = new Map<string, { nonce: string; sub: string; email: string; groups: string[] }>();
+    const codes = new Map<
+      string,
+      { nonce: string; sub: string; email: string; groups: string[]; emailVerified?: boolean }
+    >();
     const app = new Hono();
     let issuer = '';
     app.get('/.well-known/openid-configuration', (c) =>
@@ -213,7 +266,7 @@ describe('OidcService', () => {
       const idToken = await new SignJWT({
         nonce: grant.nonce,
         email: grant.email,
-        email_verified: true,
+        ...(grant.emailVerified === undefined ? {} : { email_verified: grant.emailVerified }),
         groups: grant.groups,
       })
         .setProtectedHeader({ alg: 'RS256', kid: 'k1' })
@@ -236,7 +289,7 @@ describe('OidcService', () => {
   async function signIn(
     service: OidcService,
     idp: Awaited<ReturnType<typeof fakeIdp>>,
-    who: { sub: string; email: string; groups?: string[] },
+    who: { sub: string; email: string; groups?: string[]; emailVerified?: boolean | null },
   ) {
     const { url, stateToken } = await service.begin({
       purpose: 'admin_login',
@@ -244,7 +297,14 @@ describe('OidcService', () => {
     });
     const params = new URL(url).searchParams;
     expect(params.get('code_challenge_method')).toBe('S256');
-    idp.codes.set('code-1', { nonce: params.get('nonce')!, sub: who.sub, email: who.email, groups: who.groups ?? [] });
+    idp.codes.set('code-1', {
+      nonce: params.get('nonce')!,
+      sub: who.sub,
+      email: who.email,
+      groups: who.groups ?? [],
+      // null: the IdP leaves the claim out; default: it vouches for the address.
+      emailVerified: who.emailVerified === null ? undefined : (who.emailVerified ?? true),
+    });
     const callback = new URL(
       `https://admin.lan/auth/oidc/callback?code=code-1&state=${params.get('state')}&iss=${encodeURIComponent(idp.issuer)}`,
     );
@@ -285,6 +345,31 @@ describe('OidcService', () => {
     const second = await signIn(service, idp, { sub: 'u-2', email: 'new.person@example.com', groups: ['admins'] });
     const provisioned = await service.resolveUser(t.users, second.identity);
     expect(provisioned).toMatchObject({ username: 'new.person', oidcSubject: 'u-2' });
+  });
+
+  it('uses an email only when the IdP marks it verified', async () => {
+    const t = setup();
+    const idp = await fakeIdp();
+    const service = new OidcService(t.db, t.box, randomBytes(32), true);
+    service.updateSettings({
+      enabled: true,
+      issuer: idp.issuer,
+      clientId: 'portal',
+      clientSecret: 'shh',
+      autoProvision: true,
+      allowPolicy: { emails: ['admin@example.com'], subjects: [], group: '', groupsClaim: 'groups' },
+    });
+    for (const emailVerified of [null, false] as const) {
+      const { identity } = await signIn(service, idp, {
+        sub: `u-${emailVerified}`,
+        email: 'admin@example.com',
+        emailVerified,
+      });
+      expect(identity.email).toBeUndefined();
+      expect(await service.resolveUser(t.users, identity)).toBeNull();
+    }
+    const { identity } = await signIn(service, idp, { sub: 'u-ok', email: 'admin@example.com' });
+    expect(await service.resolveUser(t.users, identity)).toMatchObject({ oidcSubject: 'u-ok' });
   });
 
   it('rejects tampered or replayed state', async () => {

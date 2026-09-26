@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto';
+import { isIP } from 'node:net';
 import type { Manifest } from '@home-server-mcps/plugin-sdk';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
-import type { ElicitRequestFormParams } from '@modelcontextprotocol/sdk/types.js';
 import type { Context } from 'hono';
 import { z } from 'zod';
 import type { AppContext } from '../../app.js';
-import type { ElicitFn } from '../../approvals/service.js';
-import { authenticateMcp } from '../../auth/mcp-auth.js';
+import type { Config } from '../../config/env.js';
+import type { ClientPrompts } from '../../approvals/service.js';
+import { authenticateMcp, publicMcpBase } from '../../auth/mcp-auth.js';
 import type { McpIdentity } from '../../auth/mcp-auth.js';
 import type { OAuthService } from '../../auth/oauth.js';
 import type { CallerContext } from '../../gate/pipeline.js';
@@ -20,11 +21,15 @@ import type { SandboxResult } from '../../sandbox/index.js';
  */
 
 const SESSION_IDLE_MS = 30 * 60_000;
+/** Open MCP sessions per authenticated principal; a new one past the cap closes that principal's oldest. */
+export const MAX_SESSIONS_PER_PRINCIPAL = 16;
 const SERVER_VERSION = '0.1.0';
 
 interface Session {
   transport: WebStandardStreamableHTTPServerTransport;
   server: McpServer;
+  /** Aborted when the session closes: its executions end and their open approvals are cancelled. */
+  closed: AbortController;
   instanceId: string;
   principal: string;
   lastSeen: number;
@@ -69,7 +74,7 @@ export function describeSearch(manifest: Manifest): string {
   const apis = [
     `catalog.find({ text?, group?, kind?, classification?: 'read'|'write'|'locked', includeDisabled?, limit? }) → ${ops} you can call (with includeDisabled, also the unavailable ones and why)`,
     'catalog.get(key) → one entry with its parameter schema and docs',
-    'catalog.groups() → access groups with their level (none/read/write) and counts',
+    'catalog.groups() → access groups with their level (none/read/ask/write) and counts',
   ];
   if (manifest.capabilities.registry)
     apis.push(
@@ -93,9 +98,37 @@ export function describeExecute(manifest: Manifest): string {
   const fns = manifest.binding.functions.map((f) => `${ns}.${f}(…)`).join(', ');
   return [
     `Run code against ${manifest.name}. \`code\` is the body of an async JavaScript function; \`await\` ${fns} and return a JSON-serializable result.`,
-    'Reads run immediately. Writes may pause until a human approves; denials and other refusals throw an Error with `err.code` (e.g. OPERATION_DISABLED, PERMISSION_DENIED, UPSTREAM_ERROR) that your code can catch.',
+    'Reads run immediately. Writes either run straight away or pause until a human approves them on an approval page the client is asked to open (see `approval` in catalog entries); denials and other refusals throw an Error with `err.code` (e.g. OPERATION_DISABLED, PERMISSION_DENIED, UPSTREAM_ERROR) that your code can catch.',
     'Calls run one at a time. There is no network, filesystem or timer access. Secrets in results are redacted.',
   ].join('\n');
+}
+
+/**
+ * DNS-rebinding defence (MCP transport spec): a browser page can make its own domain resolve to this
+ * server, but it can't change the Host it sends, nor the Origin. Host must be a name this server was
+ * configured for (PUBLIC_MCP_URL, MCP_ALLOWED_HOSTS) or something that can't be rebound (localhost, an
+ * IP literal); an Origin, when present, must be one of those too.
+ */
+export function hostAllowed(config: Config, hostHeader: string | undefined): boolean {
+  if (!hostHeader) return false;
+  let host: string;
+  try {
+    host = new URL(`http://${hostHeader}`).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (host === 'localhost' || isIP(host.replace(/^\[|\]$/g, ''))) return true;
+  if (config.PUBLIC_MCP_URL && new URL(config.PUBLIC_MCP_URL).hostname.toLowerCase() === host) return true;
+  return config.MCP_ALLOWED_HOSTS.includes(host);
+}
+
+export function originAllowed(config: Config, origin: string | undefined): boolean {
+  if (!origin) return true; // not a browser request
+  try {
+    return hostAllowed(config, new URL(origin).host);
+  } catch {
+    return false;
+  }
 }
 
 export class McpEndpoints {
@@ -123,6 +156,7 @@ export class McpEndpoints {
     const s = this.sessions.get(id);
     if (!s) return;
     this.sessions.delete(id);
+    s.closed.abort();
     await s.transport.close().catch(() => undefined);
     await s.server.close().catch(() => undefined);
   }
@@ -132,7 +166,7 @@ export class McpEndpoints {
     await Promise.all([...this.sessions.keys()].map((id) => this.closeSession(id)));
   }
 
-  private buildServer(instanceId: string, identity: McpIdentity): McpServer {
+  private buildServer(instanceId: string, identity: McpIdentity, publicBase: string, closed: AbortSignal): McpServer {
     const rt = () => this.ctx.instances.runtime(instanceId);
     const manifest = rt().manifest;
     const server = new McpServer(
@@ -142,24 +176,47 @@ export class McpEndpoints {
       },
     );
 
-    const caller = (sessionId: string | undefined): CallerContext => {
-      const runtime = rt();
-      const elicit: ElicitFn | undefined = server.server.getClientCapabilities()?.elicitation
-        ? async (req) => {
-            const res = await server.server.elicitInput(
-              {
-                message: req.message,
-                requestedSchema: req.requestedSchema as ElicitRequestFormParams['requestedSchema'],
-              },
-              { timeout: runtime.settings.approvalTimeoutMs },
-            );
-            return { action: res.action, content: res.content as { approve?: unknown; confirm?: unknown } | undefined };
-          }
-        : undefined;
-      return { client: { kind: 'mcp_client', id: identity.label }, mcpSessionId: sessionId, elicit };
+    // Approval prompts (design §5.3): URL mode sends the human to our approval page; form mode is only
+    // used where the endpoint opted in. `elicitation: {}` from older clients means form support.
+    const prompts = (): ClientPrompts | undefined => {
+      const caps = server.server.getClientCapabilities()?.elicitation;
+      if (!caps) return undefined;
+      const timeout = rt().settings.approvalTimeoutMs;
+      const out: ClientPrompts = {};
+      if (caps.url) {
+        out.url = async (req) => {
+          const res = await server.server.elicitInput(
+            { mode: 'url', elicitationId: req.approvalId, url: `${publicBase}${req.path}`, message: req.message },
+            { timeout },
+          );
+          return { action: res.action };
+        };
+        out.urlComplete = (approvalId) => {
+          void server.server
+            .createElicitationCompletionNotifier(approvalId)()
+            .catch(() => undefined);
+        };
+      }
+      if (caps.form || !caps.url) {
+        out.form = async (req) => {
+          const res = await server.server.elicitInput(
+            { mode: 'form', message: req.message, requestedSchema: req.requestedSchema },
+            { timeout },
+          );
+          return { action: res.action, content: res.content as { approve?: unknown } | undefined };
+        };
+      }
+      return out;
     };
 
-    const run = async (fn: typeof searchCode, code: string, sessionId: string | undefined) => {
+    const caller = (sessionId: string | undefined): CallerContext => ({
+      client: { kind: 'mcp_client', id: identity.label, key: identity.principal },
+      mcpSessionId: sessionId,
+      principal: { ceiling: identity.access },
+      prompts: prompts(),
+    });
+
+    const run = async (fn: typeof searchCode, code: string, sessionId: string | undefined, request: AbortSignal) => {
       try {
         await this.ctx.instances.ensureFresh(instanceId);
       } catch (err) {
@@ -169,7 +226,9 @@ export class McpEndpoints {
           logs: [],
         });
       }
-      return toolText(await fn(this.ctx.gateDeps(), rt(), caller(sessionId), code));
+      // A cancelled request or a closed session ends the run: nothing it queued may run afterwards.
+      const signal = AbortSignal.any([request, closed]);
+      return toolText(await fn(this.ctx.gateDeps(), rt(), caller(sessionId), code, signal));
     };
 
     const input = {
@@ -181,29 +240,59 @@ export class McpEndpoints {
     };
     server.registerTool(
       'search',
-      { title: `Search ${manifest.name}`, description: describeSearch(manifest), inputSchema: input },
-      ({ code }, extra) => run(searchCode, code, extra.sessionId),
+      {
+        title: `Search ${manifest.name}`,
+        description: describeSearch(manifest),
+        inputSchema: input,
+        annotations: { readOnlyHint: true, openWorldHint: false },
+      },
+      ({ code }, extra) => run(searchCode, code, extra.sessionId, extra.signal),
     );
     server.registerTool(
       'execute',
-      { title: `Execute on ${manifest.name}`, description: describeExecute(manifest), inputSchema: input },
-      ({ code }, extra) => run(executeCode, code, extra.sessionId),
+      {
+        title: `Execute on ${manifest.name}`,
+        description: describeExecute(manifest),
+        inputSchema: input,
+        // Hints for clients that confirm tool calls themselves; the gate never relies on them.
+        annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+      },
+      ({ code }, extra) => run(executeCode, code, extra.sessionId, extra.signal),
     );
     return server;
   }
 
+  /** The request carries a bearer or OAuth access token that is live somewhere on this server. */
+  private holdsLiveCredential(c: Context): boolean {
+    const token = c.req.header('authorization')?.match(/^Bearer\s+(\S+)$/i)?.[1];
+    if (!token) return false;
+    return !!this.ctx.tokens.verify(token) || !!this.oauth.verifyAccess(token, '');
+  }
+
   async handle(c: Context, slug: string): Promise<Response> {
+    if (
+      !hostAllowed(this.ctx.config, c.req.header('host')) ||
+      !originAllowed(this.ctx.config, c.req.header('origin'))
+    ) {
+      return c.json(jsonRpcError(-32003, 'Host or Origin not allowed; set PUBLIC_MCP_URL or MCP_ALLOWED_HOSTS'), 403);
+    }
+    // Before authentication, an unknown slug looks like any endpoint that needs credentials, and a
+    // disabled one answers like an enabled one: neither existence nor state is told to strangers.
     const found = this.ctx.instances.bySlug(slug);
-    if (!found) return c.json(jsonRpcError(-32001, 'Unknown MCP endpoint'), 404);
+    if (!found) {
+      if (this.holdsLiveCredential(c)) return c.json(jsonRpcError(-32001, 'Unknown MCP endpoint'), 404);
+      c.header('WWW-Authenticate', 'Bearer');
+      return c.json({ error: 'unauthorized', error_description: 'Authentication required' }, 401);
+    }
     const { instance, plugin } = found;
-    if (!this.ctx.instances.isServing(instance, plugin))
-      return c.json(jsonRpcError(-32002, 'This endpoint is disabled'), 503);
 
     const auth = await authenticateMcp(this.ctx, this.oauth, c, instance);
     if (!auth.ok) {
       if (auth.wwwAuthenticate) c.header('WWW-Authenticate', auth.wwwAuthenticate);
       return c.json({ error: auth.error, error_description: auth.message }, auth.status);
     }
+    if (!this.ctx.instances.isServing(instance, plugin))
+      return c.json(jsonRpcError(-32002, 'This endpoint is disabled'), 503);
 
     const sessionId = c.req.header('mcp-session-id');
     if (sessionId) {
@@ -226,13 +315,21 @@ export class McpEndpoints {
       );
     }
 
-    const server = this.buildServer(instance.id, auth.identity);
+    // One principal can't pile up servers: past the cap, its least recently used session goes.
+    const mine = [...this.sessions].filter(([, s]) => s.principal === auth.identity.principal);
+    if (mine.length >= MAX_SESSIONS_PER_PRINCIPAL) {
+      const [oldest] = mine.sort(([, a], [, b]) => a.lastSeen - b.lastSeen)[0]!;
+      await this.closeSession(oldest);
+    }
+    const closed = new AbortController();
+    const server = this.buildServer(instance.id, auth.identity, publicMcpBase(this.ctx, c), closed.signal);
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (id) => {
         this.sessions.set(id, {
           transport,
           server,
+          closed,
           instanceId: instance.id,
           principal: auth.identity.principal,
           lastSeen: Date.now(),

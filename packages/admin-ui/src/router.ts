@@ -3,7 +3,6 @@ import type { RouteRecordRaw, RouterHistory } from 'vue-router';
 import { setUnauthenticatedHandler } from './api';
 import AppShell from './layouts/AppShell.vue';
 import { useSessionStore } from './stores/session';
-import ApprovalsView from './views/ApprovalsView.vue';
 import AuditView from './views/AuditView.vue';
 import ClientsView from './views/ClientsView.vue';
 import EnrollTotpView from './views/EnrollTotpView.vue';
@@ -40,7 +39,6 @@ export const routes: RouteRecordRaw[] = [
     component: AppShell,
     children: [
       { path: '', component: OverviewView, meta: { title: 'Overview' } },
-      { path: 'approvals', component: ApprovalsView, meta: { title: 'Pending Approvals' } },
       { path: 'audit', component: AuditView, meta: { title: 'Audit Log' } },
       { path: 'plugins', component: PluginsView, meta: { title: 'Plugins' } },
       { path: 'clients', component: ClientsView, meta: { title: 'Clients & Tokens' } },

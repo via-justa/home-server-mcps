@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { cleanStored, parseLeniently } from '../lenient.js';
 
 /** Per-instance runtime settings (design §8.2 "Instance Settings"), stored as JSON on `plugin_instances.settings`. */
 export const InstanceSettingsSchema = z
@@ -10,8 +11,13 @@ export const InstanceSettingsSchema = z
       .min(10_000)
       .max(24 * 60 * 60_000)
       .default(15 * 60_000),
-    /** When the client can't elicit, still wait for a portal/link decision instead of denying at once. */
-    allowPortalOnlyApprovals: z.boolean().default(true),
+    /**
+     * Let MCP clients that only support form prompts approve plain writes (never locked or
+     * typed-confirmation operations). Off by default: any client on this endpoint could then approve
+     * its own writes. URL prompts (a signed-in human on the approval page) always work.
+     */
+    formElicitationApprovals: z.enum(['off', 'writes']).default('off'),
+    /** `execute` and `search` runs per minute, per principal (design §5.2). */
     executePerMinute: z.number().int().min(1).max(10_000).default(30),
     writesPerMinute: z.number().int().min(1).max(10_000).default(10),
     sandbox: z
@@ -43,4 +49,14 @@ export type InstanceSettings = z.infer<typeof InstanceSettingsSchema>;
 
 export function parseInstanceSettings(raw: unknown): InstanceSettings {
   return InstanceSettingsSchema.parse(raw ?? {});
+}
+
+/** Stored instance settings, read leniently (a field a newer schema rejects falls back to its default). */
+export function readInstanceSettings(raw: unknown, label = 'instance settings'): InstanceSettings {
+  return parseLeniently(InstanceSettingsSchema, raw, label);
+}
+
+/** For the startup normalization: the stored settings with just the rejected fields removed. */
+export function cleanInstanceSettings(raw: unknown, label: string) {
+  return cleanStored(InstanceSettingsSchema, raw, label);
 }

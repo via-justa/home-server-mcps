@@ -1,6 +1,6 @@
 import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import type { KeyObject } from 'node:crypto';
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,7 @@ import { loadConfig } from '../src/config/env.js';
 import { auditLog, plugins } from '../src/db/schema.js';
 import { createAdminApp } from '../src/http/admin-app.js';
 import { parsePublicKey, verifySignature } from '../src/plugins/minisign.js';
+import { swapDirectory } from '../src/plugins/repos.js';
 import { browser } from './admin-client.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -131,6 +132,7 @@ async function setup(opts: { coreDir?: string } = {}) {
   const dataDir = tmp('hsm-repos-');
   const files = new Map<string, Buffer>();
   const fetched: string[] = [];
+  const redirects = new Map<string, string>();
   const ctx = await createAppContext(
     loadConfig({
       DATA_DIR: dataDir,
@@ -140,8 +142,14 @@ async function setup(opts: { coreDir?: string } = {}) {
     {
       memoryDb: true,
       supervisor: { backoff: { initialMs: 20, maxMs: 100 }, initTimeoutMs: 3000, rpcTimeoutMs: 5000 },
-      repoFetch: async (url) => {
+      repoFetch: async (url, init) => {
         fetched.push(url);
+        const to = redirects.get(url);
+        if (to) {
+          // Real fetch would follow on its own; the service must ask to see redirects itself.
+          expect(init?.redirect).toBe('manual');
+          return new Response(null, { status: 302, headers: { location: to } });
+        }
         const body = files.get(url);
         return body ? new Response(new Uint8Array(body)) : new Response('missing', { status: 404 });
       },
@@ -152,7 +160,7 @@ async function setup(opts: { coreDir?: string } = {}) {
   const b = await browser(app).init();
   await b.post('/api/setup', { username: 'admin', password: PASSWORD });
   const publish = (index: unknown) => files.set(INDEX_URL, Buffer.from(JSON.stringify(index)));
-  return { ctx, b, files, fetched, publish, dataDir };
+  return { ctx, b, files, fetched, redirects, publish, dataDir };
 }
 
 function indexFor(
@@ -219,11 +227,14 @@ describe('plugin repositories', () => {
       repoId: repo.id,
       signatureVerified: true,
       sha256: sha(v1),
-      enabled: true,
+      // A new install waits for the admin to review and enable it (review L7).
+      enabled: false,
       status: 'ok',
     });
     expect(existsSync(path.join(t.dataDir, 'plugins/echo/manifest.json'))).toBe(true);
     expect(t.fetched).toContain('https://plugins.example.com/echo-1.0.0.tgz');
+    const pluginRow = t.ctx.db.select().from(plugins).where(eq(plugins.pluginId, 'echo')).get()!;
+    expect((await t.b.patch(`/api/plugins/${pluginRow.id}`, { enabled: true })).status).toBe(200);
 
     // The installed plugin actually runs.
     const inst = await t.ctx.instances.create({ pluginId: 'echo', slug: 'echo', connection: {} });
@@ -244,8 +255,34 @@ describe('plugin repositories', () => {
     ]);
     expect(
       await (await t.b.post('/api/plugins/install', { repoId: repo.id, pluginId: 'echo', version: '1.1.0' })).json(),
-    ).toMatchObject({ version: '1.1.0' });
+    ).toMatchObject({ version: '1.1.0', enabled: true });
     expect(t.ctx.instances.status(inst.id)).toBe('ready');
+
+    // 1.2.0 asks for more network hosts: it installs disabled until the admin reviews it (review L7).
+    const v12 = echoTarball('1.2.0', (dir) => {
+      const m = JSON.parse(readFileSync(path.join(dir, 'manifest.json'), 'utf8')) as Record<string, unknown>;
+      writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ ...m, network: { hosts: ['*.example.net'] } }));
+    });
+    t.files.set('https://plugins.example.com/echo-1.2.0.tgz', v12);
+    t.publish(
+      indexFor(key, [
+        { version: '1.0.0', tarball: v1 },
+        { version: '1.1.0', tarball: v11 },
+        { version: '1.2.0', tarball: v12 },
+      ]),
+    );
+    await t.b.post(`/api/plugin-repos/${repo.id}/refresh`);
+    expect(
+      await (await t.b.post('/api/plugins/install', { repoId: repo.id, pluginId: 'echo', version: '1.2.0' })).json(),
+    ).toMatchObject({ version: '1.2.0', enabled: false });
+    expect(t.ctx.instances.status(inst.id)).toBe('stopped');
+    const held = t.ctx.db
+      .select()
+      .from(auditLog)
+      .all()
+      .filter((a) => a.decision === 'plugin_updated')
+      .at(-1);
+    expect(held?.detail).toMatchObject({ version: '1.2.0', enabled: false, needsReview: ['network.hosts'] });
 
     // Uninstall is blocked while endpoints use the plugin, and the repo while plugins come from it.
     expect(await (await t.b.del('/api/plugins/echo')).json()).toMatchObject({ error: 'plugin_has_instances' });
@@ -265,6 +302,8 @@ describe('plugin repositories', () => {
     expect(decisions).toEqual([
       'plugin_repo_added',
       'plugin_installed',
+      'plugin_enabled',
+      'plugin_updated',
       'plugin_updated',
       'plugin_uninstalled',
       'plugin_repo_removed',
@@ -355,6 +394,29 @@ describe('plugin repositories', () => {
     });
   });
 
+  it('checks every redirect hop: https → https is followed, a downgrade to http is refused (review L4)', async () => {
+    const t = await setup();
+    t.files.set(INDEX_URL, Buffer.from(JSON.stringify({ schema: 1, name: 'Moved', plugins: [] })));
+    t.redirects.set('https://old.example.com/index.json', INDEX_URL);
+    const moved = await t.b.post('/api/plugin-repos', {
+      url: 'https://old.example.com/index.json',
+      signingMode: 'unsigned',
+    });
+    expect(moved.status).toBe(201);
+
+    t.redirects.set('https://evil.example.com/index.json', 'http://10.0.0.1:8080/admin');
+    const res = await t.b.post('/api/plugin-repos', {
+      url: 'https://evil.example.com/index.json',
+      signingMode: 'unsigned',
+    });
+    expect(await res.json()).toMatchObject({ error: 'insecure_url' });
+    expect(t.fetched).not.toContain('http://10.0.0.1:8080/admin');
+
+    for (let i = 0; i < 7; i++) t.redirects.set(`https://loop.example.com/${i}`, `https://loop.example.com/${i + 1}`);
+    const loop = await t.b.post('/api/plugin-repos', { url: 'https://loop.example.com/0', signingMode: 'unsigned' });
+    expect(await loop.json()).toMatchObject({ error: 'fetch_failed' });
+  });
+
   it('rejects archives with links, escaping paths, a wrong manifest, and insecure or invalid indexes', async () => {
     const t = await setup();
     const manifest = readFileSync(path.join(FIXTURES, 'plugins/echo/manifest.json'), 'utf8');
@@ -432,5 +494,29 @@ describe('plugin repositories', () => {
     ).toMatchObject({
       error: 'fetch_failed',
     });
+  });
+});
+
+describe('swapDirectory (review L5)', () => {
+  it('replaces the directory, or puts the old one back when the new one cannot be moved in', () => {
+    const root = tmp('hsm-swap-');
+    const target = path.join(root, 'plugins/echo');
+    const next = path.join(root, 'staging/new');
+    mkdirSync(target, { recursive: true });
+    mkdirSync(next, { recursive: true });
+    writeFileSync(path.join(target, 'v'), '1');
+    writeFileSync(path.join(next, 'v'), '2');
+
+    const failing = (from: string, to: string) => {
+      if (from === next) throw new Error('disk full');
+      renameSync(from, to);
+    };
+    expect(() => swapDirectory(next, target, path.join(root, 'staging/old-1'), failing)).toThrow('disk full');
+    expect(readFileSync(path.join(target, 'v'), 'utf8')).toBe('1');
+    expect(existsSync(path.join(root, 'staging/old-1'))).toBe(false);
+
+    swapDirectory(next, target, path.join(root, 'staging/old-2'));
+    expect(readFileSync(path.join(target, 'v'), 'utf8')).toBe('2');
+    expect(existsSync(path.join(root, 'staging/old-2'))).toBe(false);
   });
 });

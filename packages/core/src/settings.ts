@@ -4,6 +4,7 @@ import { writeAudit } from './audit.js';
 import type { Db } from './db/index.js';
 import { settings } from './db/schema.js';
 import { ValidationError } from './errors.js';
+import { cleanStored, parseLeniently } from './lenient.js';
 
 /** Global settings (design §8.2 "Settings"), one JSON document per section in the `settings` table. */
 
@@ -60,9 +61,26 @@ export function isSettingsSection(name: string): name is SettingsSection {
   return Object.prototype.hasOwnProperty.call(SETTINGS_SCHEMAS, name);
 }
 
+/** Stored settings are read leniently: a field a newer schema rejects falls back to its default. */
 export function getSettings<S extends SettingsSection>(db: Db, section: S): Settings<S> {
   const row = db.select().from(settings).where(eq(settings.key, section)).get();
-  return SETTINGS_SCHEMAS[section].parse(row?.value ?? {}) as Settings<S>;
+  return parseLeniently(SETTINGS_SCHEMAS[section], row?.value, `settings.${section}`) as Settings<S>;
+}
+
+/**
+ * Startup step: removes stored settings fields the current schema rejects, once (and warned about
+ * once) rather than on every read. Valid fields are left exactly as stored.
+ */
+export function normalizeStoredSettings(db: Db): string[] {
+  const changed: string[] = [];
+  for (const row of db.select().from(settings).all()) {
+    if (!isSettingsSection(row.key)) continue;
+    const { cleaned, dropped } = cleanStored(SETTINGS_SCHEMAS[row.key], row.value, `settings.${row.key}`);
+    if (!dropped.length) continue;
+    db.update(settings).set({ value: cleaned }).where(eq(settings.key, row.key)).run();
+    changed.push(row.key);
+  }
+  return changed;
 }
 
 export function updateSettings<S extends SettingsSection>(

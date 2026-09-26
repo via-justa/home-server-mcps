@@ -57,6 +57,20 @@ body {
   margin-bottom: 5px;
 }
 
+/* A checkbox or radio line inside a field: label beside the box, normal weight. */
+.field label.row {
+  display: flex;
+  gap: 8px;
+  font-weight: 400;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.field input[type='checkbox'],
+.field input[type='radio'] {
+  width: auto;
+  padding: 0;
+}
+
 .field input {
   width: 100%;
   box-sizing: border-box;

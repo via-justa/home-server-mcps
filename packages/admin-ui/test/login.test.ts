@@ -59,7 +59,7 @@ describe('login page', () => {
         session = signedIn;
         return { status: 'ok' };
       },
-      'GET /api/overview': { instances: [], plugins: [], pendingApprovals: 0, warnings: [], publicMcpUrl: null },
+      'GET /api/overview': { instances: [], plugins: [], warnings: [], publicMcpUrl: null },
       'GET /api/audit': { rows: [], total: 0 },
     });
     const { wrapper, router } = await mountAt('/login?redirect=/audit');

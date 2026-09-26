@@ -19,6 +19,7 @@ const CATALOG = [
 ];
 
 let config = {};
+let resolutions = 0;
 let secrets = {};
 const reply = (id, result) => process.send({ jsonrpc: '2.0', id, result: result ?? null });
 const fail = (id, code, message) => process.send({ jsonrpc: '2.0', id, error: { code, message } });
@@ -30,12 +31,15 @@ const handlers = {
     if (config.mode === 'crash-init') process.exit(3);
     if (config.mode === 'fail-init') return fail(id, 'UPSTREAM_ERROR', 'cannot reach upstream');
     if (config.mode === 'hang-init') return;
+    // An upstream error that echoes the credential back (as some APIs do).
+    if (config.mode === 'leak-init') return fail(id, 'UPSTREAM_ERROR', `401 for token ${secrets.token}`);
     reply(id);
   },
   testConnection: (id) => reply(id, { ok: true, upstreamVersion: '1.0' }),
   getUpstreamVersion: (id) => reply(id, config.version ?? '1.0'),
   syncCatalog(id) {
     if (config.mode === 'bad-output') return reply(id, { upstreamVersion: '1.0', operations: 'nope' });
+    if (config.mode === 'leak-sync') return fail(id, 'UPSTREAM_ERROR', `sync refused for ${secrets.token}`);
     reply(id, { upstreamVersion: config.version ?? '1.0', operations: CATALOG });
   },
   resolveOperation(id, { args }) {
@@ -43,12 +47,18 @@ const handlers = {
     if (!CATALOG.some((o) => o.key === key)) return fail(id, 'UNKNOWN_OPERATION', `unknown operation: ${key}`);
     reply(id, { key, params });
   },
+  // `drift: true` resolves to a different entity every time, like an area whose members change.
+  resolveTargets(id, { params }) {
+    if (!params?.drift) return reply(id, []);
+    resolutions++;
+    reply(id, [{ kind: 'entity', id: `light.e${resolutions}`, name: `Light ${resolutions}`, scopes: {} }]);
+  },
   summarize(id, { key, params }) {
     const confirmLiteral = key === 'echo.delete' ? params.name : undefined;
     reply(id, { text: `${key} ${JSON.stringify(params)}`, ...(confirmLiteral ? { confirmLiteral } : {}) });
   },
   getGuide: (id) => reply(id, { version: 'v1', content: 'Read me first.' }),
-  invoke(id, { key, params }) {
+  invoke(id, { key, params, context }) {
     const tryFs = (fn) => {
       try {
         fn();
@@ -57,6 +67,12 @@ const handlers = {
         return e.code;
       }
     };
+    if (params.action === 'context') return reply(id, context);
+    // The upstream was upgraded while the plugin kept running (mid-session version recheck).
+    if (params.action === 'set-version') {
+      config = { ...config, version: params.version };
+      return reply(id, config.version);
+    }
     switch (params.action) {
       case 'env':
         return reply(id, Object.keys(process.env).sort());
@@ -83,6 +99,9 @@ const handlers = {
         return;
       case 'upstream-denied':
         return fail(id, 'UPSTREAM_DENIED', 'insufficient permission');
+      case 'upstream-echo':
+        // An upstream error that quotes the request back, as many APIs do.
+        return fail(id, 'UPSTREAM_ERROR', `upstream rejected: ${params.text}`);
       default:
         return reply(id, key.startsWith('echo.') ? { key, params, password: 'hunter2' } : params);
     }

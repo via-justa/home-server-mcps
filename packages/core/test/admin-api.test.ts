@@ -5,9 +5,12 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createAppContext } from '../src/app.js';
 import { base32Decode, currentStep, totpAt } from '../src/auth/totp.js';
+import { applyRegistrySync } from '../src/catalog/registry.js';
 import { loadConfig } from '../src/config/env.js';
+import { users } from '../src/db/schema.js';
 import { createAdminApp } from '../src/http/admin-app.js';
-import { executeCode } from '../src/runtime/index.js';
+import { updateSettings } from '../src/settings.js';
+import { eq } from 'drizzle-orm';
 import { browser } from './admin-client.js';
 
 const PLUGINS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/plugins');
@@ -127,6 +130,29 @@ describe('setup, login and sessions', () => {
     });
   });
 
+  it('keeps single sign-on usable while local login is off (review L18)', async () => {
+    const t = await setup();
+    const b = await signedIn(t);
+    const sso = (await (await b.post('/api/users', { username: 'sso', password: PASSWORD })).json()) as { id: string };
+    t.ctx.db
+      .update(users)
+      .set({ oidcIssuer: 'https://idp.example.com', oidcSubject: 'sub-1' })
+      .where(eq(users.id, sso.id))
+      .run();
+    const ssoClient = await t.client();
+    expect((await ssoClient.post('/auth/login', { username: 'sso', password: PASSWORD })).status).toBe(200);
+    updateSettings(t.ctx.db, 'security', { disableLocalLogin: true });
+
+    const refused = { error: 'local_login_disabled' };
+    expect(await (await b.patch(`/api/users/${sso.id}`, { disabled: true })).json()).toMatchObject(refused);
+    expect(await (await b.put('/api/settings/oidc', { enabled: false })).json()).toMatchObject(refused);
+    expect(await (await ssoClient.post('/api/profile/oidc/unlink')).json()).toMatchObject(refused);
+    expect(t.ctx.users.get(sso.id)).toMatchObject({ disabled: false, oidcSubject: 'sub-1' });
+
+    updateSettings(t.ctx.db, 'security', { disableLocalLogin: false });
+    expect((await b.patch(`/api/users/${sso.id}`, { disabled: true })).status).toBe(200);
+  });
+
   it('manages users; password changes sign out other sessions', async () => {
     const t = await setup();
     const b = await signedIn(t);
@@ -145,6 +171,29 @@ describe('setup, login and sessions', () => {
 });
 
 describe('instances and access', () => {
+  it('redacts registry attributes in the picker (review L12)', async () => {
+    const t = await setup();
+    const b = await signedIn(t);
+    const inst = await t.ctx.instances.create({
+      pluginId: 'echo',
+      slug: 'echo',
+      connection: { token: 'upstream-token-5678' },
+    });
+    applyRegistrySync(t.ctx.db, inst.id, [
+      {
+        kind: 'entity',
+        id: 'camera.door',
+        name: 'Door',
+        attrs: { access_token: 'cam-abc', entity_picture: '/api/camera_proxy?token=upstream-token-5678', fps: 5 },
+      },
+    ]);
+    const body = JSON.stringify(await (await b.get(`/api/instances/${inst.id}/registry?kind=entity`)).json());
+    expect(body).toContain('camera.door');
+    expect(body).not.toContain('cam-abc');
+    expect(body).not.toContain('upstream-token-5678');
+    expect(body).toContain('"fps":5');
+  });
+
   async function withInstance() {
     const t = await setup();
     const b = await signedIn(t);
@@ -166,21 +215,48 @@ describe('instances and access', () => {
     expect(JSON.stringify(conn)).not.toContain('a-long-secret');
     expect((await t.b.put(`/api/instances/${t.id}/connection`, { config: { mode: 5 } })).status).toBe(400);
     expect(await (await t.b.post(`/api/instances/${t.id}/connection/test`)).json()).toMatchObject({ ok: true });
+    // Malformed JSON is the client's error, not a 500 (review L19).
+    const cookie = [...t.b.jar].map(([k, v]) => `${k}=${v}`).join('; ');
+    const bad = await t.app.request(`/api/instances/${t.id}/connection/test`, {
+      method: 'POST',
+      headers: { cookie, 'x-csrf-token': t.b.jar.get('hsm_csrf')!, 'content-type': 'application/json' },
+      body: '{"config": ',
+    });
+    expect(bad.status).toBe(400);
+    expect(await bad.json()).toMatchObject({ error: 'invalid_json' });
     expect(
       await (await t.b.post(`/api/instances/${t.id}/connection/test`, { config: { mode: 'fail-init' } })).json(),
     ).toMatchObject({ ok: false });
+
+    // Pointing the connection somewhere else never takes the stored secret along.
+    const moved = await t.b.post(`/api/instances/${t.id}/connection/test`, {
+      config: { url: 'https://attacker.example' },
+    });
+    expect(moved.status).toBe(400);
+    expect(await moved.json()).toMatchObject({ error: 'secrets_required', details: ['token'] });
+    expect(
+      (await t.b.put(`/api/instances/${t.id}/connection`, { config: { url: 'https://attacker.example' } })).status,
+    ).toBe(400);
+    expect(
+      await (
+        await t.b.post(`/api/instances/${t.id}/connection/test`, {
+          config: { url: 'https://nas.example' },
+          secrets: { token: 'a-fresh-secret-value' },
+        })
+      ).json(),
+    ).toMatchObject({ ok: true });
   });
 
   it('syncs, shows groups with reasons, and enforces write acknowledgement', async () => {
     const t = await withInstance();
     expect(await (await t.b.post(`/api/instances/${t.id}/sync`)).json()).toMatchObject({ added: 5 });
     expect(await (await t.b.get(`/api/instances/${t.id}/groups`)).json()).toMatchObject([
-      { key: 'echo', level: 'read', counts: { read: 1, write: 2, locked: 2, pendingReview: 2 } },
+      { key: 'echo', level: 'read', counts: { read: 1, write: 2, locked: 2, pendingReview: 0 } },
     ]);
-    const ops = (await (await t.b.get(`/api/instances/${t.id}/operations?reason=group_read_only`)).json()) as {
+    const ops = (await (await t.b.get(`/api/instances/${t.id}/operations?reason=read_only`)).json()) as {
       key: string;
     }[];
-    expect(ops.map((o) => o.key)).toEqual(['echo.delete', 'echo.guided', 'echo.nolit', 'echo.set']);
+    expect(ops.map((o) => o.key)).toEqual(['echo.guided', 'echo.set']);
 
     const refused = await t.b.patch(`/api/instances/${t.id}/groups/echo`, { level: 'write' });
     expect(refused.status).toBe(409);
@@ -233,7 +309,7 @@ describe('instances and access', () => {
       rateLimit: 10,
     });
     expect(created.status).toBe(201);
-    expect(await created.json()).toMatchObject({ windowSeconds: 3600, inert: 'group_read_only' });
+    expect(await created.json()).toMatchObject({ windowSeconds: 3600, inert: 'read_only' });
     const [rule] = (await (await t.b.get(`/api/instances/${t.id}/rules`)).json()) as { id: string }[];
     expect(
       await (await t.b.patch(`/api/instances/${t.id}/rules/${rule!.id}`, { enabled: false })).json(),
@@ -241,53 +317,39 @@ describe('instances and access', () => {
     expect((await t.b.del(`/api/instances/${t.id}/rules/${rule!.id}`)).status).toBe(204);
   });
 
-  it('lists pending approvals and decides them from the portal, with typed confirmation', async () => {
+  it('sets per-operation levels, keeps locked ops off Write, and has no portal approval inbox', async () => {
     const t = await withInstance();
     await t.b.post(`/api/instances/${t.id}/sync`);
-    const ops = (await (await t.b.get(`/api/instances/${t.id}/operations`)).json()) as { id: string; key: string }[];
-    const opId = (k: string) => ops.find((o) => o.key === k)!.id;
-    const preview = (await (await t.b.get(`/api/instances/${t.id}/groups/bulk-level/preview?level=write`)).json()) as {
-      acknowledge: string[];
-    };
-    await t.b.post(`/api/instances/${t.id}/groups/bulk-level`, {
-      level: 'write',
-      confirm: 'echo',
-      acknowledge: preview.acknowledge,
-    });
-    await t.b.patch(`/api/instances/${t.id}/operations/${opId('echo.delete')}`, { lockedOptIn: true });
+    type Op = { id: string; key: string; level: string; levelOverride: string | null; mode: string | null };
+    const list = async () => (await (await t.b.get(`/api/instances/${t.id}/operations`)).json()) as Op[];
+    const opId = async (k: string) => (await list()).find((o) => o.key === k)!.id;
+    const patch = async (key: string, body: unknown) =>
+      t.b.patch(`/api/instances/${t.id}/operations/${await opId(key)}`, body);
 
-    const run = executeCode(
-      t.ctx.gateDeps(),
-      t.ctx.instances.runtime(t.id),
-      { client: { kind: 'mcp_client', id: 'claude' } },
-      `return (await echo.call('echo.delete', { name: 'tank/x' })).key;`,
-    );
-    let pending: { id: string; requiresConfirmation: boolean; confirmLiteral: string; summary: string }[] = [];
-    for (let i = 0; i < 100 && pending.length === 0; i++) {
-      await new Promise((r) => setTimeout(r, 20));
-      pending = (await (await t.b.get('/api/approvals')).json()) as typeof pending;
-    }
-    expect(pending[0]).toMatchObject({
-      requiresConfirmation: true,
-      confirmLiteral: 'tank/x',
-      operation: { key: 'echo.delete', classification: 'locked' },
+    expect((await patch('echo.delete', { level: 'write' })).status).toBe(409);
+    expect(await (await patch('echo.delete', { level: 'ask' })).json()).toMatchObject({ levelOverride: 'ask' });
+    expect(await (await patch('echo.set', { level: 'write' })).json()).toMatchObject({
+      levelOverride: 'write',
+      writeAcknowledged: true,
     });
-    expect(pending[0]).not.toHaveProperty('paramsHash');
-    expect(
-      await (await t.b.post(`/api/approvals/${pending[0]!.id}/approve`, { confirm: 'wrong' })).json(),
-    ).toMatchObject({ error: 'confirmation_mismatch' });
-    expect(
-      await (await t.b.post(`/api/approvals/${pending[0]!.id}/approve`, { confirm: 'tank/x' })).json(),
-    ).toMatchObject({ outcome: 'approved', via: 'portal' });
-    await expect(run).resolves.toMatchObject({ ok: true, value: 'echo.delete' });
+    expect((await patch('echo.set', { level: 'admin' })).status).toBe(400);
+    const byKey = Object.fromEntries((await list()).map((o) => [o.key, o]));
+    expect(byKey['echo.delete']).toMatchObject({ level: 'ask', mode: 'approve' });
+    expect(byKey['echo.set']).toMatchObject({ level: 'write', mode: 'auto' });
+    expect(byKey['echo.guided']).toMatchObject({ level: 'read', levelOverride: null, mode: null });
 
-    const audit = (await (await t.b.get(`/api/audit?kind=call&instance=${t.id}`)).json()) as {
-      rows: { decision: string; decidedBy: string }[];
-    };
-    expect(audit.rows[0]).toMatchObject({ decision: 'human-approved', decidedBy: 'admin' });
+    expect(await (await patch('echo.set', { level: null })).json()).toMatchObject({ levelOverride: null });
+    const group = ((await (await t.b.get(`/api/instances/${t.id}/groups`)).json()) as { counts: object }[])[0];
+    expect(group?.counts).toMatchObject({ overridden: 1 });
+
+    // Approvals are decided only on the approval page the MCP client opens.
+    expect((await t.b.get('/api/approvals')).status).toBe(404);
+    const overview = (await (await t.b.get('/api/overview')).json()) as Record<string, unknown>;
+    expect(overview).not.toHaveProperty('pendingApprovals');
+
     const csv = await (await t.b.get('/api/audit/export.csv?kind=config')).text();
     expect(csv.split('\n')[0]).toMatch(/^id,at,kind,/);
-    expect(csv).toContain('instance_created');
+    expect(csv).toContain('operation_updated');
   });
 
   it('issues MCP bearer tokens once and never lists their value', async () => {

@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { Manifest, ResolvedTarget } from '@home-server-mcps/plugin-sdk';
 import { and, eq } from 'drizzle-orm';
-import type { ApprovalService, Decision, ElicitFn } from '../approvals/service.js';
+import type { ApprovalService, ClientPrompts, Decision } from '../approvals/service.js';
 import { writeAudit } from '../audit.js';
 import type { AuditEvent } from '../audit.js';
 import { resolveAccess } from '../catalog/groups.js';
 import type { Db } from '../db/index.js';
+import type { AccessPrincipal } from './access.js';
 import { operations } from '../db/schema.js';
 import type { InstanceSettings } from '../instances/settings.js';
 import { PluginProtocolError, PluginRpcError, PluginTimeoutError, PluginUnavailableError } from '../plugins/process.js';
@@ -21,8 +22,10 @@ import type { Redactor } from './redact.js';
 /**
  * The permission gate (design §5.2): the only path from sandboxed code to a plugin's `invoke`.
  *
- *   resolveOperation → attestation → access → resolveTargets → prepareWrite → classification
- *   → pre-approval (never for locked) → human approval → invoke → redact → audit
+ *   resolveOperation → attestation → access level → resolveTargets → prepareWrite
+ *   → [level ask: pre-approval rule (never for locked) → human approval] → invoke → redact → audit
+ *
+ * Reads run straight away; acknowledged writes at level `write` are auto-approved.
  *
  * Every branch, including every rejection, writes one `call` audit event. Calls within one
  * `execute` run strictly one at a time, so a pending approval blocks the whole script (TN §3.1).
@@ -47,13 +50,23 @@ export interface InstanceRuntime {
 }
 
 export interface CallerContext {
-  client: { kind: 'mcp_client'; id?: string };
+  /**
+   * `id` is the readable label recorded in the audit log (`token:Claude`); `key` is the stable
+   * principal (token id, grant id, external identity) that per-principal limits are keyed on, since
+   * two tokens may share a name.
+   */
+  client: { kind: 'mcp_client'; id?: string; key?: string };
   mcpSessionId?: string;
-  /** Present only when the MCP client supports elicitation and the session is live. */
-  elicit?: ElicitFn;
+  /** The authenticated principal's access ceiling (consent page / bearer token). */
+  principal: AccessPrincipal;
+  /** Present only for a live session whose client advertised elicitation. */
+  prompts?: ClientPrompts;
 }
 
 type OperationRow = typeof operations.$inferSelect;
+
+/** What per-principal limits are keyed on: the stable principal, never the display name. */
+export const principalKey = (caller: CallerContext) => caller.client.key ?? caller.client.id ?? 'anonymous';
 
 const MAX_ERROR_MESSAGE = 500;
 const PASSTHROUGH_PLUGIN_CODES = new Set([
@@ -81,22 +94,44 @@ function toBindingError(err: unknown): BindingError {
 
 const DISABLED_MESSAGES: Record<string, string> = {
   group_missing: 'is not available on this endpoint',
-  group_none: 'is disabled on this endpoint (its group is set to None)',
-  group_read_only: 'is a write, and its group is read-only on this endpoint',
-  excluded: 'has been excluded by the administrator',
+  level_none: 'is disabled on this endpoint (access level None)',
+  read_only: 'is a write, and its access level on this endpoint is Read',
+  token_read_only: 'is a write, and this connection was granted read-only access',
   locked_not_opted_in: 'is a protected operation that the administrator has not enabled',
-  pending_review: 'is new and waiting for administrator review',
   unknown_operation: 'is not in the current catalog',
 };
 
+/** Order-independent identity of a resolved target set. */
+const targetKey = (targets: ResolvedTarget[]) => JSON.stringify(targets.map((t) => `${t.kind}:${t.id}`).sort());
+
+const DENIAL_MESSAGES: Record<string, string> = {
+  no_approval_path: 'needs approval, and this MCP client cannot show approval prompts',
+  client_cannot_approve:
+    'needs approval on a web page, and this MCP client only supports form prompts; use a client that supports URL elicitation',
+  declined: 'was declined in the client',
+  prompt_failed: 'needs approval, but the client could not show the approval prompt',
+  confirmation_mismatch: 'was denied (confirmation mismatch)',
+  endpoint_stopped: 'was cancelled: the endpoint was stopped or reconfigured while it waited for approval',
+};
+
+/**
+ * The gate bindings for one `execute` run. `signal` ends the run: once it is aborted (the sandbox
+ * settled, the MCP request was cancelled, or the session closed), calls the script left behind are
+ * refused and an approval still open is cancelled, so nothing runs after the tool call has returned.
+ */
 export function createGateBindings(
   deps: GateDeps,
   rt: InstanceRuntime,
   caller: CallerContext,
+  signal: AbortSignal = new AbortController().signal,
 ): Record<string, Record<string, Binding>> {
   const now = deps.now ?? (() => new Date());
   const executionId = randomUUID();
   let queue: Promise<unknown> = Promise.resolve();
+  const openApprovals = new Set<string>();
+  signal.addEventListener('abort', () => {
+    for (const id of openApprovals) deps.approvals.cancel(id, 'execution_ended');
+  });
 
   const serialized =
     (fn: string): Binding =>
@@ -135,10 +170,16 @@ export function createGateBindings(
       throw err;
     };
 
+    const ensureRunning = () => {
+      if (signal.aborted)
+        reject(
+          'rejected:execution_ended',
+          new BindingError('EXECUTION_ENDED', 'The execute call this belongs to has already ended'),
+        );
+    };
+
     try {
-      if (!deps.limiter.take(`exec:${rt.instanceId}`, rt.settings.executePerMinute, 60_000)) {
-        reject('rejected:rate_limited', new BindingError('RATE_LIMITED', 'Too many calls on this endpoint; slow down'));
-      }
+      ensureRunning();
 
       // 0. Map the raw binding call onto a catalog key (Seerr path templates, HA garage-door split…).
       const resolved = await rt.plugin().call('resolveOperation', { fn, args });
@@ -158,6 +199,7 @@ export function createGateBindings(
             instanceId: rt.instanceId,
             operationId: op.id,
             opKey: op.key,
+            mcpSessionId: caller.mcpSessionId,
             presented,
           })
         ) {
@@ -171,8 +213,9 @@ export function createGateBindings(
         }
       }
 
-      // 2. Access: group level + per-op state. Unknown/stale ops fail here too.
-      const access = resolveAccess(deps.db, rt.instanceId, resolved.key);
+      // 2. Access level (operation's own, else its group's) under the principal's ceiling. Unknown or
+      //    stale ops fail here too.
+      const access = resolveAccess(deps.db, rt.instanceId, resolved.key, caller.principal);
       if (!access.reachable || !op) {
         const reason = access.reachable ? 'unknown_operation' : access.reason;
         reject(
@@ -187,7 +230,8 @@ export function createGateBindings(
         );
       }
       const operation = op!;
-      const isWrite = operation.locked || operation.classification === 'write';
+      const mode = access.reachable ? access.mode : 'run';
+      const isWrite = mode !== 'run';
       audit.classification = operation.locked ? 'locked' : operation.classification;
 
       // 3. Concrete targets, so rules and approvers see exactly what will be touched. Fails closed.
@@ -211,17 +255,22 @@ export function createGateBindings(
       // 5. Reads run straight away.
       let decision = 'auto-executed';
       let approval: Decision | undefined;
+      // Each principal has its own write budget, charged only for writes that actually run (step 9):
+      // a noisy, denied or timed-out client doesn't use up anyone else's.
+      const writeBucket = `write:${rt.instanceId}:${principalKey(caller)}`;
+      const overWriteBudget = () =>
+        reject('rejected:rate_limited', new BindingError('RATE_LIMITED', 'Too many write calls; slow down'));
       if (isWrite) {
-        if (!deps.limiter.take(`write:${rt.instanceId}`, rt.settings.writesPerMinute, 60_000)) {
-          reject(
-            'rejected:rate_limited',
-            new BindingError('RATE_LIMITED', 'Too many write calls on this endpoint; slow down'),
-          );
-        }
+        // Checked before asking anyone, so nobody approves a call that would be refused anyway.
+        if (!deps.limiter.allows(writeBucket, rt.settings.writesPerMinute, 60_000)) overWriteBudget();
 
-        // 6. Pre-approval rules; locked ops always need a live human (TN §3.4).
+        // 6. Level `write`: acknowledged writes are auto-approved. Level `ask`: pre-approval rules, which
+        //    never cover locked ops (TN §3.4) nor writes still waiting for acknowledgement.
         let preapproved = false;
-        if (!operation.locked) {
+        if (mode === 'auto') {
+          preapproved = true;
+          decision = 'auto-approved:level';
+        } else if (!operation.locked && access.reachable && access.level === 'ask') {
           const outcome = evaluatePreApproval(
             deps.db,
             { instanceId: rt.instanceId, operationId: operation.id, params, targets },
@@ -248,6 +297,7 @@ export function createGateBindings(
               new BindingError('PLUGIN_ERROR', `The plugin did not provide a confirmation value for ${operation.key}`),
             );
           }
+          ensureRunning();
           const paramsHash = sha256Hex(
             canonicalJson({ key: operation.key, params, targets, expectedHash: expectedHash ?? null }),
           );
@@ -266,18 +316,22 @@ export function createGateBindings(
             client: caller.client,
             mcpSessionId: caller.mcpSessionId,
             timeoutMs: rt.settings.approvalTimeoutMs,
-            elicit: caller.elicit,
-            allowPortalOnly: rt.settings.allowPortalOnlyApprovals,
+            prompts: caller.prompts,
+            formApprovals:
+              rt.settings.formElicitationApprovals === 'writes' && !operation.locked && !operation.typedConfirmation,
           });
           audit.detail.approvalId = request.id;
+          openApprovals.add(request.id);
           budget.pause();
           try {
             approval = await request.decision;
           } finally {
+            openApprovals.delete(request.id);
             budget.resume();
           }
           audit.decidedBy = approval.decidedBy;
           audit.decidedVia = approval.via;
+          if (approval.outcome === 'cancelled' && signal.aborted) ensureRunning();
           if (approval.outcome !== 'approved') {
             const label = approval.outcome === 'timed_out' ? 'timed-out' : 'denied';
             reject(
@@ -286,29 +340,65 @@ export function createGateBindings(
                 'PERMISSION_DENIED',
                 approval.outcome === 'timed_out'
                   ? `Approval for ${operation.key} timed out and was denied`
-                  : `${operation.key} was denied${approval.reason ? ` (${approval.reason})` : ''}`,
+                  : `${operation.key} ${(approval.reason && DENIAL_MESSAGES[approval.reason]) ?? `was denied${approval.reason ? ` (${approval.reason})` : ''}`}`,
               ),
+            );
+          }
+          // The admin may have lowered the level while the approval was open: the call must still be allowed.
+          const after = resolveAccess(deps.db, rt.instanceId, operation.key, caller.principal);
+          if (!after.reachable || after.mode === 'run') {
+            reject(
+              'rejected:access_changed',
+              new BindingError('OPERATION_DISABLED', `${operation.key} was disabled while waiting for approval`),
             );
           }
           decision = 'human-approved';
         }
       }
 
-      // 8. The real upstream call, within what's left of the sandbox budget.
-      const remaining = Math.max(1, budget.remainingMs());
-      const result = await rt
-        .plugin()
-        .call(
-          'invoke',
-          { key: operation.key, params, context: { callId: randomUUID(), expectedHash, deadlineMs: remaining } },
-          remaining,
-        );
+      // 8. The approver saw these targets; after a wait they may have moved (an entity joined the area).
+      //    Resolve again and refuse unless the set is unchanged, then hand the plugin the approved set.
+      ensureRunning();
+      if (decision === 'human-approved' && rt.manifest.capabilities.targets) {
+        const now = await rt.plugin().call('resolveTargets', { key: operation.key, params });
+        if (targetKey(now) !== targetKey(targets)) {
+          audit.detail.targetsNow = now;
+          reject(
+            'rejected:targets_changed',
+            new BindingError(
+              'TARGETS_CHANGED',
+              `What ${operation.key} would act on changed while it waited for approval; call it again to get a fresh approval`,
+            ),
+          );
+        }
+      }
 
-      // 9–10. Redact, audit, hand back.
+      // 9. The real upstream call, within what's left of the sandbox budget.
+      if (isWrite && !deps.limiter.take(writeBucket, rt.settings.writesPerMinute, 60_000)) overWriteBudget();
+      const remaining = Math.max(1, budget.remainingMs());
+      const result = await rt.plugin().call(
+        'invoke',
+        {
+          key: operation.key,
+          params,
+          context: {
+            callId: randomUUID(),
+            expectedHash,
+            deadlineMs: remaining,
+            ...(rt.manifest.capabilities.targets ? { targets } : {}),
+          },
+        },
+        remaining,
+      );
+
+      // 10–11. Redact, audit, hand back.
       finish(decision, { resultStatus: 'ok' });
       return rt.redact(result);
     } catch (err) {
-      const mapped = toBindingError(err);
+      const raw = toBindingError(err);
+      // Plugin and upstream messages are free text: scrub the instance's secret values out of them.
+      const mapped = new BindingError(raw.code, rt.redact(raw.message));
+      Object.assign(mapped, { reason: (raw as { reason?: string }).reason });
       // Gate rejections were audited where they were raised; plugin/upstream failures are audited here.
       if (!audited) {
         const decision = audit.classification ? `error:${mapped.code}` : `rejected:${mapped.code.toLowerCase()}`;

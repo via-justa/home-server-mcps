@@ -69,14 +69,17 @@ async function install() {
   if (!i) return;
   installing.value = { ...i, busy: true, note: undefined };
   try {
-    await http.post('/api/plugins/install', {
+    const row = await http.post<{ enabled: boolean }>('/api/plugins/install', {
       repoId: i.item.repoId,
       pluginId: i.item.pluginId,
       version: i.version,
       confirm: i.confirm || undefined,
     });
     installing.value = undefined;
-    notice.value = `${i.item.pluginId} ${i.version} installed.`;
+    // New installs, and updates that change what the plugin may do, wait for the admin to enable them.
+    notice.value = row.enabled
+      ? `${i.item.pluginId} ${i.version} installed.`
+      : `${i.item.pluginId} ${i.version} installed, disabled. Review its capabilities and network hosts, then Enable it on the Installed tab.`;
     await load();
     void app.refresh();
   } catch (err) {

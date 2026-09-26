@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { canonicalJson, sha256Hex } from '../src/gate/canonical.js';
 import { getPointer, matches, MatchSchema } from '../src/gate/match.js';
-import { createRedactor, GLOBAL_SENSITIVE_KEYS, REDACTED } from '../src/gate/redact.js';
+import { createInstanceRedactor, createRedactor, GLOBAL_SENSITIVE_KEYS, REDACTED } from '../src/gate/redact.js';
 
 describe('createRedactor', () => {
   const redact = createRedactor(GLOBAL_SENSITIVE_KEYS, ['plexToken']);
@@ -26,6 +26,42 @@ describe('createRedactor', () => {
     const input = { password: '', token: null, secret: 's' };
     expect(redact(input)).toEqual({ password: '', token: null, secret: REDACTED });
     expect(input.secret).toBe('s');
+  });
+
+  it('redacts keys that contain a sensitive word, keeping flags and counts visible (review L1)', () => {
+    expect(
+      redact({
+        db_password: 'hunter2',
+        newPassword: 'n',
+        smtp_pass: 's',
+        authPass: 'a',
+        ssh_private_key: 'pem',
+        'X-Api-Key': 'k',
+        Authorization: 'Bearer abc',
+        headers: { cookie: 'sid=1' },
+        password_set: true,
+        max_tokens: 4096,
+        bypass: 'on',
+        passive: 'yes',
+        compass: 'north',
+      }),
+    ).toEqual({
+      db_password: REDACTED,
+      newPassword: REDACTED,
+      smtp_pass: REDACTED,
+      authPass: REDACTED,
+      ssh_private_key: REDACTED,
+      'X-Api-Key': REDACTED,
+      Authorization: REDACTED,
+      headers: { cookie: REDACTED },
+      password_set: true,
+      max_tokens: 4096,
+      bypass: 'on',
+      passive: 'yes',
+      compass: 'north',
+    });
+    // An exact match hides any value, numbers included.
+    expect(redact({ password: 1234 })).toEqual({ password: REDACTED });
   });
 
   it('handles primitives and cycles', () => {
@@ -62,12 +98,39 @@ describe('matches', () => {
     targets: targets.map((t) => ({ kind: 'entity', name: t.id, scopes: {}, ...t })),
   });
 
-  it('treats an empty match as matching anything', () => {
+  it('treats an empty match as "no parameters", and `any` on "" as "any parameters"', () => {
     expect(matches([], call({}))).toBe(true);
+    expect(matches([], call(undefined))).toBe(true);
+    expect(matches([], call({ name: 'x' }))).toBe(false);
+    expect(matches([{ field: '', op: 'any' }], call({ name: 'x', deep: { a: 1 } }))).toBe(true);
+  });
+
+  it('is strict: every parameter must be covered by a condition or accepted with `any`', () => {
+    const rule = [{ field: '/name', op: 'prefix', value: 'tank/media' }] as const;
+    expect(matches(rule, call({ name: 'tank/media/tv' }))).toBe(true);
+    expect(matches(rule, call({ name: 'tank/media/tv', quota: 1 }))).toBe(false);
+    const withQuota = [...rule, { field: '/quota', op: 'any' }] as const;
+    expect(matches(withQuota, call({ name: 'tank/media/tv', quota: 1 }))).toBe(true);
+    expect(matches(withQuota, call({ name: 'tank/media/tv' }))).toBe(true); // `any` also allows absence
+    // A condition deeper in an object only covers that key; its siblings still need one.
+    const deep = [{ field: '/body/is4k', op: 'bool', value: false }] as const;
+    expect(matches(deep, call({ body: { is4k: false } }))).toBe(true);
+    expect(matches(deep, call({ body: { is4k: false, userId: 7 } }))).toBe(false);
+    expect(matches([...deep, { field: '/body/userId', op: 'any' }], call({ body: { is4k: false, userId: 7 } }))).toBe(
+      true,
+    );
   });
 
   it.each([
     ['prefix hit', { field: '/name', op: 'prefix', value: 'tank/media/' }, { name: 'tank/media/tv' }, true],
+    ['prefix at a boundary', { field: '/name', op: 'prefix', value: 'tank/media' }, { name: 'tank/media/tv' }, true],
+    ['prefix equal', { field: '/name', op: 'prefix', value: 'tank/media' }, { name: 'tank/media' }, true],
+    [
+      'prefix mid-segment',
+      { field: '/name', op: 'prefix', value: 'tank/media' },
+      { name: 'tank/media-private' },
+      false,
+    ],
     ['prefix miss', { field: '/name', op: 'prefix', value: 'tank/media/' }, { name: 'tank/other' }, false],
     ['prefix on non-string', { field: '/name', op: 'prefix', value: 'tank/' }, { name: 5 }, false],
     ['empty prefix never matches', { field: '/name', op: 'prefix', value: '' }, { name: 'x' }, false],
@@ -112,5 +175,17 @@ describe('matches', () => {
     expect(MatchSchema.safeParse([{ field: '$targets' }]).success).toBe(false);
     expect(MatchSchema.safeParse([{ field: 'name', op: 'prefix', value: 'x' }]).success).toBe(false);
     expect(MatchSchema.safeParse([{ field: '/n', op: 'regex', value: '.*' }]).success).toBe(false);
+    expect(MatchSchema.safeParse([{ field: '', op: 'any' }]).success).toBe(true);
+    expect(MatchSchema.safeParse([{ field: '', op: 'eq', value: 1 }]).success).toBe(false);
+  });
+});
+
+describe('instance redactor', () => {
+  it('scrubs the instance secret values out of any text, encoded or not, and ignores short ones', () => {
+    const redact = createInstanceRedactor({ keyLists: [GLOBAL_SENSITIVE_KEYS], secretValues: ['p@ss word!', 'abc'] });
+    expect(redact('login with p@ss word! failed')).toBe('login with [REDACTED] failed');
+    expect(redact({ url: 'https://x/?k=p%40ss%20word!' })).toEqual({ url: 'https://x/?k=[REDACTED]' });
+    expect(redact({ ['p@ss word!']: 1 })).toEqual({ [REDACTED]: 1 });
+    expect(redact('abc stays')).toBe('abc stays'); // too short to scrub safely
   });
 });

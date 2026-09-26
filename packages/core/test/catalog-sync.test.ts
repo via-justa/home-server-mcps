@@ -32,8 +32,8 @@ describe('applyCatalogSync', () => {
       classificationSource: 'locked',
       typedConfirmation: true,
     });
-    expect(resolveAccess(db, instanceId, 'app.query')).toEqual({ reachable: true });
-    expect(resolveAccess(db, instanceId, 'app.upgrade')).toEqual({ reachable: false, reason: 'group_read_only' });
+    expect(resolveAccess(db, instanceId, 'app.query')).toEqual({ reachable: true, mode: 'run', level: 'read' });
+    expect(resolveAccess(db, instanceId, 'app.upgrade')).toEqual({ reachable: false, reason: 'read_only' });
 
     const instance = db.select().from(pluginInstances).where(eq(pluginInstances.id, instanceId)).get();
     expect(instance).toMatchObject({ upstreamVersion: '25.10.7', lastSyncStatus: 'ok' });
@@ -46,16 +46,21 @@ describe('applyCatalogSync', () => {
     ).toEqual(['catalog_synced']);
   });
 
-  it('keeps new writes quarantined even in a group already at write', () => {
+  it('makes new writes ask, even in a group already at write, until acknowledged', () => {
     const { db, instanceId } = seedInstance();
     applyCatalogSync(db, instanceId, catalog(op('app.query'), op('app.upgrade')));
     setGroupLevel(db, instanceId, 'app', 'write', { acknowledge: [opRow(db, 'app.upgrade').id] });
-    expect(resolveAccess(db, instanceId, 'app.upgrade')).toEqual({ reachable: true });
+    expect(resolveAccess(db, instanceId, 'app.upgrade')).toEqual({ reachable: true, mode: 'auto', level: 'write' });
 
     const summary = applyCatalogSync(db, instanceId, catalog(op('app.query'), op('app.upgrade'), op('app.rollback')));
     expect(summary.pendingReview).toEqual(['app.rollback']);
-    expect(resolveAccess(db, instanceId, 'app.rollback')).toEqual({ reachable: false, reason: 'pending_review' });
-    expect(resolveAccess(db, instanceId, 'app.upgrade')).toEqual({ reachable: true });
+    expect(resolveAccess(db, instanceId, 'app.rollback')).toEqual({
+      reachable: true,
+      mode: 'approve',
+      level: 'write',
+      pendingReview: true,
+    });
+    expect(resolveAccess(db, instanceId, 'app.upgrade')).toEqual({ reachable: true, mode: 'auto', level: 'write' });
     expect(listGroups(db, instanceId)[0]?.counts.pendingReview).toBe(1);
   });
 
@@ -63,7 +68,7 @@ describe('applyCatalogSync', () => {
     const { db, instanceId } = seedInstance();
     applyCatalogSync(db, instanceId, catalog(op('app.query')));
     applyCatalogSync(db, instanceId, catalog(op('app.query'), op('app.config')));
-    expect(resolveAccess(db, instanceId, 'app.config')).toEqual({ reachable: true });
+    expect(resolveAccess(db, instanceId, 'app.config')).toEqual({ reachable: true, mode: 'run', level: 'read' });
   });
 
   it('resets acknowledgement when a read is reclassified as a write', () => {
@@ -78,7 +83,12 @@ describe('applyCatalogSync', () => {
       catalog(op('app.status', { classification: 'write' }), op('app.upgrade')),
     );
     expect(summary.pendingReview).toEqual(['app.status']);
-    expect(resolveAccess(db, instanceId, 'app.status')).toEqual({ reachable: false, reason: 'pending_review' });
+    expect(resolveAccess(db, instanceId, 'app.status')).toEqual({
+      reachable: true,
+      mode: 'approve',
+      level: 'write',
+      pendingReview: true,
+    });
   });
 
   it('keeps admin overrides unless the plugin locks the operation', () => {

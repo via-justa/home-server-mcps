@@ -49,6 +49,11 @@ export interface SandboxRun {
   /** `{ truenas: { call: fn } }` becomes `truenas.call(...)` inside the sandbox. */
   bindings: Record<string, Record<string, Binding>>;
   limits?: Partial<SandboxLimits>;
+  /**
+   * Applied to everything that leaves the sandbox — the result (before it is size-capped), every
+   * `console.log` argument and error messages — so nothing the code derives or prints escapes redaction.
+   */
+  redact?: (value: unknown) => unknown;
 }
 
 export type SandboxResult =
@@ -56,6 +61,7 @@ export type SandboxResult =
   | { ok: false; error: { code: string; message: string }; logs: string[] };
 
 const RESERVED = new Set(['console', 'globalThis', '__hsm']);
+const IDENT = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
 /** Wall-clock budget that can be paused; fires `onExpire` once when it runs out. */
 class Budget implements BudgetControl {
@@ -100,26 +106,33 @@ class Budget implements BudgetControl {
   }
 }
 
-// Runs inside the isolate. Wraps each host reference so errors come back as real Errors with `code`,
-// then runs the user code as an async function body and JSON-encodes what it returns.
-const PRELUDE = `
-const __hsm_call = __hsm.call;
-const __hsm_log = __hsm.log;
-delete globalThis.__hsm;
-globalThis.console = Object.freeze({
-  log: (...a) => __hsm_log.applySync(undefined, [a.map((x) => typeof x === 'string' ? x : JSON.stringify(x)).join(' ')]),
-});
-function __hsm_bind(ns, fn) {
-  return async (...args) => {
-    const raw = await __hsm_call.apply(undefined, [ns, fn, JSON.stringify(args)], { result: { promise: true } });
-    const res = JSON.parse(raw);
+// Runs inside the isolate, as its own script before the user's. Everything it holds on to — the host
+// references, the wrapper — lives in the closure, so user code (a separate script) can never name it.
+// It installs `console` and one frozen object per binding namespace, and removes `__hsm` from the global.
+const prelude = (spec: Record<string, string[]>) => `(() => {
+  const call = globalThis.__hsm.call;
+  const log = globalThis.__hsm.log;
+  delete globalThis.__hsm;
+  const stringify = JSON.stringify;
+  const parse = JSON.parse;
+  globalThis.console = Object.freeze({
+    log: (...a) => log.applySync(undefined, [stringify(a.map((x) => x === undefined ? null : x))]),
+  });
+  const bind = (ns, fn) => async (...args) => {
+    const raw = await call.apply(undefined, [ns, fn, stringify(args)], { result: { promise: true } });
+    const res = parse(raw);
     if (res.ok) return res.value;
     const err = new Error(res.error.message);
     err.code = res.error.code;
     throw err;
   };
-}
-`;
+  const spec = ${JSON.stringify(spec)};
+  for (const ns of Object.keys(spec)) {
+    const fns = {};
+    for (const fn of spec[ns]) fns[fn] = bind(ns, fn);
+    globalThis[ns] = Object.freeze(fns);
+  }
+})();`;
 
 function toJson(value: unknown): string {
   return JSON.stringify(value === undefined ? null : value);
@@ -127,6 +140,7 @@ function toJson(value: unknown): string {
 
 export async function runInSandbox(run: SandboxRun): Promise<SandboxResult> {
   const limits = { ...DEFAULT_LIMITS, ...run.limits };
+  const redact = run.redact ?? ((v: unknown) => v);
   const logs: string[] = [];
   let logBytes = 0;
   const isolate = new ivm.Isolate({ memoryLimit: limits.memoryMb });
@@ -140,7 +154,9 @@ export async function runInSandbox(run: SandboxRun): Promise<SandboxResult> {
     await jail.set('globalThis', jail.derefInto());
 
     const hostCall = async (ns: string, fn: string, argsJson: string): Promise<string> => {
-      const binding = run.bindings[ns]?.[fn];
+      // Own properties only: `constructor`, `__proto__` and friends are not bindings.
+      const fns = Object.hasOwn(run.bindings, ns) ? run.bindings[ns] : undefined;
+      const binding = fns && Object.hasOwn(fns, fn) ? fns[fn] : undefined;
       if (!binding)
         return toJson({ ok: false, error: { code: 'NOT_A_BINDING', message: `${ns}.${fn} is not available` } });
       try {
@@ -152,9 +168,17 @@ export async function runInSandbox(run: SandboxRun): Promise<SandboxResult> {
         return toJson({ ok: false, error: { code, message } });
       }
     };
-    const hostLog = (line: string) => {
+    const hostLog = (argsJson: string) => {
       if (logBytes >= limits.maxLogBytes) return;
-      const text = String(line).slice(0, limits.maxLogBytes - logBytes);
+      let args: unknown[];
+      try {
+        args = JSON.parse(argsJson) as unknown[];
+      } catch {
+        args = ['[unprintable]'];
+      }
+      // Redact the values, then format: a JSON string of a secret has no key left to redact by.
+      const line = (redact(args) as unknown[]).map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ');
+      const text = line.slice(0, limits.maxLogBytes - logBytes);
       logBytes += text.length;
       logs.push(text);
     };
@@ -163,19 +187,16 @@ export async function runInSandbox(run: SandboxRun): Promise<SandboxResult> {
     await hsm.set('call', new ivm.Reference(hostCall));
     await hsm.set('log', new ivm.Reference(hostLog));
 
-    const namespaces = Object.entries(run.bindings)
-      .filter(([ns]) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(ns) && !RESERVED.has(ns))
-      .map(
-        ([ns, fns]) =>
-          `globalThis[${JSON.stringify(ns)}] = Object.freeze({ ${Object.keys(fns)
-            .filter((fn) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(fn))
-            .map((fn) => `${JSON.stringify(fn)}: __hsm_bind(${JSON.stringify(ns)}, ${JSON.stringify(fn)})`)
-            .join(', ')} });`,
-      )
-      .join('\n');
+    const spec = Object.fromEntries(
+      Object.entries(run.bindings)
+        .filter(([ns]) => IDENT.test(ns) && !RESERVED.has(ns))
+        .map(([ns, fns]) => [ns, Object.keys(fns).filter((fn) => IDENT.test(fn))]),
+    );
+    await (await isolate.compileScript(prelude(spec))).run(context);
 
+    // The user's code is a separate script: it can't see the prelude's closure.
     // Always settle with a JSON envelope so thrown errors keep their \`code\` across the boundary.
-    const source = `${PRELUDE}\n${namespaces}\n(async () => {\n${run.code}\n})().then(
+    const source = `(async () => {\n${run.code}\n})().then(
   (v) => JSON.stringify({ ok: true, value: v === undefined ? null : v }),
   (e) => JSON.stringify({ ok: false, error: { code: typeof e?.code === 'string' ? e.code : 'CODE_ERROR', message: String(e?.message ?? e) } }),
 )`;
@@ -189,17 +210,23 @@ export async function runInSandbox(run: SandboxRun): Promise<SandboxResult> {
 
     const envelope = JSON.parse(json) as
       { ok: true; value: unknown } | { ok: false; error: { code: string; message: string } };
-    if (!envelope.ok) return { ok: false, error: envelope.error, logs };
-    const valueJson = JSON.stringify(envelope.value);
+    if (!envelope.ok) return { ok: false, error: redact(envelope.error) as typeof envelope.error, logs };
+    // Redact before measuring: the preview of an oversized result is raw text, beyond key redaction.
+    const value = redact(envelope.value);
+    const valueJson = JSON.stringify(value);
     const bytes = Buffer.byteLength(valueJson);
     if (bytes > limits.maxResultBytes) {
       const preview = Buffer.from(valueJson).subarray(0, limits.maxResultBytes).toString('utf8');
       return { ok: true, value: { truncated: true, bytes, preview }, truncated: true, logs };
     }
-    return { ok: true, value: envelope.value, truncated: false, logs };
+    return { ok: true, value, truncated: false, logs };
   } catch (err) {
     budget.stop();
-    return { ok: false, error: classify(err, budget.expired, isolate), logs };
+    return {
+      ok: false,
+      error: redact(classify(err, budget.expired, isolate)) as { code: string; message: string },
+      logs,
+    };
   } finally {
     if (!isolate.isDisposed) isolate.dispose();
   }

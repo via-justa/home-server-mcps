@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { ApprovalLinkService } from './approvals/links.js';
 import { ApprovalService } from './approvals/service.js';
 import { McpTokenService } from './auth/mcp-tokens.js';
 import { OAuthService } from './auth/oauth.js';
@@ -16,12 +17,13 @@ import type { GateDeps } from './gate/pipeline.js';
 import { InstanceManager } from './instances/manager.js';
 import { runHousekeeping } from './maintenance.js';
 import type { ManagerOptions } from './instances/manager.js';
-import { ApprovalLinkService } from './notify/links.js';
 import { NotifierService } from './notify/service.js';
 import type { FetchLike } from './notify/service.js';
 import { discoverPlugins, syncPluginRegistry } from './plugins/discovery.js';
 import { PluginRepoService } from './plugins/repos.js';
 import type { FetchBytes } from './plugins/repos.js';
+import { sandboxesRunning } from './runtime/index.js';
+import { normalizeStoredSettings } from './settings.js';
 
 /**
  * Wires every core service together once (design §2). Both listeners, the scheduler and tests use
@@ -52,8 +54,16 @@ export interface AppContext {
   /** Re-scan plugin directories and update the registry (startup, after installs). */
   discoverPlugins(): ReturnType<typeof syncPluginRegistry>;
   start(): Promise<void>;
-  /** Registers cleanup to run on stop (e.g. closing open MCP sessions). */
+  /** Registers cleanup to run when draining (e.g. closing open MCP sessions). */
   onStop(fn: () => unknown): void;
+  /** Aborted when shutdown begins; long-lived responses (SSE) end on it. */
+  shutdownSignal: AbortSignal;
+  /**
+   * First step of shutdown, while the listeners still run: stops timers, cancels open approvals,
+   * runs the stop hooks and ends long-lived streams, so closing the listeners doesn't wait on them.
+   */
+  drain(): Promise<void>;
+  /** Drains (if not yet), stops plugin children and closes the database. */
   stop(): Promise<void>;
 }
 
@@ -91,51 +101,31 @@ export async function createAppContext(config: Config, opts: AppOptions = {}): P
   if (boot === 'ignored') warnings.push('ADMIN_BOOTSTRAP_* is set but users already exist; it is ignored — remove it');
 
   const instances = new InstanceManager({ db, secrets, events, now, supervisor: opts.supervisor });
-  const approvals = new ApprovalService(db, now);
-  const slugOf = (instanceId: string) => {
-    try {
-      return instances.get(instanceId).slug;
-    } catch {
-      return '';
-    }
-  };
-  approvals.on('pending', (a) =>
-    events.emit('approval.pending', {
-      approvalId: a.id,
-      instanceId: a.instanceId,
-      slug: slugOf(a.instanceId),
-      operationKey: a.operationKey,
-      summary: a.summary,
-      expiresAt: a.expiresAt,
-    }),
-  );
-  approvals.on('decided', (a) =>
-    events.emit('approval.decided', {
-      approvalId: a.id,
-      instanceId: a.instanceId,
-      slug: slugOf(a.instanceId),
-      operationKey: a.operationKey,
-      outcome: a.decision.outcome,
-      via: a.decision.via,
-      decidedBy: a.decision.decidedBy,
-    }),
-  );
+  // Stored JSON from an earlier release is brought to the current schemas once, before anything reads it.
+  normalizeStoredSettings(db);
+  instances.normalizeStoredSettings();
+  if (!config.PUBLIC_MCP_URL)
+    warnings.push(
+      'PUBLIC_MCP_URL is not set: OAuth is off (bearer tokens still work). Set it to the public address of the MCP port.',
+    );
+  const links = new ApprovalLinkService(db, now);
+  const approvals = new ApprovalService(db, links, now);
+  // An approval must not outlive the plugin process and configuration it was asked for.
+  events.on('instance.status', ({ instanceId, status }) => {
+    if (status === 'stopped') approvals.cancelForInstance(instanceId, 'endpoint_stopped');
+  });
 
   const keys = {
     attestation: secrets.deriveKey('attestation'),
     state: secrets.deriveKey('signed-state'),
   };
   const limiter = new SlidingWindowLimiter();
-  const links = new ApprovalLinkService(db, now);
-  const notifier = new NotifierService(db, secrets, links, {
-    publicMcpUrl: config.PUBLIC_MCP_URL,
+  const notifier = new NotifierService(db, secrets, {
     fetch: opts.notifyFetch,
     retryDelaysMs: opts.notifyRetryDelaysMs,
     now,
   });
   const unsubscribeNotifier = notifier.subscribe(events);
-  if (!config.PUBLIC_MCP_URL)
-    warnings.push('PUBLIC_MCP_URL is not set: approval notifications will not include approve/deny links');
   const discover = () =>
     syncPluginRegistry(
       db,
@@ -160,6 +150,21 @@ export async function createAppContext(config: Config, opts: AppOptions = {}): P
 
   const timers: NodeJS.Timeout[] = [];
   const stopHooks: (() => unknown)[] = [];
+  const draining = new AbortController();
+  const drain = async () => {
+    if (draining.signal.aborted) return;
+    draining.abort();
+    for (const t of timers) clearInterval(t);
+    // Cancelled approvals end their tool calls first, so closing sessions doesn't cut them off mid-reply.
+    approvals.cancelAll('shutdown');
+    // Give the scripts those calls belonged to a moment to return their result to the client.
+    if (sandboxesRunning() > 0) {
+      for (const until = Date.now() + 2000; sandboxesRunning() > 0 && Date.now() < until;)
+        await new Promise((r) => setTimeout(r, 20));
+      await new Promise((r) => setTimeout(r, 50)); // the reply is written after the script returns
+    }
+    for (const fn of stopHooks.splice(0).reverse()) await fn();
+  };
   const ctx: AppContext = {
     config,
     db,
@@ -201,14 +206,16 @@ export async function createAppContext(config: Config, opts: AppOptions = {}): P
     onStop(fn) {
       stopHooks.push(fn);
     },
+    shutdownSignal: draining.signal,
+    drain,
     async stop() {
-      for (const t of timers) clearInterval(t);
-      for (const fn of stopHooks.splice(0).reverse()) await fn();
+      await drain();
       unsubscribeNotifier();
-      approvals.cancelAll('shutdown');
       await instances.stopAll();
       db.$client.close();
     },
   };
+  // Grants from before instance binding (design §6.2) get the ids their slugs name today.
+  ctx.oauth.backfillInstanceIds(instances.list());
   return ctx;
 }

@@ -28,6 +28,7 @@ export class PluginSupervisor {
   private restartTimer?: NodeJS.Timeout;
   private attempt = 0;
   private generation = 0;
+  private queue: Promise<void> = Promise.resolve();
 
   constructor(private readonly opts: SupervisorOptions) {}
 
@@ -42,11 +43,48 @@ export class PluginSupervisor {
   }
 
   async start(): Promise<void> {
-    this.stopping = false;
-    await this.spawn();
+    return this.serial(async () => {
+      this.stopping = false;
+      if (this.proc) return; // already running or starting
+      await this.spawn();
+    });
   }
 
   async stop(): Promise<void> {
+    this.halt();
+    return this.serial(() => this.shutdown());
+  }
+
+  /** Restart now (e.g. after the admin changed the connection config or secrets). */
+  async restart(): Promise<void> {
+    this.halt();
+    return this.serial(async () => {
+      await this.shutdown();
+      this.attempt = 0;
+      this.stopping = false;
+      await this.spawn();
+    });
+  }
+
+  /**
+   * Lifecycle changes run one at a time, so concurrent restarts can't leave two children alive and a
+   * stop can't be undone by a start that was already under way.
+   */
+  private serial(fn: () => Promise<void>): Promise<void> {
+    const run = this.queue.then(fn);
+    this.queue = run.catch(() => undefined);
+    return run;
+  }
+
+  /** Supersedes whatever is in flight at once: a child still in `init` is killed, not waited for. */
+  private halt() {
+    this.stopping = true;
+    this.generation++;
+    clearTimeout(this.restartTimer);
+    if (this._status === 'starting') this.proc?.kill();
+  }
+
+  private async shutdown() {
     this.stopping = true;
     this.generation++;
     clearTimeout(this.restartTimer);
@@ -54,13 +92,6 @@ export class PluginSupervisor {
     this.proc = undefined;
     await proc?.stop();
     this.setStatus('stopped');
-  }
-
-  /** Restart now (e.g. after the admin changed the connection config or secrets). */
-  async restart(): Promise<void> {
-    await this.stop();
-    this.attempt = 0;
-    await this.start();
   }
 
   private setStatus(status: InstanceStatus, error?: string) {
@@ -87,12 +118,16 @@ export class PluginSupervisor {
         this.opts.initTimeoutMs ?? 30_000,
       );
     } catch (err) {
-      if (generation !== this.generation) return;
       proc.kill();
+      if (generation !== this.generation) return;
       this.scheduleRestart(`init failed: ${err instanceof Error ? err.message : String(err)}`);
       return;
     }
-    if (generation !== this.generation) return;
+    if (generation !== this.generation) {
+      // Superseded (stopped or restarted) during init: this child must not outlive its turn.
+      proc.kill();
+      return;
+    }
     this.attempt = 0;
     this.setStatus('ready');
   }
@@ -105,8 +140,11 @@ export class PluginSupervisor {
     const { initialMs, maxMs } = this.opts.backoff ?? { initialMs: 1000, maxMs: 60_000 };
     const delay = Math.min(maxMs, initialMs * 2 ** this.attempt++);
     clearTimeout(this.restartTimer);
+    const generation = this.generation;
     this.restartTimer = setTimeout(() => {
-      if (!this.stopping) void this.spawn();
+      void this.serial(async () => {
+        if (!this.stopping && generation === this.generation) await this.spawn();
+      });
     }, delay);
   }
 }

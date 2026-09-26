@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { and, asc, eq, inArray, isNull, lt, or } from 'drizzle-orm';
 import { z } from 'zod';
+import type { AccessCeiling } from '../gate/access.js';
 import { writeAudit } from '../audit.js';
 import type { Db } from '../db/index.js';
 import { oauthClients, oauthCodes, oauthGrants, oauthTokens, users } from '../db/schema.js';
@@ -204,11 +205,42 @@ export class OAuthService {
     });
   }
 
+  /**
+   * The user's password changed or they were disabled: every live grant (and its tokens) is revoked,
+   * so a stolen refresh token dies with the old password and re-enabling a user revives nothing.
+   */
+  revokeUserGrants(userId: string, reason: 'password_changed' | 'user_disabled', actor: { userId?: string } = {}) {
+    const now = this.now();
+    return this.db.transaction((tx) => {
+      const live = tx
+        .select({ id: oauthGrants.id })
+        .from(oauthGrants)
+        .where(and(eq(oauthGrants.userId, userId), isNull(oauthGrants.revokedAt)))
+        .all()
+        .map((g) => g.id);
+      if (!live.length) return 0;
+      tx.update(oauthGrants).set({ revokedAt: now }).where(inArray(oauthGrants.id, live)).run();
+      tx.update(oauthTokens).set({ revokedAt: now }).where(inArray(oauthTokens.grantId, live)).run();
+      writeAudit(tx, {
+        kind: 'auth',
+        decision: 'oauth_grants_revoked',
+        actorKind: actor.userId ? 'user' : 'system',
+        actorId: actor.userId,
+        detail: { userId, reason, grants: live.length },
+      });
+      return live.length;
+    });
+  }
+
   /** After consent: records the grant and returns a single-use code bound to PKCE, redirect and resources. */
   issueCode(input: {
     client: ClientRow;
     userId: string;
     resources: string[];
+    /** The instance each resource names, in the same order. */
+    instanceIds: string[];
+    /** Chosen on the consent page; carried by every token issued from this grant, refreshes included. */
+    access: AccessCeiling;
     codeChallenge: string;
     redirectUri: string;
   }): string {
@@ -222,6 +254,8 @@ export class OAuthService {
           clientId: input.client.id,
           userId: input.userId,
           resources: input.resources,
+          instanceIds: input.instanceIds,
+          access: input.access,
           createdAt: now,
         })
         .run();
@@ -240,7 +274,12 @@ export class OAuthService {
         decision: 'oauth_consent_granted',
         actorKind: 'user',
         actorId: input.userId,
-        detail: { clientId: input.client.clientId, name: input.client.name, resources: input.resources },
+        detail: {
+          clientId: input.client.clientId,
+          name: input.client.name,
+          resources: input.resources,
+          access: input.access,
+        },
       });
     });
     return code;
@@ -354,6 +393,8 @@ export class OAuthService {
       const grant = row && tx.select().from(oauthGrants).where(eq(oauthGrants.id, row.grantId)).get();
       if (!row || !grant || grant.clientId !== input.client.id)
         return new OAuthError('invalid_grant', 'Invalid refresh token');
+      const owner = tx.select({ disabled: users.disabled }).from(users).where(eq(users.id, grant.userId)).get();
+      if (!owner || owner.disabled) return new OAuthError('invalid_grant', 'The user of this grant is disabled');
       if (row.revokedAt) {
         this.revokeFamily(tx, row.familyId);
         writeAudit(tx, {
@@ -391,8 +432,11 @@ export class OAuthService {
     });
   }
 
-  /** Validates an access token for an MCP request to `resource`. */
-  verifyAccess(token: string, resource: string) {
+  /**
+   * Validates an access token for an MCP request to one instance. The token's resources are mapped to
+   * the instance ids recorded at consent, so a slug that was renamed or re-used matches nothing new.
+   */
+  verifyAccess(token: string, instanceId: string) {
     if (!token.startsWith(ACCESS_PREFIX)) return null;
     const found = this.db
       .select({ token: oauthTokens, grant: oauthGrants, client: oauthClients, user: users })
@@ -406,7 +450,45 @@ export class OAuthService {
     const { token: t, grant, client, user } = found;
     if (t.revokedAt || grant.revokedAt || client.revokedAt || user.disabled) return null;
     if (t.expiresAt.getTime() <= this.now().getTime()) return null;
-    return { inAudience: t.resources.includes(canonicalResource(resource)), client, user, grantId: grant.id };
+    const ids = grant.instanceIds ?? [];
+    const granted = t.resources.map((r) => ids[grant.resources.indexOf(r)]).filter((id) => id !== undefined);
+    return {
+      inAudience: granted.includes(instanceId),
+      client,
+      user,
+      grantId: grant.id,
+      access: grant.access,
+    };
+  }
+
+  /** An instance was deleted: grants left with no other instance are revoked with their tokens. */
+  forgetInstance(instanceId: string) {
+    const now = this.now();
+    this.db.transaction((tx) => {
+      for (const g of tx.select().from(oauthGrants).where(isNull(oauthGrants.revokedAt)).all()) {
+        if (!g.instanceIds?.includes(instanceId)) continue;
+        if (g.instanceIds.some((id) => id !== instanceId)) continue;
+        tx.update(oauthGrants).set({ revokedAt: now }).where(eq(oauthGrants.id, g.id)).run();
+        tx.update(oauthTokens).set({ revokedAt: now }).where(eq(oauthTokens.grantId, g.id)).run();
+      }
+    });
+  }
+
+  /**
+   * One-time upgrade for grants from before `instance_ids`: map each resource URL's slug to the
+   * instance that has it now (what those grants effectively meant). Unmatched resources map to nothing.
+   */
+  backfillInstanceIds(instances: { id: string; slug: string }[]): number {
+    const bySlug = new Map(instances.map((i) => [i.slug, i.id]));
+    let n = 0;
+    for (const g of this.db.select().from(oauthGrants).where(isNull(oauthGrants.instanceIds)).all()) {
+      // The slug is the last path segment: PUBLIC_MCP_URL may carry a path (`https://host/mcp/<slug>`).
+      const slugOf = (r: string) => new URL(r).pathname.split('/').filter(Boolean).at(-1) ?? '';
+      const ids = g.resources.map((r) => bySlug.get(slugOf(r)) ?? '');
+      this.db.update(oauthGrants).set({ instanceIds: ids }).where(eq(oauthGrants.id, g.id)).run();
+      n++;
+    }
+    return n;
   }
 
   purgeExpired(): number {

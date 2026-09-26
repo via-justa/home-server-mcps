@@ -2,7 +2,9 @@
 
 export type AuthMode = 'external' | 'bearer' | 'oauth' | 'bearer+oauth';
 export const AUTH_MODES: AuthMode[] = ['external', 'bearer', 'oauth', 'bearer+oauth'];
-export type Level = 'none' | 'read' | 'write';
+export type Level = 'none' | 'read' | 'ask' | 'write';
+export const LEVELS: Level[] = ['none', 'read', 'ask', 'write'];
+export type Ceiling = 'read' | 'write';
 
 export interface PublicUser {
   id: string;
@@ -26,7 +28,7 @@ export interface SessionInfo {
 
 export interface InstanceSettings {
   approvalTimeoutMs: number;
-  allowPortalOnlyApprovals: boolean;
+  formElicitationApprovals: 'off' | 'writes';
   executePerMinute: number;
   writesPerMinute: number;
   sandbox: { timeoutMs: number; memoryMb: number; maxResultBytes: number };
@@ -54,16 +56,16 @@ export interface Instance {
     enabled: boolean;
     status: string;
     labels?: { operation: string; operations: string };
+    /** The plugin offers best-practice guides (attestation keys). */
+    attestation?: boolean;
   };
   endpointUrl?: string;
   effectiveAuthMode?: AuthMode;
-  pendingApprovals?: number;
 }
 
 export interface Overview {
   instances: Instance[];
   plugins: { id: string; pluginId: string; status: string; enabled: boolean }[];
-  pendingApprovals: number;
   warnings: string[];
   publicMcpUrl: string | null;
 }
@@ -139,7 +141,7 @@ export interface GroupSummary {
   label: string;
   level: Level;
   stale: boolean;
-  counts: { read: number; write: number; locked: number; pendingReview: number };
+  counts: { read: number; write: number; locked: number; pendingReview: number; overridden: number };
 }
 
 export interface BulkPreview {
@@ -160,18 +162,23 @@ export interface Operation {
   inferredReason: string | null;
   locked: boolean;
   attestationRequired: boolean;
-  excluded: boolean;
-  lockedOptIn: boolean;
+  /** The operation's own level; null follows its group. */
+  levelOverride: Level | null;
+  /** The level in force (own, else the group's). */
+  level: Level;
   writeAcknowledged: boolean;
   needsReview: boolean;
   matchProfile: string | null;
   group: string | null;
   reachable: boolean;
+  /** What a call does: run (read), approve (asks a human), auto (auto-approved write). */
+  mode: 'run' | 'approve' | 'auto' | null;
+  pendingReview: boolean;
   reason: string | null;
 }
 
 export type MatchCondition =
-  | { field: string; op: 'eq' | 'in' | 'prefix' | 'range' | 'bool'; value: unknown }
+  | { field: string; op: 'eq' | 'in' | 'prefix' | 'range' | 'bool' | 'any'; value?: unknown }
   | { field: '$targets'; areas?: string[]; entities?: string[]; domains?: string[] };
 
 export interface Rule {
@@ -186,6 +193,8 @@ export interface Rule {
   createdAt: string;
   operation: { id: string; key: string; locked: boolean; matchProfile: string | null };
   inert: string | null;
+  /** Last time the conditions held but the call had parameters the rule doesn't accept. */
+  strictMissAt: string | null;
 }
 
 export interface RegistryEntry {
@@ -194,28 +203,6 @@ export interface RegistryEntry {
   name: string | null;
   parentId: string | null;
   domain: string | null;
-}
-
-export interface Approval {
-  id: string;
-  instanceId: string;
-  operationId: string;
-  paramsDisplay: unknown;
-  resolvedTargets: unknown;
-  summary: string;
-  confirmLiteral: string | null;
-  diff: unknown;
-  clientKind: string | null;
-  clientId: string | null;
-  requestedAt: string;
-  expiresAt: string;
-  status: 'pending' | 'approved' | 'denied' | 'timed_out' | 'cancelled';
-  decidedBy: string | null;
-  decidedVia: string | null;
-  decidedAt: string | null;
-  requiresConfirmation: boolean;
-  operation: { key: string; classification: string };
-  instance: { id: string; slug: string; displayName: string };
 }
 
 export interface AuditRow {
@@ -241,6 +228,7 @@ export interface Token {
   id: string;
   name: string;
   scope: string[];
+  access: Ceiling;
   createdAt: string;
   expiresAt: string | null;
   lastUsedAt: string | null;
@@ -261,6 +249,7 @@ export interface OAuthClient {
 export interface Grant {
   id: string;
   resources: string[];
+  access: Ceiling;
   createdAt: string;
   revokedAt: string | null;
   client: { id: string; clientId: string; name: string };
@@ -296,20 +285,9 @@ export interface AvailablePlugin {
 }
 
 export type NotifyEvent =
-  | 'approval.pending'
-  | 'approval.decided'
-  | 'approval.timed_out'
-  | 'instance.error'
-  | 'instance.recovered'
-  | 'plugin.crashed'
-  | 'sync.failed'
-  | 'sync.pending_review'
-  | 'auth.lockout';
+  'instance.error' | 'instance.recovered' | 'plugin.crashed' | 'sync.failed' | 'sync.pending_review' | 'auth.lockout';
 
 export const NOTIFY_EVENTS: NotifyEvent[] = [
-  'approval.pending',
-  'approval.decided',
-  'approval.timed_out',
   'instance.error',
   'instance.recovered',
   'plugin.crashed',

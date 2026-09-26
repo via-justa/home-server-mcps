@@ -11,13 +11,14 @@ http://admin.lan:8081             → Admin portal (separate port, login require
 
 Each endpoint exposes two MCP tools, `search(code)` and `execute(code)`. Model-authored code runs inside an `isolated-vm` sandbox, and every upstream call passes through a permission gate:
 
-- Reads run immediately.
-- Writes need a human approval, given through MCP elicitation, the portal, or an ntfy/webhook link. The exception is a write that matches a narrow pre-approval rule.
-- Destructive operations are `locked`: they need typed confirmation and can never be pre-approved.
+- Each operation has an access level, set per group with per-operation exceptions: **None**, **Read** (reads only), **Ask** (writes need a human approval, unless a narrow pre-approval rule matches) or **Write** (writes run without asking once acknowledged).
+- Approvals are given on an approval page that the MCP client asks you to open (URL-mode elicitation), signed in with your authenticator app. The client that made the call can't approve it.
+- Destructive operations are `locked`: they are off until you set them to Ask, always need a human, a typed confirmation and a fresh authenticator code, and can never be pre-approved or set to Write.
+- Each connected client gets an access ceiling when you connect it (OAuth consent) or create its token: read only by default.
 
 **Design:** [`docs/design/unified-mcp-server.md`](docs/design/unified-mcp-server.md). The original per-server designs and UI mockups it builds on are in [`docs/reference/`](docs/reference/).
 
-> **Status:** the core is complete (design §13, phases 0–16): encryption, catalog sync with group-level access, the permission-confined plugin host, the `isolated-vm` sandbox, the permission gate with pre-approval rules and human approval, admin auth (local + TOTP + OIDC), MCP auth (external, bearer, OAuth 2.1), the Admin API and portal, ntfy/webhook notifications with approval links, plugin repositories with minisign signing, and maintenance jobs. Not yet: the TrueNAS, Seerr and Home Assistant plugin logic (phases 17–19). See the progress table in design §13.
+> **Status:** the core is complete (design §13, phases 0–16): encryption, catalog sync with access levels, the permission-confined plugin host, the `isolated-vm` sandbox, the permission gate with pre-approval rules and human approval, admin auth (local + TOTP + OIDC), MCP auth (external, bearer, OAuth 2.1), the Admin API and portal, ntfy/webhook notifications, plugin repositories with minisign signing, and maintenance jobs. Not yet: the TrueNAS, Seerr and Home Assistant plugin logic (phases 17–19). See the progress table in design §13.
 
 ## Layout
 

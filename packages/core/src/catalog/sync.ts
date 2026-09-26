@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto';
+import type { Manifest } from '@home-server-mcps/plugin-sdk';
 import { SyncCatalogResultSchema } from '@home-server-mcps/plugin-sdk';
 import { and, eq, inArray } from 'drizzle-orm';
 import { writeAudit } from '../audit.js';
 import type { Db } from '../db/index.js';
 import { operationGroupAliases, operationGroups, operations, pluginInstances, preApprovalRules } from '../db/schema.js';
 import { ValidationError } from '../errors.js';
+import { MatchSchema } from '../gate/match.js';
+import { matchMisfit } from './rules.js';
 
 type OperationRow = typeof operations.$inferSelect;
 
@@ -14,12 +17,17 @@ export interface SyncSummary {
   staled: number;
   restored: number;
   newGroups: string[];
-  /** Writes (new, or reclassified read → write) now waiting for acknowledgement. */
+  /** Writes (new, reclassified read → write, changed, or back from stale) now waiting for acknowledgement. */
   pendingReview: string[];
   /** Operations that became locked in this sync; their pre-approval rules were disabled. */
   newlyLocked: string[];
+  /** Rules disabled because their operation became locked or their match no longer fits it. */
   rulesDisabled: number;
 }
+
+/** What an acknowledgement covers: a change to any of these makes the write ask again. */
+const fingerprint = (op: Pick<OperationRow, 'kind' | 'paramsSchema' | 'matchProfile' | 'locked'>) =>
+  JSON.stringify([op.kind, op.paramsSchema ?? null, op.matchProfile ?? null, op.locked]);
 
 const isEffectiveWrite = (op: Pick<OperationRow, 'classification' | 'locked'>) =>
   op.locked || op.classification === 'write';
@@ -30,10 +38,20 @@ const isEffectiveWrite = (op: Pick<OperationRow, 'classification' | 'locked'>) =
  *
  * - Operations missing from the result are marked `stale`, never deleted (history is kept).
  * - `locked` always follows the plugin seed; admin overrides survive unless the op becomes locked.
- * - New writes, and reads reclassified to writes, arrive unacknowledged (quarantined).
+ * - New writes, and reads reclassified to writes, arrive unacknowledged (quarantined). So does an
+ *   acknowledged write whose parameters, kind, match profile or lock changed, or that returns from
+ *   stale: the admin acknowledged what it was, not what it became.
+ * - Enabled pre-approval rules are re-checked against the new catalog (and the plugin's match
+ *   profiles, when given); rules that no longer fit are disabled and audited.
  * - Plugin groups are mapped through admin aliases; missing groups are created at `read`.
  */
-export function applyCatalogSync(db: Db, instanceId: string, rawResult: unknown, now = new Date()): SyncSummary {
+export function applyCatalogSync(
+  db: Db,
+  instanceId: string,
+  rawResult: unknown,
+  now = new Date(),
+  manifest?: Pick<Manifest, 'matchProfiles'>,
+): SyncSummary {
   const result = SyncCatalogResultSchema.parse(rawResult);
   const seen = new Set<string>();
   for (const d of result.operations) {
@@ -106,7 +124,8 @@ export function applyCatalogSync(db: Db, instanceId: string, rawResult: unknown,
         inferredClassification: d.classification,
         inferredReason: d.classificationReason,
         locked,
-        typedConfirmation: d.typedConfirmation ?? locked,
+        // A locked operation always needs the typed confirmation, whatever the plugin says.
+        typedConfirmation: locked || (d.typedConfirmation ?? false),
         needsReview: d.needsReview,
         matchProfile: d.matchProfile ?? null,
         paramsSchema: d.paramsSchema ?? null,
@@ -132,15 +151,17 @@ export function applyCatalogSync(db: Db, instanceId: string, rawResult: unknown,
         continue;
       }
 
-      const becameWrite = nowWrite && !isEffectiveWrite(prev);
       const becameLocked = locked && !prev.locked;
+      const changed = fingerprint(prev) !== fingerprint(fields) || prev.stale;
+      const becameWrite = nowWrite && (!isEffectiveWrite(prev) || (prev.writeAcknowledged && changed));
       tx.update(operations)
         .set({
           ...fields,
-          // The plugin can add the attestation requirement; only an admin can remove it.
-          attestationRequired: prev.attestationRequired || d.attestationRequired,
+          // The plugin can add the attestation requirement; only an admin can remove it (and then it stays off).
+          attestationRequired: prev.attestationRequired || (d.attestationRequired && !prev.attestationWaived),
           ...(becameWrite ? { writeAcknowledged: false, acknowledgedAt: null, acknowledgedBy: null } : {}),
-          ...(becameLocked ? { lockedOptIn: false } : {}),
+          // A newly locked op starts closed again: it needs its own `ask` level to be callable.
+          ...(becameLocked ? { levelOverride: null } : {}),
         })
         .where(eq(operations.id, prev.id))
         .run();
@@ -162,6 +183,28 @@ export function applyCatalogSync(db: Db, instanceId: string, rawResult: unknown,
         .set({ enabled: false, updatedAt: now })
         .where(and(inArray(preApprovalRules.operationId, summary.newlyLocked), eq(preApprovalRules.enabled, true)))
         .run().changes;
+    }
+
+    // Rules name fields of the operation's match profile; a plugin update can remove or retype them.
+    const misfits: { ruleId: string; operationKey: string; reason: string }[] = [];
+    if (manifest) {
+      const enabled = tx
+        .select({ rule: preApprovalRules, op: operations })
+        .from(preApprovalRules)
+        .innerJoin(operations, eq(preApprovalRules.operationId, operations.id))
+        .where(and(eq(preApprovalRules.instanceId, instanceId), eq(preApprovalRules.enabled, true)))
+        .all();
+      for (const { rule, op } of enabled) {
+        const match = MatchSchema.safeParse(rule.match);
+        const misfit = match.success ? matchMisfit(manifest, op, match.data) : match.error;
+        if (!misfit) continue;
+        tx.update(preApprovalRules)
+          .set({ enabled: false, updatedAt: now })
+          .where(eq(preApprovalRules.id, rule.id))
+          .run();
+        misfits.push({ ruleId: rule.id, operationKey: op.key, reason: misfit.message });
+      }
+      summary.rulesDisabled += misfits.length;
     }
 
     // A group is stale when none of its operations are live; its level is kept in case they return.
@@ -200,7 +243,20 @@ export function applyCatalogSync(db: Db, instanceId: string, rawResult: unknown,
       },
       now,
     );
-    if (summary.rulesDisabled > 0) {
+    if (misfits.length > 0) {
+      writeAudit(
+        tx,
+        {
+          kind: 'config',
+          instanceId,
+          decision: 'rules_disabled_operation_changed',
+          actorKind: 'system',
+          detail: { rules: misfits },
+        },
+        now,
+      );
+    }
+    if (summary.newlyLocked.length > 0 && summary.rulesDisabled > misfits.length) {
       writeAudit(
         tx,
         {
@@ -208,7 +264,7 @@ export function applyCatalogSync(db: Db, instanceId: string, rawResult: unknown,
           instanceId,
           decision: 'rules_disabled_operation_locked',
           actorKind: 'system',
-          detail: { operations: newlyLockedKeys, rulesDisabled: summary.rulesDisabled },
+          detail: { operations: newlyLockedKeys, rulesDisabled: summary.rulesDisabled - misfits.length },
         },
         now,
       );

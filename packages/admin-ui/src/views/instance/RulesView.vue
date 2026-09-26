@@ -4,7 +4,7 @@ import { errorText, http } from '../../api';
 import ChipsInput from '../../components/ChipsInput.vue';
 import ModalDialog from '../../components/ModalDialog.vue';
 import RegistryPicker from '../../components/RegistryPicker.vue';
-import { REASON_LABELS, formatDate } from '../../format';
+import { REASON_LABELS, ago, formatDate } from '../../format';
 import type { Instance, MatchCondition, MatchField, Operation, PluginRow, Rule } from '../../types';
 
 /**
@@ -46,12 +46,18 @@ interface FieldValue {
   min: string;
   max: string;
   bool: boolean | null;
+  /** Accept any value for this parameter (or its absence) instead of constraining it. */
+  any: boolean;
   targets: { areas: string[]; entities: string[]; domains: string[] };
 }
 interface Draft {
   id?: string;
   operationId: string;
   values: Record<string, FieldValue>;
+  /** Other parameters (JSON pointers) accepted with any value. */
+  extraAny: string[];
+  /** Accept any parameters at all (`{ field: '', op: 'any' }`). */
+  anyParams: boolean;
   rateLimit: string;
   windowMinutes: string;
   expiresAt: string;
@@ -68,6 +74,7 @@ const emptyValue = (): FieldValue => ({
   min: '',
   max: '',
   bool: null,
+  any: false,
   targets: { areas: [], entities: [], domains: [] },
 });
 const draftOp = computed(() => ops.value.find((o) => o.id === draft.value?.operationId));
@@ -94,7 +101,16 @@ function localDateTime(iso: string | null) {
 
 function edit(rule?: Rule) {
   const values: Record<string, FieldValue> = {};
+  const extraAny: string[] = [];
+  let anyParams = false;
+  const profile = rule?.operation.matchProfile ? (profiles.value[rule.operation.matchProfile] ?? []) : [];
   for (const c of rule?.match ?? []) {
+    if (c.field !== '$targets' && 'op' in c && c.op === 'any') {
+      if (c.field === '') anyParams = true;
+      else if (profile.some((f) => f.field === c.field)) values[c.field] = { ...emptyValue(), any: true };
+      else extraAny.push(c.field);
+      continue;
+    }
     const v = emptyValue();
     if (c.field === '$targets') {
       const t = c as { areas?: string[]; entities?: string[]; domains?: string[] };
@@ -115,6 +131,8 @@ function edit(rule?: Rule) {
     id: rule?.id,
     operationId: rule?.operationId ?? '',
     values,
+    extraAny,
+    anyParams,
     rateLimit: rule?.rateLimit?.toString() ?? '',
     windowMinutes: rule?.windowSeconds ? String(rule.windowSeconds / 60) : '',
     expiresAt: localDateTime(rule?.expiresAt ?? null),
@@ -146,7 +164,8 @@ function buildMatch(): MatchCondition[] {
       continue;
     }
     const op = f.op!;
-    if (op === 'in' && v.list.length) out.push({ field: f.field, op, value: v.list });
+    if (v.any) out.push({ field: f.field, op: 'any' });
+    else if (op === 'in' && v.list.length) out.push({ field: f.field, op, value: v.list });
     else if (op === 'range' && (v.min !== '' || v.max !== '')) {
       out.push({
         field: f.field,
@@ -157,6 +176,12 @@ function buildMatch(): MatchCondition[] {
     else if ((op === 'eq' || op === 'prefix') && v.text !== '') {
       out.push({ field: f.field, op, value: f.widget === 'number' ? Number(v.text) : v.text });
     }
+  }
+  const d = draft.value!;
+  if (d.anyParams) out.push({ field: '', op: 'any' });
+  for (const field of d.extraAny) {
+    const pointer = field.startsWith('/') ? field : `/${field}`;
+    if (!out.some((c) => c.field === pointer)) out.push({ field: pointer, op: 'any' });
   }
   return out;
 }
@@ -216,6 +241,7 @@ function describe(c: MatchCondition, rule: Rule): string {
   }
   const pc = c as { field: string; op: string; value: unknown };
   const v = pc.value;
+  if (pc.op === 'any') return pc.field === '' ? 'any other parameters' : `${label(pc.field)}: any value`;
   switch (pc.op) {
     case 'prefix':
       return `${label(pc.field)} starts with "${String(v)}"`;
@@ -267,12 +293,16 @@ watch(draft, (d) => {
             <td>
               <span class="mono">{{ r.operation.key }}</span>
               <div v-if="r.inert" class="pill warn">inert: {{ reasonText(r.inert) }}</div>
+              <div v-if="r.strictMissAt" class="small warn-text">
+                Skipped a call with parameters this rule doesn't accept ({{ ago(r.strictMissAt) }}). Edit it to accept
+                them with “any value” if that's intended.
+              </div>
             </td>
             <td class="small">
               <template v-if="r.match.length">
                 <div v-for="(c, i) in r.match" :key="i">{{ describe(c, r) }}</div>
               </template>
-              <span v-else class="muted">any parameters</span>
+              <span v-else class="muted">calls without parameters</span>
             </td>
             <td class="small">
               <div v-if="r.rateLimit">{{ r.rateLimit }} per {{ (r.windowSeconds ?? 3600) / 60 }} min</div>
@@ -313,14 +343,19 @@ watch(draft, (d) => {
 
       <template v-if="draftOp">
         <h2>Only when</h2>
-        <p v-if="!fields.length" class="small muted">
-          The plugin declares no match fields for this operation, so the rule would allow every call to it.
+        <p class="small muted">
+          Strict: a call matches only if every parameter it sends is covered here. Leave a field empty to require that
+          the parameter is absent, or tick “any value”.
         </p>
         <div v-for="f in fields" :key="f.field" class="field">
           <label
             >{{ f.label }} <span class="mono muted small">{{ f.field }}{{ f.op ? ` · ${f.op}` : '' }}</span></label
           >
+          <label v-if="f.field !== '$targets'" class="row small any"
+            ><input v-model="valueOf(f).any" type="checkbox" /> any value</label
+          >
           <RegistryPicker v-if="f.field === '$targets'" v-model="valueOf(f).targets" :instance-id="instance.id" />
+          <template v-else-if="valueOf(f).any" />
           <ChipsInput
             v-else-if="f.op === 'in'"
             v-model="valueOf(f).list"
@@ -341,12 +376,12 @@ watch(draft, (d) => {
                   : ($event.target as HTMLSelectElement).value === 'true'
             "
           >
-            <option value="">any</option>
+            <option value="">—</option>
             <option value="true">true</option>
             <option value="false">false</option>
           </select>
           <select v-else-if="f.optionsSource && options[f.optionsSource]?.length" v-model="valueOf(f).text">
-            <option value="">any</option>
+            <option value="">—</option>
             <option v-for="o in options[f.optionsSource]" :key="o.value" :value="o.value">{{ o.label }}</option>
           </select>
           <input
@@ -357,6 +392,14 @@ watch(draft, (d) => {
           />
         </div>
       </template>
+
+      <div v-if="draftOp" class="field">
+        <label>Other parameters accepted with any value</label>
+        <ChipsInput v-model="draft.extraAny" placeholder="e.g. /quota" />
+        <label class="row small"
+          ><input v-model="draft.anyParams" type="checkbox" /> Accept any other parameters (not recommended)</label
+        >
+      </div>
 
       <div class="form-grid">
         <div class="field">
@@ -403,6 +446,14 @@ watch(draft, (d) => {
 </template>
 
 <style scoped>
+.warn-text {
+  color: var(--warn);
+  margin-top: 4px;
+}
+.any {
+  float: right;
+  margin: -2px 0 0;
+}
 .off td {
   opacity: 0.55;
 }

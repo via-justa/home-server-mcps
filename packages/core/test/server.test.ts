@@ -80,10 +80,11 @@ describe('port separation', () => {
 });
 
 describe('mcp listener', () => {
-  it('returns a JSON-RPC 404 for an unknown slug', async () => {
+  it('answers an unknown slug like any endpoint that needs credentials (review L16)', async () => {
     const res = await fetch(`${mcp}/nope`, { method: 'POST' });
-    expect(res.status).toBe(404);
-    expect(await res.json()).toMatchObject({ jsonrpc: '2.0', error: { code: -32001 } });
+    expect(res.status).toBe(401);
+    expect(res.headers.get('www-authenticate')).toBe('Bearer');
+    expect(await res.json()).toMatchObject({ error: 'unauthorized' });
   });
 });
 

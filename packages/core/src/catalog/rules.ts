@@ -45,18 +45,30 @@ function loadOperation(db: Db, instanceId: string, operationId: string): Operati
   return op;
 }
 
-/** Param conditions must use fields the plugin declared for this operation (design §8.3). */
-function checkMatchAgainstProfile(manifest: Manifest, op: OperationRow, match: RuleInput['match']) {
-  if (match.length === 0) return;
+/** Why a rule's match doesn't fit the operation's declared fields (design §8.3), or null if it does. */
+export function matchMisfit(
+  manifest: Pick<Manifest, 'matchProfiles'>,
+  op: Pick<OperationRow, 'key' | 'matchProfile'>,
+  match: RuleInput['match'],
+): ValidationError | null {
+  if (match.every((c) => c.field !== '$targets' && 'op' in c && c.op === 'any')) return null;
   const profile = op.matchProfile ? manifest.matchProfiles[op.matchProfile] : undefined;
-  if (!profile) throw new ValidationError('no_match_profile', `${op.key} has no matchable fields; use an empty match`);
+  if (!profile) return new ValidationError('no_match_profile', `${op.key} has no matchable fields; use an empty match`);
   for (const c of match) {
+    // "Any value" can name any parameter: it only widens strict matching, never narrows a condition.
+    if (c.field !== '$targets' && 'op' in c && c.op === 'any') continue;
     const field = profile.find((f) => f.field === c.field);
-    if (!field) throw new ValidationError('unknown_match_field', `${c.field} is not a matchable field of ${op.key}`);
+    if (!field) return new ValidationError('unknown_match_field', `${c.field} is not a matchable field of ${op.key}`);
     if (c.field !== '$targets' && 'op' in c && field.op !== c.op) {
-      throw new ValidationError('wrong_match_op', `${c.field} must use the "${field.op}" operator`);
+      return new ValidationError('wrong_match_op', `${c.field} must use the "${field.op}" operator`);
     }
   }
+  return null;
+}
+
+function checkMatchAgainstProfile(manifest: Manifest, op: OperationRow, match: RuleInput['match']) {
+  const misfit = matchMisfit(manifest, op, match);
+  if (misfit) throw misfit;
 }
 
 function describe(db: Db, instanceId: string, rule: RuleRow, op: OperationRow) {
@@ -64,8 +76,11 @@ function describe(db: Db, instanceId: string, rule: RuleRow, op: OperationRow) {
   return {
     ...rule,
     operation: { id: op.id, key: op.key, locked: op.locked, matchProfile: op.matchProfile },
-    /** A rule on an unreachable operation never fires; the UI flags it (design §5.2.1). */
-    inert: rule.enabled && !access.reachable ? access.reason : null,
+    /**
+     * Rules only apply at level `ask`: on an unreachable operation, or one at level `write`, a rule
+     * never fires; the UI flags it (design §5.2.1).
+     */
+    inert: !rule.enabled ? null : !access.reachable ? access.reason : access.level === 'write' ? 'level_write' : null,
   };
 }
 

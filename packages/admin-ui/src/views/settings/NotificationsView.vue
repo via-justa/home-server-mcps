@@ -13,14 +13,11 @@ const error = ref<string>();
 const notice = ref<string>();
 
 const EVENT_LABELS: Record<NotifyEvent, string> = {
-  'approval.pending': 'Approval needed (with approve/deny links)',
-  'approval.decided': 'Approval decided',
-  'approval.timed_out': 'Approval timed out',
   'instance.error': 'Endpoint went down',
   'instance.recovered': 'Endpoint recovered',
   'plugin.crashed': 'Plugin crashed',
   'sync.failed': 'Catalog sync failed',
-  'sync.pending_review': 'New write operations need review',
+  'sync.pending_review': 'New write operations found (they ask until acknowledged)',
   'auth.lockout': 'Sign-in lockout',
 };
 
@@ -66,7 +63,7 @@ function edit(ch?: Notifier) {
     token: '',
     hmacSecret: '',
     clear: {},
-    events: ch?.events ?? ['approval.pending', 'instance.error', 'sync.failed', 'sync.pending_review'],
+    events: ch?.events ?? ['instance.error', 'sync.failed', 'sync.pending_review'],
     allInstances: !ch?.instanceFilter?.length,
     instanceFilter: ch?.instanceFilter ?? [],
     enabled: ch?.enabled ?? true,
@@ -124,8 +121,8 @@ async function remove(ch: Notifier) {
   <div class="stack">
     <div class="row">
       <p class="small muted grow">
-        Notifications carry summaries and links, never parameters or secrets. Approve/deny links open a page on the MCP
-        address that still asks you to sign in.
+        Notifications keep you informed; they carry summaries, never parameters or secrets. Approvals happen in your MCP
+        client, which opens the approval page.
       </p>
       <button class="btn btn-primary" type="button" @click="edit()">Add channel</button>
     </div>

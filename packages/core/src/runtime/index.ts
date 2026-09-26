@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { and, asc, eq } from 'drizzle-orm';
 import { writeAudit } from '../audit.js';
-import { listGroups } from '../catalog/groups.js';
+import { accessInput, listGroups } from '../catalog/groups.js';
 import { findRegistryEntries } from '../catalog/registry.js';
 import type { Db } from '../db/index.js';
 import { guides, operationGroups, operations } from '../db/schema.js';
 import { effectiveAccess } from '../gate/access.js';
+import type { AccessPrincipal } from '../gate/access.js';
 import { currentGuide, issueAttestationKey } from '../gate/attestation.js';
-import { createGateBindings } from '../gate/pipeline.js';
+import { createGateBindings, principalKey } from '../gate/pipeline.js';
 import type { CallerContext, GateDeps, InstanceRuntime } from '../gate/pipeline.js';
 import { BindingError, runInSandbox } from '../sandbox/index.js';
 import type { Binding, SandboxResult } from '../sandbox/index.js';
@@ -17,19 +18,66 @@ import type { Binding, SandboxResult } from '../sandbox/index.js';
  * turn a tool call into `executeCode` / `searchCode` and the result back into tool output.
  */
 
+/**
+ * Caps on sandbox work (design §5.2): `executePerMinute` counts `execute` and `search` runs per
+ * principal and instance, and only so many isolates (up to `memoryMb` each) run at once per instance
+ * and in total. Over either cap the run is refused before an isolate is created.
+ */
+export const SANDBOX_CONCURRENCY = { perInstance: 4, total: 16 };
+const running = new Map<string, number>();
+let runningTotal = 0;
+
+/** Scripts running now, across all instances (shutdown waits for cancelled ones to return). */
+export const sandboxesRunning = () => runningTotal;
+
+function admit(deps: GateDeps, rt: InstanceRuntime, caller: CallerContext): SandboxResult | (() => void) {
+  const who = principalKey(caller);
+  if (!deps.limiter.take(`run:${rt.instanceId}:${who}`, rt.settings.executePerMinute, 60_000)) {
+    return {
+      ok: false,
+      error: { code: 'RATE_LIMITED', message: 'Too many search/execute calls; slow down' },
+      logs: [],
+    };
+  }
+  const here = running.get(rt.instanceId) ?? 0;
+  if (here >= SANDBOX_CONCURRENCY.perInstance || runningTotal >= SANDBOX_CONCURRENCY.total) {
+    return { ok: false, error: { code: 'BUSY', message: 'Too many scripts are running; try again shortly' }, logs: [] };
+  }
+  running.set(rt.instanceId, here + 1);
+  runningTotal++;
+  return () => {
+    running.set(rt.instanceId, (running.get(rt.instanceId) ?? 1) - 1);
+    runningTotal--;
+  };
+}
+
 export async function executeCode(
   deps: GateDeps,
   rt: InstanceRuntime,
   caller: CallerContext,
   code: string,
+  signal?: AbortSignal,
 ): Promise<SandboxResult> {
-  const result = await runInSandbox({
-    code,
-    bindings: createGateBindings(deps, rt, caller),
-    limits: rt.settings.sandbox,
-  });
-  // Each gated call's result was already redacted; this covers anything the script derived or logged.
-  return result.ok ? { ...result, value: rt.redact(result.value), logs: rt.redact(result.logs) } : result;
+  const release = admit(deps, rt, caller);
+  if (typeof release !== 'function') return release;
+  // Ends with the sandbox (return, error or timeout) or earlier, when the request or session goes away.
+  const run = new AbortController();
+  const stop = () => run.abort();
+  signal?.addEventListener('abort', stop);
+  if (signal?.aborted) stop();
+  try {
+    return await runInSandbox({
+      code,
+      bindings: createGateBindings(deps, rt, caller, run.signal),
+      limits: rt.settings.sandbox,
+      // Each gated call's result was already redacted; this covers anything the script derived or logged.
+      redact: rt.redact,
+    });
+  } finally {
+    stop();
+    signal?.removeEventListener('abort', stop);
+    release();
+  }
 }
 
 type OperationRow = typeof operations.$inferSelect;
@@ -50,7 +98,12 @@ function describeOp(op: OperationRow, groupKey: string | undefined, access: Retu
     displayName: op.displayName ?? undefined,
     group: groupKey,
     classification: op.locked ? 'locked' : op.classification,
-    needsApproval: op.locked || op.classification === 'write',
+    // Whether a call runs straight away, waits for a human, or is auto-approved at level `write`.
+    approval: access.reachable
+      ? ({ run: 'none', approve: 'required', auto: 'auto' } as const)[access.mode]
+      : op.locked || op.classification === 'write'
+        ? 'required'
+        : 'none',
     typedConfirmation: op.typedConfirmation,
     attestationRequired: op.attestationRequired,
     summary: (op.docs as { summary?: string } | null)?.summary,
@@ -58,7 +111,7 @@ function describeOp(op: OperationRow, groupKey: string | undefined, access: Retu
   };
 }
 
-function catalogBindings(db: Db, instanceId: string): Record<string, Binding> {
+function catalogBindings(db: Db, instanceId: string, principal: AccessPrincipal): Record<string, Binding> {
   const load = () => {
     const groups = new Map(
       db
@@ -77,16 +130,7 @@ function catalogBindings(db: Db, instanceId: string): Record<string, Binding> {
     return { groups, ops };
   };
   const accessOf = (op: OperationRow, groups: Map<string, typeof operationGroups.$inferSelect>) =>
-    effectiveAccess(
-      {
-        classification: op.classification,
-        locked: op.locked,
-        excluded: op.excluded,
-        lockedOptIn: op.lockedOptIn,
-        writeAcknowledged: op.writeAcknowledged,
-      },
-      groups.get(op.groupId),
-    );
+    effectiveAccess(accessInput(op), groups.get(op.groupId), principal);
 
   return {
     find: async ([rawQuery]) => {
@@ -128,9 +172,10 @@ function catalogBindings(db: Db, instanceId: string): Record<string, Binding> {
 
 /**
  * `guides.get(key)`: fetches the plugin's current best-practice guide, records its version, and
- * hands out the attestation key `execute` must present (HA §3.6). Revising a guide rotates the key.
+ * hands out the attestation key `execute` must present from the same MCP session (HA §3.6). Revising
+ * a guide rotates the key. Every read is audited: the key attests that this session was shown it.
  */
-function guideBindings(deps: GateDeps, rt: InstanceRuntime): Record<string, Binding> {
+function guideBindings(deps: GateDeps, rt: InstanceRuntime, caller: CallerContext): Record<string, Binding> {
   return {
     get: async ([key]) => {
       const op = deps.db
@@ -162,26 +207,52 @@ function guideBindings(deps: GateDeps, rt: InstanceRuntime): Record<string, Bind
           })
           .run();
       }
+      writeAudit(
+        deps.db,
+        {
+          kind: 'search',
+          instanceId: rt.instanceId,
+          operationKey: op.key,
+          decision: 'guide_read',
+          actorKind: 'mcp_client',
+          actorId: caller.client.id ?? null,
+          detail: { guideVersion: guide.version, mcpSessionId: caller.mcpSessionId ?? null },
+        },
+        deps.now?.() ?? new Date(),
+      );
       return {
         key: op.key,
         required: true,
         version: guide.version,
         content: guide.content,
-        best_practice_key: issueAttestationKey(deps.attestationKey, rt.instanceId, op.key, guide.version),
+        best_practice_key: issueAttestationKey(
+          deps.attestationKey,
+          rt.instanceId,
+          op.key,
+          guide.version,
+          caller.mcpSessionId,
+        ),
       };
     },
   };
 }
 
-function searchBindings(deps: GateDeps, rt: InstanceRuntime): Record<string, Record<string, Binding>> {
-  const bindings: Record<string, Record<string, Binding>> = { catalog: catalogBindings(deps.db, rt.instanceId) };
+function searchBindings(
+  deps: GateDeps,
+  rt: InstanceRuntime,
+  caller: CallerContext,
+): Record<string, Record<string, Binding>> {
+  const bindings: Record<string, Record<string, Binding>> = {
+    catalog: catalogBindings(deps.db, rt.instanceId, caller.principal),
+  };
   if (rt.manifest.capabilities.registry) {
     bindings.registry = {
       find: async ([q]) =>
-        findRegistryEntries(deps.db, rt.instanceId, (q ?? {}) as Parameters<typeof findRegistryEntries>[2]),
+        // Mirrored upstream attributes can hold tokens (HA camera `access_token`): redact at the source.
+        rt.redact(findRegistryEntries(deps.db, rt.instanceId, (q ?? {}) as Parameters<typeof findRegistryEntries>[2])),
     };
   }
-  if (rt.manifest.capabilities.attestation) bindings.guides = guideBindings(deps, rt);
+  if (rt.manifest.capabilities.attestation) bindings.guides = guideBindings(deps, rt, caller);
   return bindings;
 }
 
@@ -190,12 +261,21 @@ export async function searchCode(
   rt: InstanceRuntime,
   caller: CallerContext,
   code: string,
+  _signal?: AbortSignal, // search never calls the upstream; same signature as executeCode
 ): Promise<SandboxResult> {
-  const result = await runInSandbox({
-    code,
-    bindings: searchBindings(deps, rt),
-    limits: rt.settings.sandbox,
-  });
+  const release = admit(deps, rt, caller);
+  if (typeof release !== 'function') return release;
+  let result: SandboxResult;
+  try {
+    result = await runInSandbox({
+      code,
+      bindings: searchBindings(deps, rt, caller),
+      limits: rt.settings.sandbox,
+      redact: rt.redact,
+    });
+  } finally {
+    release();
+  }
   writeAudit(
     deps.db,
     {
@@ -208,5 +288,5 @@ export async function searchCode(
     },
     deps.now?.() ?? new Date(),
   );
-  return result.ok ? { ...result, value: rt.redact(result.value) } : result;
+  return result;
 }

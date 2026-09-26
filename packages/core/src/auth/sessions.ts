@@ -33,7 +33,7 @@ export class SessionService {
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  private hashId(raw: string): string {
+  hashId(raw: string): string {
     return createHmac('sha256', this.pepper).update(raw).digest('hex');
   }
 

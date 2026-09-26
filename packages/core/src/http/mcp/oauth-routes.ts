@@ -9,7 +9,7 @@ import type { SessionLimits, ValidSession } from '../../auth/sessions.js';
 import { randomToken, safeEqual, sha256, signPayload, verifyPayload } from '../../auth/tokens.js';
 import { ServiceError } from '../../errors.js';
 import { getSettings } from '../../settings.js';
-import { localLoginEnabled } from '../admin/auth.js';
+import { localLoginEnabled, mustEnrollTotp } from '../admin/auth.js';
 import { clientIp, isSecure } from '../common.js';
 import { consentPage, errorPage, loginPage, totpPage } from './pages.js';
 
@@ -19,11 +19,24 @@ import { consentPage, errorPage, loginPage, totpPage } from './pages.js';
  * only works for consent and approval pages — never for the Admin API.
  */
 
-export const UI_COOKIE = 'hsm_mcp_ui';
+/**
+ * MCP-port sign-ins are kept apart by purpose (design §2.1): a session made to consent to a client
+ * can't decide approvals, and one made to decide an approval can't authorize clients. Each has its
+ * own cookie, scoped to the pages it serves.
+ */
+export type UiPurpose = 'oauth' | 'approval';
+const UI_SESSIONS = {
+  oauth: { cookie: 'hsm_mcp_oauth', kind: 'oauth_ui', path: '/oauth' },
+  approval: { cookie: 'hsm_mcp_approve', kind: 'approval_ui', path: '/a' },
+} as const;
+/** Which kind of session a sign-in continuing to `continueTo` creates. */
+export const purposeOf = (continueTo: string): UiPurpose => (continueTo.startsWith('/a/') ? 'approval' : 'oauth');
 const UI_CSRF_COOKIE = 'hsm_mcp_csrf';
 const OIDC_COOKIE = 'hsm_mcp_oidc';
 export const UI_LIMITS: SessionLimits = { idleMs: 15 * 60_000, absoluteMs: 60 * 60_000 };
 const FORM_TTL_MS = 10 * 60_000;
+const NEEDS_TOTP =
+  'This server requires two-factor authentication. Set up your authenticator app in the admin portal (Profile) first.';
 
 /** Where a sign-in may continue to: only our own consent and approval pages. */
 export const safeContinue = (v: unknown) =>
@@ -31,8 +44,9 @@ export const safeContinue = (v: unknown) =>
     ? v
     : '/oauth/authorize';
 
-export function uiSession(ctx: AppContext, c: Context): ValidSession | null {
-  return ctx.sessions.validate(getCookie(c, UI_COOKIE), 'oauth_ui', UI_LIMITS);
+export function uiSession(ctx: AppContext, c: Context, purpose: UiPurpose): ValidSession | null {
+  const { cookie, kind } = UI_SESSIONS[purpose];
+  return ctx.sessions.validate(getCookie(c, cookie), kind, UI_LIMITS);
 }
 
 /** Double-submit CSRF for the MCP-port forms (SameSite=Strict cookie + hidden field). */
@@ -55,17 +69,38 @@ export const checkUiCsrf = (c: Context, submitted: unknown) => {
   return !!cookie && typeof submitted === 'string' && safeEqual(cookie, submitted);
 };
 
-function startUiSession(ctx: AppContext, c: Context, userId: string, method: string) {
-  const raw = ctx.sessions.create(userId, 'oauth_ui', UI_LIMITS, {
+/**
+ * When each MCP-port session last proved a TOTP code (design §5.3). Approvals need one; locked
+ * operations need a recent one. Kept in memory: after a restart the page simply asks again.
+ */
+const totpProofs = new Map<string, number>();
+
+export function recordTotpProof(ctx: AppContext, idHash: string) {
+  const now = ctx.now().getTime();
+  for (const [k, at] of totpProofs) if (now - at > UI_LIMITS.absoluteMs) totpProofs.delete(k);
+  totpProofs.set(idHash, now);
+}
+
+/** Milliseconds since this session last proved TOTP, or Infinity if it never did. */
+export function sinceTotpProof(ctx: AppContext, session: ValidSession): number {
+  const at = totpProofs.get(session.idHash);
+  return at === undefined ? Infinity : ctx.now().getTime() - at;
+}
+
+function startUiSession(ctx: AppContext, c: Context, userId: string, method: string, continueTo: string) {
+  const purpose = purposeOf(continueTo);
+  const { cookie, kind, path } = UI_SESSIONS[purpose];
+  const raw = ctx.sessions.create(userId, kind, UI_LIMITS, {
     ip: clientIp(c, ctx.config.TRUST_PROXY),
     userAgent: c.req.header('user-agent'),
   });
+  if (method === 'password+totp') recordTotpProof(ctx, ctx.sessions.hashId(raw));
   // Lax: the browser must send it when an OIDC provider redirects back into the consent flow.
-  setCookie(c, UI_COOKIE, raw, {
+  setCookie(c, cookie, raw, {
     httpOnly: true,
     secure: isSecure(c, ctx.config.TRUST_PROXY),
     sameSite: 'Lax',
-    path: '/',
+    path,
     maxAge: UI_LIMITS.absoluteMs / 1000,
   });
   ctx.users.markLogin(userId);
@@ -74,7 +109,7 @@ function startUiSession(ctx: AppContext, c: Context, userId: string, method: str
     decision: 'login',
     actorKind: 'user',
     actorId: userId,
-    detail: { method, surface: 'mcp' },
+    detail: { method, surface: 'mcp', purpose },
   });
 }
 
@@ -84,7 +119,7 @@ export function renderLogin(
   continueTo: string,
   purpose: string,
   error?: string,
-  status: 200 | 401 | 429 = 200,
+  status: 200 | 401 | 403 | 429 = 200,
 ) {
   const oidc = ctx.oidc.getSettings();
   return loginPage(
@@ -112,6 +147,28 @@ interface AuthorizeRequest extends Record<string, unknown> {
 }
 
 export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthService) {
+  // The authorization server only runs with a configured public URL (design §2.1): its issuer and every
+  // discovery document must not come from the request's Host header, which a client controls.
+  const asOff = (c: Context) => {
+    c.header('Cache-Control', 'no-store');
+    return c.json(
+      {
+        error: 'temporarily_unavailable',
+        error_description: 'OAuth is off until the server operator sets PUBLIC_MCP_URL',
+      },
+      503,
+    );
+  };
+  for (const path of [
+    '/.well-known/*',
+    '/oauth/register',
+    '/oauth/authorize',
+    '/oauth/consent',
+    '/oauth/token',
+    '/oauth/revoke',
+  ]) {
+    app.use(path, async (c, next) => (ctx.config.PUBLIC_MCP_URL ? next() : asOff(c)));
+  }
   const issuer = (c: Context) => publicMcpBase(ctx, c);
   const oauthEndpoints = (c: Context) =>
     ctx.instances
@@ -120,7 +177,7 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
         const mode = effectiveAuthMode(ctx, i.authMode);
         return mode === 'oauth' || mode === 'bearer+oauth';
       })
-      .map((i) => ({ resource: resourceUrl(issuer(c), i.slug), slug: i.slug, name: i.displayName }));
+      .map((i) => ({ resource: resourceUrl(issuer(c), i.slug), slug: i.slug, name: i.displayName, id: i.id }));
 
   // ── metadata ──
 
@@ -155,7 +212,7 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
       authorization_servers: [issuer(c)],
       bearer_methods_supported: ['header'],
       scopes_supported: ['mcp'],
-      resource_name: endpoint.instance.displayName,
+      // No resource_name: the endpoint's display name is not for unauthenticated callers.
     });
   });
 
@@ -220,7 +277,7 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
     const offered = requested.length ? available.filter((e) => requested.includes(e.resource)) : available;
     if (offered.length === 0) return back({ error: 'invalid_target', error_description: 'No endpoints accept OAuth' });
 
-    const session = uiSession(ctx, c);
+    const session = uiSession(ctx, c, 'oauth');
     const continueTo = `/oauth/authorize?${q.toString()}`;
     if (!session) return renderLogin(ctx, c, continueTo, `Sign in to let ${client.name} use your MCP endpoints.`);
 
@@ -231,7 +288,7 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
       codeChallenge: challenge,
       offered: offered.map((e) => e.resource),
       preselected: requested,
-      session: sha256(getCookie(c, UI_COOKIE) ?? ''),
+      session: sha256(getCookie(c, UI_SESSIONS.oauth.cookie) ?? ''),
     };
     return consentPage(c, {
       clientName: client.name,
@@ -239,15 +296,16 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
       username: session.user.username,
       endpoints: offered.map((e) => ({ ...e, checked: requested.includes(e.resource) })),
       formToken: signPayload(ctx.keys.state, form, FORM_TTL_MS),
+      access: 'read',
     });
   });
 
   app.post('/oauth/consent', async (c) => {
     const body = await c.req.parseBody({ all: true });
     const form = verifyPayload<AuthorizeRequest>(ctx.keys.state, typeof body.form === 'string' ? body.form : undefined);
-    const session = uiSession(ctx, c);
+    const session = uiSession(ctx, c, 'oauth');
     // The consent form is bound to the session that rendered it (and so to this browser).
-    if (!form || !session || form.session !== sha256(getCookie(c, UI_COOKIE) ?? '')) {
+    if (!form || !session || form.session !== sha256(getCookie(c, UI_SESSIONS.oauth.cookie) ?? '')) {
       return errorPage(c, 'Session expired', 'Start the connection again from your MCP client.');
     }
     const client = oauth.client(form.clientId);
@@ -270,7 +328,11 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
       return back({ error: 'access_denied' });
     }
     const chosen = ([] as unknown[]).concat(body.resource ?? []).filter((r): r is string => typeof r === 'string');
-    const resources = [...new Set(chosen.map(canonicalResource))].filter((r) => form.offered.includes(r));
+    // Bind each resource to the instance it names right now; one renamed since the form was shown drops out.
+    const current = new Map(oauthEndpoints(c).map((e) => [e.resource, e.id]));
+    const resources = [...new Set(chosen.map(canonicalResource))].filter(
+      (r) => form.offered.includes(r) && current.has(r),
+    );
     if (resources.length === 0) {
       return consentPage(c, {
         clientName: client.name,
@@ -280,6 +342,7 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
           .filter((e) => form.offered.includes(e.resource))
           .map((e) => ({ ...e, checked: false })),
         formToken: signPayload(ctx.keys.state, form, FORM_TTL_MS),
+        access: body.access === 'write' ? 'write' : 'read',
         error: 'Pick at least one endpoint, or deny.',
       });
     }
@@ -287,13 +350,16 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
       client,
       userId: session.user.id,
       resources,
+      instanceIds: resources.map((r) => current.get(r)!),
+      // Anything but an explicit "Read & write" choice is read-only (design §6.3).
+      access: body.access === 'write' ? 'write' : 'read',
       codeChallenge: form.codeChallenge,
       redirectUri: form.redirectUri,
     });
     return back({ code });
   });
 
-  // ── MCP-port sign-in (also used by approval links) ──
+  // ── MCP-port sign-in (also used by the approval page) ──
 
   app.post('/oauth/login', async (c) => {
     const body = await c.req.parseBody();
@@ -303,12 +369,12 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
     if (!localLoginEnabled(ctx)) return renderLogin(ctx, c, continueTo, 'Sign in', 'Use single sign-on.', 401);
     const ip = clientIp(c, ctx.config.TRUST_PROXY);
     const username = String(body.username ?? '').slice(0, 64);
-    if (!ctx.throttle.allowIp(ip) || ctx.throttle.lockedFor(username) > 0) {
+    if (!ctx.throttle.allowIp(ip) || ctx.throttle.lockedFor(username, 'mcp') > 0) {
       return renderLogin(ctx, c, continueTo, 'Sign in', 'Too many attempts; try again later.', 429);
     }
     const user = await ctx.users.verifyPassword(username, String(body.password ?? '').slice(0, 1024));
     if (!user) {
-      if (ctx.throttle.fail(username)) ctx.events.emit('auth.lockout', { username, ip });
+      if (ctx.throttle.fail(username, 'mcp')) ctx.events.emit('auth.lockout', { username, ip, surface: 'mcp' });
       writeAudit(ctx.db, {
         kind: 'auth',
         decision: 'login_failed',
@@ -317,6 +383,10 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
       });
       return renderLogin(ctx, c, continueTo, 'Sign in', 'Invalid username or password.', 401);
     }
+    if (mustEnrollTotp(ctx, user)) {
+      // The portal would force enrollment first; the internet-facing sign-in must not skip it.
+      return renderLogin(ctx, c, continueTo, 'Sign in', NEEDS_TOTP, 403);
+    }
     if (user.totpEnabled) {
       return totpPage(c, {
         mfa: signPayload(ctx.keys.state, { mfaUser: user.id }, 5 * 60_000),
@@ -324,8 +394,8 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
         csrf: uiCsrf(ctx, c),
       });
     }
-    ctx.throttle.succeed(username);
-    startUiSession(ctx, c, user.id, 'password');
+    ctx.throttle.succeed(username, 'mcp');
+    startUiSession(ctx, c, user.id, 'password', continueTo);
     return c.redirect(continueTo, 303);
   });
 
@@ -339,14 +409,14 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
     if (!checkUiCsrf(c, body.csrf) || !pending)
       return renderLogin(ctx, c, continueTo, 'Sign in', 'Your sign-in expired; try again.', 401);
     const user = ctx.users.get(pending.mfaUser);
-    if (ctx.throttle.lockedFor(user.username) > 0)
+    if (ctx.throttle.lockedFor(user.username, 'mcp') > 0)
       return renderLogin(ctx, c, continueTo, 'Sign in', 'Too many attempts; try again later.', 429);
     if (!ctx.users.verifySecondFactor(user.id, String(body.code ?? ''))) {
-      ctx.throttle.fail(user.username);
+      ctx.throttle.fail(user.username, 'mcp');
       return totpPage(c, { mfa: String(body.mfa), continueTo, csrf: uiCsrf(ctx, c), error: 'Invalid code.' }, 401);
     }
-    ctx.throttle.succeed(user.username);
-    startUiSession(ctx, c, user.id, 'password+totp');
+    ctx.throttle.succeed(user.username, 'mcp');
+    startUiSession(ctx, c, user.id, 'password+totp', continueTo);
     return c.redirect(continueTo, 303);
   });
 
@@ -375,8 +445,10 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
       if (state.purpose !== 'mcp_login') return errorPage(c, 'Sign-in failed', 'Unexpected sign-in flow.');
       const user = await ctx.oidc.resolveUser(ctx.users, identity);
       if (!user) return errorPage(c, 'Not allowed', 'Your account is not allowed to sign in here.', 403);
-      startUiSession(ctx, c, user.id, 'oidc');
-      return c.redirect(safeContinue(state.returnTo));
+      if (mustEnrollTotp(ctx, user)) return errorPage(c, 'Two-factor authentication required', NEEDS_TOTP, 403);
+      const continueTo = safeContinue(state.returnTo);
+      startUiSession(ctx, c, user.id, 'oidc', continueTo);
+      return c.redirect(continueTo);
     } catch (err) {
       if (err instanceof ServiceError) return errorPage(c, 'Sign-in failed', err.message);
       throw err;
@@ -449,8 +521,8 @@ export function registerOAuthRoutes(app: Hono, ctx: AppContext, oauth: OAuthServ
   });
 
   app.post('/oauth/logout', (c) => {
-    ctx.sessions.revoke(getCookie(c, UI_COOKIE));
-    deleteCookie(c, UI_COOKIE, { path: '/' });
+    ctx.sessions.revoke(getCookie(c, UI_SESSIONS.oauth.cookie));
+    deleteCookie(c, UI_SESSIONS.oauth.cookie, { path: UI_SESSIONS.oauth.path });
     return c.redirect('/oauth/authorize', 303);
   });
 }

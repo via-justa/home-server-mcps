@@ -13,13 +13,13 @@ import { pendingApprovals, pluginInstances, plugins } from '../db/schema.js';
 import { isValidSlug } from '../endpoints/slug.js';
 import { ConflictError, NotFoundError, ValidationError } from '../errors.js';
 import type { CoreEvents } from '../events.js';
-import { createRedactor, GLOBAL_SENSITIVE_KEYS } from '../gate/redact.js';
+import { createInstanceRedactor, GLOBAL_SENSITIVE_KEYS } from '../gate/redact.js';
 import type { InstanceRuntime } from '../gate/pipeline.js';
 import { PluginProcess, PluginUnavailableError } from '../plugins/process.js';
 import { PluginSupervisor } from '../plugins/supervisor.js';
 import type { InstanceStatus } from '../plugins/supervisor.js';
-import { mergeSecrets, summarizeSecrets, validateConnection } from './connection.js';
-import { parseInstanceSettings } from './settings.js';
+import { mergeSecrets, storedSecretsFor, summarizeSecrets, validateConnection } from './connection.js';
+import { cleanInstanceSettings, parseInstanceSettings, readInstanceSettings } from './settings.js';
 import type { InstanceSettings } from './settings.js';
 
 /**
@@ -87,6 +87,13 @@ export class InstanceManager {
   private plugin(pluginRowId: string): PluginRow & { parsed: Manifest } {
     const p = this.db.select().from(plugins).where(eq(plugins.id, pluginRowId)).get();
     if (!p) throw new NotFoundError('plugin_not_found', 'No such plugin');
+    // Discovery re-validates manifests against the current SDK on every start and marks failures; a
+    // row it marked unusable is reported as such rather than failing deep inside a request.
+    if (p.status !== 'ok')
+      throw new ConflictError(
+        'plugin_unusable',
+        `Plugin ${p.pluginId} is ${p.status}${p.statusError ? `: ${p.statusError}` : ''}`,
+      );
     return { ...p, parsed: parseManifest(p.manifest) };
   }
 
@@ -138,7 +145,7 @@ export class InstanceManager {
       sourceRef: instance.sourceRef,
       lastSyncedAt: instance.lastSyncedAt,
       lastSyncStatus: instance.lastSyncStatus,
-      settings: parseInstanceSettings(instance.settings),
+      settings: readInstanceSettings(instance.settings, `/${instance.slug} settings`),
       plugin: {
         id: plugin.id,
         pluginId: plugin.pluginId,
@@ -146,6 +153,7 @@ export class InstanceManager {
         enabled: plugin.enabled,
         status: plugin.status,
         labels: manifest?.labels,
+        attestation: manifest?.capabilities.attestation ?? false,
       },
     };
   }
@@ -156,7 +164,36 @@ export class InstanceManager {
   }
 
   settingsOf(instance: InstanceRow): InstanceSettings {
-    return parseInstanceSettings(instance.settings);
+    return readInstanceSettings(instance.settings, `/${instance.slug} settings`);
+  }
+
+  /**
+   * Scrubs an instance's secret values out of plugin/upstream error text before it is stored, audited
+   * or sent to notification channels (an init error can echo a config value or token).
+   */
+  private scrubError(instanceId: string, message: string): string {
+    try {
+      const instance = this.row(instanceId);
+      return createInstanceRedactor({ keyLists: [], secretValues: Object.values(this.readSecrets(instance)) })(message);
+    } catch {
+      return message;
+    }
+  }
+
+  /** Startup step: removes stored instance settings fields the current schema rejects. */
+  normalizeStoredSettings(): string[] {
+    const changed: string[] = [];
+    for (const row of this.db.select().from(pluginInstances).all()) {
+      const { cleaned, dropped } = cleanInstanceSettings(row.settings, `/${row.slug} settings`);
+      if (!dropped.length) continue;
+      this.db
+        .update(pluginInstances)
+        .set({ settings: cleaned as Record<string, unknown> })
+        .where(eq(pluginInstances.id, row.id))
+        .run();
+      changed.push(row.slug);
+    }
+    return changed;
   }
 
   /** Everything the gate needs for one instance. */
@@ -169,7 +206,10 @@ export class InstanceManager {
       slug: instance.slug,
       manifest: plugin.parsed,
       settings,
-      redact: createRedactor(GLOBAL_SENSITIVE_KEYS, plugin.parsed.sensitiveKeys, settings.extraRedactKeys),
+      redact: createInstanceRedactor({
+        keyLists: [GLOBAL_SENSITIVE_KEYS, plugin.parsed.sensitiveKeys, settings.extraRedactKeys],
+        secretValues: Object.values(this.readSecrets(instance)),
+      }),
       plugin: () => {
         const live = this.live.get(instanceId);
         if (!live) throw new PluginUnavailableError();
@@ -272,7 +312,10 @@ export class InstanceManager {
       set.authMode = patch.authMode;
     }
     if (patch.settings !== undefined) {
-      const merged = { ...(before.settings as object), ...(patch.settings as object) };
+      // Start from the normalized stored settings, so a field an older release stored and this one
+      // rejects doesn't block saving an unrelated change.
+      const stored = cleanInstanceSettings(before.settings, `/${before.slug} settings`).cleaned as object;
+      const merged = { ...stored, ...(patch.settings as object) };
       set.settings = parseInstanceSettings(merged);
     }
     if (Object.keys(set).length === 0) return this.get(id);
@@ -339,7 +382,12 @@ export class InstanceManager {
   ) {
     const row = this.row(id);
     const manifest = this.plugin(row.pluginId).parsed;
-    const secrets = mergeSecrets(manifest, this.readSecrets(row), input.secrets ?? {});
+    const stored = storedSecretsFor(
+      manifest,
+      { config: row.config as Record<string, unknown>, secrets: this.readSecrets(row) },
+      input,
+    );
+    const secrets = mergeSecrets(manifest, stored, input.secrets ?? {});
     const validated = validateConnection(manifest, { ...input.config, ...secrets });
     this.db.transaction((tx) => {
       tx.update(pluginInstances)
@@ -374,9 +422,11 @@ export class InstanceManager {
   ) {
     const row = this.row(id);
     const plugin = this.plugin(row.pluginId);
-    const secrets = mergeSecrets(plugin.parsed, this.readSecrets(row), candidate?.secrets ?? {});
+    const current = { config: row.config as Record<string, unknown>, secrets: this.readSecrets(row) };
+    const stored = candidate ? storedSecretsFor(plugin.parsed, current, candidate) : current.secrets;
+    const secrets = mergeSecrets(plugin.parsed, stored, candidate?.secrets ?? {});
     const validated = validateConnection(plugin.parsed, {
-      ...(candidate?.config ?? (row.config as object)),
+      ...(candidate?.config ?? current.config),
       ...secrets,
     });
     const proc = new PluginProcess({
@@ -487,7 +537,8 @@ export class InstanceManager {
         const current = this.row(instanceId);
         return { config: current.config as Record<string, unknown>, secrets: this.readSecrets(current) };
       },
-      onStatus: (status, error) => {
+      onStatus: (status, rawError) => {
+        const error = rawError === undefined ? undefined : this.scrubError(instanceId, rawError);
         this.setStatus(instanceId, status, error);
         if (status === 'error' && error) {
           const slug =
@@ -535,22 +586,25 @@ export class InstanceManager {
       const row = this.row(instanceId);
       try {
         const client = live.supervisor.client;
-        const summary = applyCatalogSync(this.db, instanceId, await client.call('syncCatalog'), this.now());
         const manifest = this.plugin(row.pluginId).parsed;
+        const summary = applyCatalogSync(this.db, instanceId, await client.call('syncCatalog'), this.now(), manifest);
         if (manifest.capabilities.registry) {
           applyRegistrySync(this.db, instanceId, await client.call('syncRegistry'), this.now());
         }
         live.lastVersionCheck = Date.now();
+        if (this.row(instanceId).status === 'error' && live.supervisor.status === 'ready')
+          this.setStatus(instanceId, 'ready');
         this.opts.events.emit('sync.completed', {
           instanceId,
           slug: row.slug,
           added: summary.added,
           pendingReview: summary.pendingReview,
           newGroups: summary.newGroups,
+          rulesDisabled: summary.rulesDisabled,
         });
         return summary;
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = this.scrubError(instanceId, err instanceof Error ? err.message : String(err));
         this.db
           .update(pluginInstances)
           .set({ lastSyncStatus: `error: ${message}`.slice(0, 500) })
@@ -564,6 +618,9 @@ export class InstanceManager {
           detail: { error: message },
         });
         this.opts.events.emit('sync.failed', { instanceId, slug: row.slug, error: message });
+        // Without any catalog the endpoint can't serve at all: show that, not a misleading "ready".
+        if (!row.lastSyncedAt && live.supervisor.status === 'ready')
+          this.setStatus(instanceId, 'error', `First catalog sync failed: ${message}`.slice(0, 500));
         throw err;
       } finally {
         live.syncing = undefined;

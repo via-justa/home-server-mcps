@@ -39,9 +39,6 @@ async function copy(url: string) {
         <span v-for="p in unhealthyPlugins" :key="p.id" class="mono"> {{ p.pluginId }} ({{ p.status }}) </span>
         — see <RouterLink to="/plugins">Plugins</RouterLink>.
       </div>
-      <RouterLink v-if="app.pendingCount" to="/approvals" class="alert warn pending">
-        {{ app.pendingCount }} call{{ app.pendingCount === 1 ? ' is' : 's are' }} waiting for approval →
-      </RouterLink>
 
       <div class="table-card">
         <table class="table">
@@ -75,7 +72,6 @@ async function copy(url: string) {
                 <span v-if="i.lastSyncStatus === 'error'" class="pill danger">failed</span>
               </td>
               <td class="right">
-                <span v-if="i.pendingApprovals" class="pill warn">{{ i.pendingApprovals }} pending</span>
                 <button v-if="i.endpointUrl" class="btn btn-sm" type="button" @click="copy(i.endpointUrl)">
                   {{ copied === i.endpointUrl ? 'Copied' : 'Copy URL' }}
                 </button>
@@ -88,17 +84,13 @@ async function copy(url: string) {
         </div>
       </div>
       <p v-if="app.overview && !app.overview.publicMcpUrl" class="small muted">
-        Set <code>PUBLIC_MCP_URL</code> so endpoint URLs and approval links point at your public MCP address.
+        Set <code>PUBLIC_MCP_URL</code> so endpoint URLs point at your public MCP address.
       </p>
     </div>
   </div>
 </template>
 
 <style scoped>
-.pending {
-  text-decoration: none;
-  font-weight: 600;
-}
 .err {
   color: var(--danger);
 }

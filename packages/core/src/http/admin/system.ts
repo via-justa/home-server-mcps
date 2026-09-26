@@ -1,18 +1,19 @@
 import type { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { and, asc, count, desc, eq } from 'drizzle-orm';
+import { asc, count, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import type { AppContext } from '../../app.js';
-import { exportAuditCsv, queryAudit } from '../../audit-query.js';
+import { auditCsvChunks, queryAudit } from '../../audit-query.js';
 import { toPublicUser } from '../../auth/users.js';
-import { operations, pendingApprovals, pluginInstances, plugins } from '../../db/schema.js';
+import { pluginInstances, plugins } from '../../db/schema.js';
 import { ConflictError, NotFoundError, ValidationError } from '../../errors.js';
 import { CORE_EVENT_NAMES } from '../../events.js';
 import { getSettings, isSettingsSection, updateSettings } from '../../settings.js';
 import { readJson } from '../common.js';
+import { assertSsoRemains } from './auth.js';
 import type { AdminEnv } from './auth.js';
 
-/** Global Admin API routes (design §8.4): overview, plugins, approvals, audit, tokens, users, settings, events. */
+/** Global Admin API routes (design §8.4): overview, plugins, audit, tokens, users, settings, events. */
 export function registerSystemRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
   const actor = (c: { get: (k: 'user') => { id: string } }) => ({ userId: c.get('user').id });
 
@@ -20,20 +21,10 @@ export function registerSystemRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
 
   app.get('/api/overview', (c) => {
     const mcpSettings = getSettings(ctx.db, 'mcp');
-    const pendingBy = new Map(
-      ctx.db
-        .select({ instanceId: pendingApprovals.instanceId, n: count() })
-        .from(pendingApprovals)
-        .where(eq(pendingApprovals.status, 'pending'))
-        .groupBy(pendingApprovals.instanceId)
-        .all()
-        .map((r) => [r.instanceId, r.n]),
-    );
     const instances = ctx.instances.list().map((i) => ({
       ...i,
       endpointUrl: `${mcpBase()}/${i.slug}`,
       effectiveAuthMode: i.authMode ?? mcpSettings.defaultAuthMode,
-      pendingApprovals: pendingBy.get(i.id) ?? 0,
     }));
     return c.json({
       instances,
@@ -48,7 +39,6 @@ export function registerSystemRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
           status: p.status,
           enabled: p.enabled,
         })),
-      pendingApprovals: [...pendingBy.values()].reduce((a, b) => a + b, 0),
       warnings: ctx.warnings,
       publicMcpUrl: ctx.config.PUBLIC_MCP_URL ?? null,
     });
@@ -113,55 +103,6 @@ export function registerSystemRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
     return c.body(null, 204);
   });
 
-  // ── approvals (design §5.3) ──
-
-  app.get('/api/approvals', (c) => {
-    const status = c.req.query('status') ?? 'pending';
-    const instance = c.req.query('instance');
-    const conditions = [];
-    if (status !== 'all') conditions.push(eq(pendingApprovals.status, status as 'pending'));
-    if (instance) conditions.push(eq(pendingApprovals.instanceId, instance));
-    const rows = ctx.db
-      .select({ approval: pendingApprovals, op: operations, instance: pluginInstances })
-      .from(pendingApprovals)
-      .innerJoin(operations, eq(pendingApprovals.operationId, operations.id))
-      .innerJoin(pluginInstances, eq(pendingApprovals.instanceId, pluginInstances.id))
-      .where(conditions.length ? and(...conditions) : undefined)
-      .orderBy(desc(pendingApprovals.requestedAt))
-      .limit(Math.min(Number(c.req.query('limit')) || 100, 500))
-      .all();
-    return c.json(
-      rows.map(({ approval, op, instance: inst }) => {
-        const { paramsHash: _hash, ...rest } = approval;
-        return {
-          ...rest,
-          // Shown to the approver, who must type it back (TN §3.4) — the point is a deliberate act, not secrecy.
-          requiresConfirmation: !!approval.confirmLiteral,
-          operation: { key: op.key, classification: op.locked ? 'locked' : op.classification },
-          instance: { id: inst.id, slug: inst.slug, displayName: inst.displayName },
-        };
-      }),
-    );
-  });
-
-  const Decision = z.object({ confirm: z.string().optional() });
-  app.post('/api/approvals/:id/approve', async (c) => {
-    const { confirm } = await readJson(c, Decision);
-    return c.json(
-      ctx.approvals.decide(c.req.param('id'), {
-        approve: true,
-        confirm,
-        decidedBy: c.get('user').username,
-        via: 'portal',
-      }),
-    );
-  });
-  app.post('/api/approvals/:id/deny', (c) =>
-    c.json(
-      ctx.approvals.decide(c.req.param('id'), { approve: false, decidedBy: c.get('user').username, via: 'portal' }),
-    ),
-  );
-
   // ── notification channels (design §9) ──
 
   app.get('/api/notifiers', (c) => c.json(ctx.notifier.list()));
@@ -183,7 +124,20 @@ export function registerSystemRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
   app.get('/api/audit/export.csv', (c) => {
     c.header('content-type', 'text/csv; charset=utf-8');
     c.header('content-disposition', `attachment; filename="audit-${new Date().toISOString().slice(0, 10)}.csv"`);
-    return c.body(exportAuditCsv(ctx.db, c.req.query()));
+    const chunks = auditCsvChunks(ctx.db, c.req.query());
+    const encoder = new TextEncoder();
+    return c.body(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          const next = chunks.next();
+          if (next.done) controller.close();
+          else controller.enqueue(encoder.encode(next.value));
+        },
+        cancel() {
+          chunks.return(undefined);
+        },
+      }),
+    );
   });
 
   // ── MCP bearer tokens (design §6.2) ──
@@ -243,12 +197,19 @@ export function registerSystemRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
     if (body.disabled !== undefined) {
       if (id === c.get('user').id && body.disabled)
         throw new ConflictError('self_disable', 'You cannot disable yourself');
+      if (body.disabled) assertSsoRemains(ctx, { losingUser: id });
       ctx.users.setDisabled(id, body.disabled, actor(c));
-      if (body.disabled) ctx.sessions.revokeUser(id);
+      if (body.disabled) {
+        // Everything the user could still reach MCP with goes too; re-enabling revives none of it.
+        ctx.sessions.revokeUser(id);
+        ctx.oauth.revokeUserGrants(id, 'user_disabled', actor(c));
+        ctx.tokens.revokeCreatedBy(id, actor(c));
+      }
     }
     if (body.password !== undefined) {
       await ctx.users.setPassword(id, body.password, { actorId: c.get('user').id });
       ctx.sessions.revokeUser(id);
+      ctx.oauth.revokeUserGrants(id, 'password_changed', actor(c));
     }
     return c.json(toPublicUser(ctx.users.get(id)));
   });
@@ -273,6 +234,7 @@ export function registerSystemRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
 
   app.put('/api/settings/oidc', async (c) => {
     const body = await readJson(c, z.record(z.string(), z.unknown()));
+    if (body.enabled === false) assertSsoRemains(ctx, { oidcOff: true });
     return c.json(ctx.oidc.updateSettings(body, actor(c)));
   });
 
@@ -302,7 +264,12 @@ export function registerSystemRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
         return [name, handler] as const;
       });
       const heartbeat = setInterval(() => void stream.writeSSE({ event: 'ping', data: '{}' }), 25_000);
-      await new Promise<void>((resolve) => stream.onAbort(resolve));
+      await new Promise<void>((resolve) => {
+        stream.onAbort(resolve);
+        // Shutdown ends the stream so closing the listener doesn't wait for the browser to leave.
+        if (ctx.shutdownSignal.aborted) resolve();
+        else ctx.shutdownSignal.addEventListener('abort', () => resolve(), { once: true });
+      });
       clearInterval(heartbeat);
       for (const [name, handler] of handlers) ctx.events.off(name, handler as never);
     }),

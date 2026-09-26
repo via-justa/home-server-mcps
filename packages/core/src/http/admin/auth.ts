@@ -56,6 +56,20 @@ export function localLoginEnabled(ctx: AppContext): boolean {
   return ctx.config.ADMIN_FORCE_LOCAL_LOGIN || !getSettings(ctx.db, 'security').disableLocalLogin;
 }
 
+/**
+ * While local login is off (setting, not the env override), single sign-on is the only way in: refuse
+ * any change that would leave it off or with no enabled user linked to it (design §6.1).
+ */
+export function assertSsoRemains(ctx: AppContext, change: { oidcOff?: boolean; losingUser?: string }) {
+  if (!getSettings(ctx.db, 'security').disableLocalLogin) return;
+  if (change.oidcOff || !ctx.users.hasOidcLinkedUser(change.losingUser)) {
+    throw new ConflictError(
+      'local_login_disabled',
+      'Local login is disabled, so this would lock everyone out. Re-enable local login first.',
+    );
+  }
+}
+
 /** Local-password users must have TOTP when the admin requires it (OIDC-only users rely on the IdP). */
 export function mustEnrollTotp(ctx: AppContext, user: UserRow): boolean {
   return getSettings(ctx.db, 'security').requireTotp && !!user.passwordHash && !user.totpEnabled;
@@ -319,6 +333,7 @@ export function registerProfileRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
       actorId: user.id,
     });
     ctx.sessions.revokeUser(user.id, c.get('sessionRaw'));
+    ctx.oauth.revokeUserGrants(user.id, 'password_changed', { userId: user.id });
     return c.json({ status: 'ok' });
   });
 
@@ -346,6 +361,7 @@ export function registerProfileRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
     const user = c.get('user');
     if (!user.passwordHash)
       throw new ConflictError('last_login_method', 'Set a password before unlinking single sign-on');
+    assertSsoRemains(ctx, { losingUser: user.id });
     ctx.users.unlinkOidc(user.id);
     return c.json({ status: 'ok' });
   });

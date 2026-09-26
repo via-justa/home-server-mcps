@@ -2,7 +2,7 @@ import type { ResolvedTarget } from '@home-server-mcps/plugin-sdk';
 import { and, asc, count, eq, gt } from 'drizzle-orm';
 import type { Db } from '../db/index.js';
 import { preApprovalHits, preApprovalRules } from '../db/schema.js';
-import { matches, MatchSchema } from './match.js';
+import { conditionsHold, coversAllParams, MatchSchema } from './match.js';
 
 export type PreApprovalOutcome =
   | { kind: 'auto_approved'; ruleId: string }
@@ -38,7 +38,12 @@ export function evaluatePreApproval(
     for (const rule of rules) {
       if (rule.expiresAt && rule.expiresAt.getTime() <= now.getTime()) continue;
       const match = MatchSchema.safeParse(rule.match);
-      if (!match.success || !matches(match.data, { params: input.params, targets: input.targets })) continue;
+      if (!match.success || !conditionsHold(match.data, { params: input.params, targets: input.targets })) continue;
+      if (!coversAllParams(match.data, input.params)) {
+        // It would have matched before strict matching: remember it so the rule list can say why.
+        tx.update(preApprovalRules).set({ strictMissAt: now }).where(eq(preApprovalRules.id, rule.id)).run();
+        continue;
+      }
 
       if (rule.rateLimit != null) {
         const windowMs = (rule.windowSeconds ?? 3600) * 1000;

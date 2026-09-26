@@ -28,7 +28,34 @@ const EnvSchema = z
     ADMIN_PORT: port.default(8081),
     PUBLIC_MCP_URL: optionalUrl,
     PUBLIC_ADMIN_URL: optionalUrl,
-    TRUST_PROXY: bool,
+    /**
+     * How many reverse proxies in front of core to trust: `true`/`1` for one, `2` for two chained, and so
+     * on. X-Forwarded-For is read from the right, skipping only what those proxies appended.
+     */
+    TRUST_PROXY: z
+      .string()
+      .optional()
+      .transform((v, ctx) => {
+        const s = (v ?? '').trim().toLowerCase();
+        if (s === '' || s === 'false') return 0;
+        if (s === 'true') return 1;
+        if (/^\d+$/.test(s) && Number(s) <= 10) return Number(s);
+        ctx.addIssue({ code: 'custom', message: 'TRUST_PROXY must be true, false or a hop count (0–10)' });
+        return z.NEVER;
+      }),
+    /**
+     * Extra host names the MCP listener answers to (comma-separated), besides PUBLIC_MCP_URL's host,
+     * localhost and IP addresses. Anything else is refused, which stops DNS rebinding.
+     */
+    MCP_ALLOWED_HOSTS: z
+      .string()
+      .optional()
+      .transform((v) =>
+        (v ?? '')
+          .split(',')
+          .map((h) => h.trim().toLowerCase())
+          .filter(Boolean),
+      ),
     CORE_PLUGINS_AUTOENABLE: bool,
     CORE_PLUGINS_DIR: z.string().default(path.join(workspaceRoot, 'plugins')),
     ADMIN_UI_DIR: z.string().default(path.join(workspaceRoot, 'packages/admin-ui/dist')),

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { ElicitationCompleteNotificationSchema, ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createAppContext } from '../src/app.js';
@@ -13,13 +13,18 @@ import type { AppContext } from '../src/app.js';
 import { setGroupLevel, updateOperation } from '../src/catalog/groups.js';
 import { loadConfig } from '../src/config/env.js';
 import { auditLog, operations } from '../src/db/schema.js';
+import { hostAllowed, MAX_SESSIONS_PER_PRINCIPAL } from '../src/http/mcp/endpoint.js';
+import { createAdminApp } from '../src/http/admin-app.js';
+import { createMcpApp } from '../src/http/mcp-app.js';
 import { startServers } from '../src/server.js';
 import type { RunningServers } from '../src/server.js';
 import { updateSettings } from '../src/settings.js';
+import { browser } from './admin-client.js';
 
 /**
  * End to end over real HTTP: the MCP SDK client ↔ `/{slug}` ↔ gate ↔ sandboxed plugin child, with
- * bearer tokens, the full OAuth 2.1 flow (DCR → sign-in → consent → PKCE → tokens), and elicitation.
+ * bearer tokens, the full OAuth 2.1 flow (DCR → sign-in → consent → PKCE → tokens), and URL-mode
+ * elicitation for approvals.
  */
 
 const PLUGINS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/plugins');
@@ -49,24 +54,20 @@ beforeAll(async () => {
   await ctx.users.create({ username: 'admin', password: PASSWORD });
   servers = await startServers(ctx);
   base = `http://127.0.0.1:${servers.mcp.port}`;
+  // OAuth is off until the public URL is known (review M12); the port is only known now.
+  (ctx.config as { PUBLIC_MCP_URL?: string }).PUBLIC_MCP_URL = base;
   instanceId = (await ctx.instances.create({ pluginId: 'echo', slug: 'echo', connection: {} })).id;
   otherInstanceId = (await ctx.instances.create({ pluginId: 'echo', slug: 'echo-two', connection: {} })).id;
   await ctx.instances.syncNow(instanceId);
-  const writes = ctx.db
-    .select()
-    .from(operations)
-    .where(eq(operations.instanceId, instanceId))
-    .all()
-    .filter((o) => o.classification === 'write' && !o.locked)
-    .map((o) => o.id);
-  setGroupLevel(ctx.db, instanceId, 'echo', 'write', { acknowledge: writes });
+  // Every write asks; the locked echo.delete is opened with its own Ask.
+  setGroupLevel(ctx.db, instanceId, 'echo', 'ask');
   const del = ctx.db
     .select()
     .from(operations)
     .where(eq(operations.key, 'echo.delete'))
     .all()
     .find((o) => o.instanceId === instanceId)!;
-  updateOperation(ctx.db, instanceId, del.id, { lockedOptIn: true });
+  updateOperation(ctx.db, instanceId, del.id, { level: 'ask' });
 }, 30_000);
 
 afterAll(async () => {
@@ -75,20 +76,25 @@ afterAll(async () => {
   rmSync(dataDir, { recursive: true, force: true });
 });
 
+type ElicitParams = { mode?: string; message: string; url?: string; elicitationId?: string };
+
+/**
+ * `form`: an old-style client (`elicitation: {}`) that answers every form it is shown. `url`: a client
+ * that supports URL prompts; `onElicit` plays the user, and its answer is the client's reply.
+ */
 async function connect(
   slug: string,
   token: string,
-  onElicit?: (message: string, schema: unknown) => Record<string, unknown> | 'decline',
+  prompts?: { mode: 'form' | 'url'; onElicit: (params: ElicitParams) => Record<string, unknown> | 'decline' },
 ) {
-  const client = new Client({ name: 'e2e', version: '1.0.0' }, { capabilities: onElicit ? { elicitation: {} } : {} });
-  if (onElicit) {
+  const capabilities = prompts ? { elicitation: prompts.mode === 'url' ? { url: {} } : {} } : {};
+  const client = new Client({ name: 'e2e', version: '1.0.0' }, { capabilities });
+  if (prompts) {
     client.setRequestHandler(ElicitRequestSchema, async (req) => {
-      const out = onElicit(
-        req.params.message,
-        'requestedSchema' in req.params ? req.params.requestedSchema : undefined,
-      );
-      return out === 'decline'
-        ? { action: 'decline' }
+      const out = prompts.onElicit(req.params as ElicitParams);
+      if (out === 'decline') return { action: 'decline' };
+      return prompts.mode === 'url'
+        ? { action: 'accept' }
         : { action: 'accept', content: out as Record<string, string | number | boolean> };
     });
   }
@@ -110,6 +116,11 @@ describe('MCP endpoint with bearer tokens', () => {
     expect(tools.map((t) => t.name).sort()).toEqual(['execute', 'search']);
     expect(tools.find((t) => t.name === 'execute')?.description).toContain('echo.call(…)');
     expect(tools.find((t) => t.name === 'search')?.description).toContain('guides.get(key)');
+    expect(tools.find((t) => t.name === 'search')?.annotations).toMatchObject({ readOnlyHint: true });
+    expect(tools.find((t) => t.name === 'execute')?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: true,
+    });
     await client.close();
   });
 
@@ -133,14 +144,55 @@ describe('MCP endpoint with bearer tokens', () => {
     await client.close();
   });
 
-  it('asks for approval over elicitation, including typed confirmation for locked operations', async () => {
-    const { token } = ctx.tokens.create({ name: 'e2e', scope: [instanceId] });
-    const prompts: string[] = [];
-    const client = await connect('echo', token, (message, schema) => {
-      prompts.push(message);
-      const confirm = (schema as { properties: Record<string, { title: string }> }).properties.confirm;
-      return { approve: true, ...(confirm ? { confirm: /Type "(.*)" to confirm/.exec(confirm.title)![1]! } : {}) };
+  it('never takes a form-only client’s own answer as approval', async () => {
+    const { token } = ctx.tokens.create({ name: 'e2e', scope: [instanceId], access: 'write' });
+    const shown: ElicitParams[] = [];
+    const client = await connect('echo', token, {
+      mode: 'form',
+      onElicit: (p) => {
+        shown.push(p);
+        return { approve: true, confirm: 'tank/x' };
+      },
     });
+    for (const code of [
+      `await echo.call('echo.set', { name: 'tank/a' });`,
+      `await echo.call('echo.delete', { name: 'tank/x' });`,
+    ]) {
+      const res = await client.callTool({ name: 'execute', arguments: { code } });
+      expect(parse(res)).toMatchObject({
+        error: 'PERMISSION_DENIED',
+        message: expect.stringContaining('form prompts'),
+      });
+    }
+    expect(shown).toEqual([]);
+    await client.close();
+  });
+
+  it('sends the user to the approval page (URL prompt) and continues once a human decides there', async () => {
+    const { token } = ctx.tokens.create({ name: 'e2e', scope: [instanceId], access: 'write' });
+    const shown: ElicitParams[] = [];
+    const completed: string[] = [];
+    const client = await connect('echo', token, {
+      mode: 'url',
+      onElicit: (p) => {
+        shown.push(p);
+        // The human approves on the page (here straight through the service the page calls).
+        setTimeout(
+          () =>
+            ctx.approvals.decide(p.elicitationId!, {
+              approve: true,
+              confirm: p.message.includes('echo.delete') ? 'tank/x' : undefined,
+              decidedBy: 'admin',
+            }),
+          20,
+        );
+        return {};
+      },
+    });
+    client.setNotificationHandler(ElicitationCompleteNotificationSchema, (n) => {
+      completed.push(n.params.elicitationId);
+    });
+
     const set = parse(
       await client.callTool({
         name: 'execute',
@@ -155,22 +207,78 @@ describe('MCP endpoint with bearer tokens', () => {
       }),
     );
     expect(del).toEqual({ result: 'echo.delete' });
-    expect(prompts).toHaveLength(2);
-    expect(prompts[1]).toContain('echo.delete');
-    const audit = ctx.db.select().from(auditLog).where(eq(auditLog.decidedVia, 'elicitation')).all();
-    expect(audit.map((a) => a.actorId)).toEqual(['token:e2e', 'token:e2e']);
+
+    expect(shown.map((p) => p.mode)).toEqual(['url', 'url']);
+    for (const p of shown) expect(p.url?.startsWith(`${base}/a/`)).toBe(true);
+    // The client never sees the confirmation prompt.
+    expect(JSON.stringify(shown)).not.toContain('to confirm');
+    for (let i = 0; i < 50 && completed.length < 2; i++) await new Promise((r) => setTimeout(r, 10));
+    expect(completed).toEqual(shown.map((p) => p.elicitationId));
+    const audit = ctx.db.select().from(auditLog).where(eq(auditLog.decidedVia, 'url')).all();
+    expect(audit.map((a) => [a.actorId, a.decidedBy])).toEqual([
+      ['token:e2e', 'admin'],
+      ['token:e2e', 'admin'],
+    ]);
     await client.close();
   });
 
-  it('returns a structured tool error when the human declines', async () => {
-    const { token } = ctx.tokens.create({ name: 'e2e', scope: [instanceId] });
-    const client = await connect('echo', token, () => 'decline');
+  it('cancels an open approval when its endpoint is stopped', async () => {
+    const { token } = ctx.tokens.create({ name: 'stop', scope: [otherInstanceId], access: 'write' });
+    await ctx.instances.syncNow(otherInstanceId);
+    setGroupLevel(ctx.db, otherInstanceId, 'echo', 'ask');
+    let prompted!: (id: string) => void;
+    const shown = new Promise<string>((r) => (prompted = r));
+    const client = await connect('echo-two', token, {
+      mode: 'url',
+      onElicit: (p) => {
+        prompted(p.elicitationId!);
+        return {};
+      },
+    });
+    const call = client.callTool({
+      name: 'execute',
+      arguments: { code: `return (await echo.call('echo.set', { name: 'tank/b' })).key;` },
+    });
+    const approvalId = await shown;
+    await ctx.instances.update(otherInstanceId, { enabled: false });
+    expect(parse(await call)).toMatchObject({
+      error: 'PERMISSION_DENIED',
+      message: expect.stringMatching(/endpoint was stopped/),
+    });
+    // Nobody can approve it on the page any more.
+    expect(() => ctx.approvals.decide(approvalId, { approve: true, decidedBy: 'admin' })).toThrow(/already cancelled/);
+    await client.close();
+    await ctx.instances.update(otherInstanceId, { enabled: true });
+    setGroupLevel(ctx.db, otherInstanceId, 'echo', 'read');
+  });
+
+  it('returns a structured tool error when the user declines the prompt', async () => {
+    const { token } = ctx.tokens.create({ name: 'e2e', scope: [instanceId], access: 'write' });
+    const client = await connect('echo', token, { mode: 'url', onElicit: () => 'decline' });
     const res = await client.callTool({
       name: 'execute',
       arguments: { code: `await echo.call('echo.set', { name: 'x' });` },
     });
     expect(res.isError).toBe(true);
     expect(parse(res)).toMatchObject({ error: 'PERMISSION_DENIED' });
+    await client.close();
+  });
+
+  it('keeps read-only tokens away from writes', async () => {
+    const { token } = ctx.tokens.create({ name: 'reader', scope: [instanceId] }); // access defaults to read
+    const client = await connect('echo', token, { mode: 'url', onElicit: () => ({}) });
+    const found = parse(
+      await client.callTool({
+        name: 'search',
+        arguments: { code: `return (await catalog.find()).map((o) => o.key);` },
+      }),
+    );
+    expect(found).toEqual({ result: ['echo.query'] });
+    const res = await client.callTool({
+      name: 'execute',
+      arguments: { code: `await echo.call('echo.set', { name: 'x' });` },
+    });
+    expect(parse(res)).toMatchObject({ error: 'OPERATION_DISABLED', message: expect.stringContaining('read-only') });
     await client.close();
   });
 
@@ -202,6 +310,92 @@ describe('MCP endpoint with bearer tokens', () => {
     expect((await init(`Bearer ${other.token}`)).status).toBe(401);
   });
 
+  it('keys rate limits on the token, not its name: two tokens called "Claude" have separate budgets', async () => {
+    await ctx.instances.update(instanceId, { settings: { executePerMinute: 1 } });
+    try {
+      const run = async (token: string) => {
+        const client = await connect('echo', token);
+        const res = parse(await client.callTool({ name: 'search', arguments: { code: 'return 1' } }));
+        await client.close();
+        return res;
+      };
+      const a = ctx.tokens.create({ name: 'Claude', scope: [instanceId] }).token;
+      const b = ctx.tokens.create({ name: 'Claude', scope: [instanceId] }).token;
+      expect(await run(a)).toEqual({ result: 1 });
+      expect(await run(a)).toMatchObject({ error: 'RATE_LIMITED' });
+      expect(await run(b)).toEqual({ result: 1 });
+    } finally {
+      await ctx.instances.update(instanceId, { settings: { executePerMinute: 30 } });
+    }
+  });
+
+  it('caps open sessions per principal, closing the least recently used', async () => {
+    const { token } = ctx.tokens.create({ name: 'many', scope: [instanceId] });
+    const clients = [];
+    for (let i = 0; i <= MAX_SESSIONS_PER_PRINCIPAL; i++) clients.push(await connect('echo', token));
+    // The first session was evicted by the one past the cap; the newest still works.
+    await expect(clients[0]!.listTools()).rejects.toThrow();
+    await expect(clients.at(-1)!.listTools()).resolves.toMatchObject({ tools: expect.any(Array) });
+    for (const c of clients) await c.close().catch(() => undefined);
+  });
+
+  it('refuses rebound hosts and foreign origins (DNS rebinding)', async () => {
+    const app = createMcpApp(ctx);
+    const { token } = ctx.tokens.create({ name: 'rebind', scope: [instanceId] });
+    const init = (headers: Record<string, string>) =>
+      app.request('/echo', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          authorization: `Bearer ${token}`,
+          ...headers,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'x', version: '1' } },
+        }),
+      });
+    expect((await init({ host: 'attacker.example' })).status).toBe(403);
+    expect((await init({ host: '127.0.0.1:8080', origin: 'http://attacker.example' })).status).toBe(403);
+    expect((await init({ host: '127.0.0.1:8080' })).status).toBe(200);
+    expect((await init({ host: 'localhost', origin: 'http://localhost:3000' })).status).toBe(200);
+    expect(hostAllowed({ ...ctx.config, MCP_ALLOWED_HOSTS: ['mcp.lan'] }, 'mcp.lan:8080')).toBe(true);
+    expect(hostAllowed({ ...ctx.config, PUBLIC_MCP_URL: 'https://mcp.example.com' }, 'mcp.example.com')).toBe(true);
+    expect(hostAllowed(ctx.config, '[::1]:8080')).toBe(true);
+  });
+
+  it('tells strangers nothing about which slugs exist or are disabled (review L16)', async () => {
+    const post = (slug: string, token?: string) =>
+      fetch(`${base}/${slug}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+        body: '{}',
+      });
+    const { token } = ctx.tokens.create({ name: 'l16', scope: ['*'] });
+    await ctx.instances.update(otherInstanceId, { enabled: false });
+    try {
+      for (const slug of ['echo-two', 'no-such-endpoint', 'echo']) {
+        const res = await post(slug);
+        expect({ slug, status: res.status }).toEqual({ slug, status: 401 });
+        expect((await res.json()) as object).toMatchObject({ error: 'unauthorized' });
+      }
+      expect((await post('echo-two', 'hsm_wrong')).status).toBe(401);
+      expect((await post('no-such-endpoint', 'hsm_wrong')).status).toBe(401);
+      // Holders of a live credential learn what is wrong.
+      expect((await post('echo-two', token)).status).toBe(503);
+      expect((await post('no-such-endpoint', token)).status).toBe(404);
+    } finally {
+      await ctx.instances.update(otherInstanceId, { enabled: true });
+    }
+  });
+
   it('binds sessions to the principal that created them', async () => {
     const a = ctx.tokens.create({ name: 'a', scope: ['*'] });
     const b = ctx.tokens.create({ name: 'b', scope: ['*'] });
@@ -220,6 +414,42 @@ describe('MCP endpoint with bearer tokens', () => {
     });
     expect(hijack.status).toBe(404);
     await client.close();
+  });
+
+  it('keeps anonymous external clients apart by address (review L17)', async () => {
+    const config = ctx.config as { TRUST_PROXY: number | boolean };
+    const savedProxy = config.TRUST_PROXY;
+    config.TRUST_PROXY = 1;
+    updateSettings(ctx.db, 'mcp', { trustedIdentityHeader: '' });
+    await ctx.instances.update(otherInstanceId, { authMode: 'external' });
+    try {
+      const rpc = (ip: string, body: unknown, session?: string) =>
+        fetch(`${base}/echo-two`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            'x-forwarded-for': ip,
+            ...(session ? { 'mcp-session-id': session, 'mcp-protocol-version': '2025-06-18' } : {}),
+          },
+          body: JSON.stringify(body),
+        });
+      const init = await rpc('203.0.113.1', {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'a', version: '1' } },
+      });
+      expect(init.status).toBe(200);
+      const session = init.headers.get('mcp-session-id')!;
+      const list = { jsonrpc: '2.0', id: 2, method: 'tools/list' };
+      // Another anonymous caller can't ride on that session.
+      expect((await rpc('198.51.100.7', list, session)).status).toBe(404);
+      expect((await rpc('203.0.113.1', list, session)).status).toBe(200);
+    } finally {
+      config.TRUST_PROXY = savedProxy;
+      await ctx.instances.update(otherInstanceId, { authMode: null });
+    }
   });
 
   it('serves external mode with a trusted identity header', async () => {
@@ -275,7 +505,7 @@ describe('OAuth 2.1 authorization server', () => {
     return { verifier, challenge: createHash('sha256').update(verifier).digest('base64url') };
   };
 
-  async function authorize(resources: string[]) {
+  async function authorize(resources: string[], access?: 'read' | 'write', username = 'admin') {
     const reg = await fetch(`${base}/oauth/register`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -300,7 +530,7 @@ describe('OAuth 2.1 authorization server', () => {
     const afterLogin = await browse(
       '/oauth/login',
       form({
-        username: 'admin',
+        username,
         password: PASSWORD,
         csrf: hidden(login, 'csrf'),
         continue: hidden(login, 'continue').replace(/&amp;/g, '&'),
@@ -309,10 +539,11 @@ describe('OAuth 2.1 authorization server', () => {
     expect(afterLogin.status).toBe(303);
     const consent = await (await browse(afterLogin.headers.get('location')!)).text();
     expect(consent).toContain('Authorize Claude');
-    expect(consent).toContain('/echo');
+    expect(consent).toContain(resources.length ? new URL(resources[0]!).pathname : '/echo');
+    expect(consent).toMatch(/name="access" value="read" checked/);
     const approved = await browse(
       '/oauth/consent',
-      form({ form: hidden(consent, 'form'), decision: 'approve', resource: resources }),
+      form({ form: hidden(consent, 'form'), decision: 'approve', resource: resources, ...(access ? { access } : {}) }),
     );
     const redirect = new URL(approved.headers.get('location')!);
     expect(redirect.origin + redirect.pathname).toBe('https://claude.ai/api/mcp/auth_callback');
@@ -340,6 +571,27 @@ describe('OAuth 2.1 authorization server', () => {
     });
     const pr = await (await fetch(`${base}/.well-known/oauth-protected-resource/echo`)).json();
     expect(pr).toMatchObject({ resource: `${base}/echo`, authorization_servers: [base] });
+    expect(pr).not.toHaveProperty('resource_name');
+  });
+
+  it('stays off until PUBLIC_MCP_URL is set: no discovery from the Host header', async () => {
+    const config = ctx.config as { PUBLIC_MCP_URL?: string };
+    const saved = config.PUBLIC_MCP_URL;
+    config.PUBLIC_MCP_URL = undefined;
+    try {
+      const as = await fetch(`${base}/.well-known/oauth-authorization-server`, {
+        headers: { host: 'evil.example.com' },
+      });
+      expect(as.status).toBe(503);
+      expect(((await as.json()) as { error: string }).error).toBe('temporarily_unavailable');
+      expect((await fetch(`${base}/.well-known/oauth-protected-resource/echo`)).status).toBe(503);
+      expect((await fetch(`${base}/oauth/register`, { method: 'POST', body: '{}' })).status).toBe(503);
+      const res = await fetch(`${base}/echo`, { method: 'POST', body: '{}' });
+      expect(res.status).toBe(401);
+      expect(res.headers.get('www-authenticate')).not.toContain('resource_metadata');
+    } finally {
+      config.PUBLIC_MCP_URL = saved;
+    }
   });
 
   it('runs DCR → sign-in → consent → PKCE code exchange → MCP access, bound to the granted endpoint', async () => {
@@ -421,6 +673,145 @@ describe('OAuth 2.1 authorization server', () => {
     });
     expect(revoked.status).toBe(401);
     void verifier;
+  });
+
+  it('limits a grant to the access chosen on the consent page, through refreshes', async () => {
+    const exchange = async (access?: 'read' | 'write') => {
+      const { clientId, code, verifier } = await authorize([`${base}/echo`], access);
+      const res = await token({
+        grant_type: 'authorization_code',
+        client_id: clientId,
+        code,
+        redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
+        code_verifier: verifier,
+      });
+      return { clientId, ...((await res.json()) as { access_token: string; refresh_token: string }) };
+    };
+    const writesVisible = async (accessToken: string) => {
+      const client = await connect('echo', accessToken);
+      const found = parse(
+        await client.callTool({ name: 'search', arguments: { code: `return (await catalog.find()).length;` } }),
+      );
+      await client.close();
+      return (found.result as number) > 1;
+    };
+
+    const readOnly = await exchange(); // nothing picked: read only
+    expect(await writesVisible(readOnly.access_token)).toBe(false);
+    const refreshed = (await (
+      await token({ grant_type: 'refresh_token', client_id: readOnly.clientId, refresh_token: readOnly.refresh_token })
+    ).json()) as { access_token: string };
+    expect(await writesVisible(refreshed.access_token)).toBe(false);
+
+    const readWrite = await exchange('write');
+    expect(await writesVisible(readWrite.access_token)).toBe(true);
+  });
+
+  it('binds grants to the endpoint, not its slug: rename keeps access, a re-used slug gets none', async () => {
+    const moved = await ctx.instances.create({ pluginId: 'echo', slug: 'movable', connection: {} });
+    await ctx.instances.syncNow(moved.id);
+    const { clientId, code, verifier } = await authorize([`${base}/movable`]);
+    const { access_token } = (await (
+      await token({
+        grant_type: 'authorization_code',
+        client_id: clientId,
+        code,
+        redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
+        code_verifier: verifier,
+      })
+    ).json()) as { access_token: string };
+    const init = (slug: string) =>
+      fetch(`${base}/${slug}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          authorization: `Bearer ${access_token}`,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'x', version: '1' } },
+        }),
+      });
+    expect((await init('movable')).status).toBe(200);
+
+    // The endpoint the user consented to keeps working under its new slug…
+    await ctx.instances.update(moved.id, { slug: 'moved' });
+    expect((await init('moved')).status).toBe(200);
+    // …and a new endpoint that takes over the old slug is not covered by the grant.
+    const squatter = await ctx.instances.create({ pluginId: 'echo', slug: 'movable', connection: {} });
+    await ctx.instances.syncNow(squatter.id);
+    expect((await init('movable')).status).toBe(403);
+
+    // Deleting the endpoint revokes a grant that covered nothing else.
+    await ctx.instances.remove(moved.id, 'moved');
+    ctx.oauth.forgetInstance(moved.id);
+    // The revoked token is no credential at all, so the gone slug answers like any other (review L16).
+    expect((await init('moved')).status).toBe(401);
+    expect((await init('movable')).status).toBe(401);
+    await ctx.instances.remove(squatter.id, 'movable');
+  });
+
+  it('revokes grants on a password change, and grants and bearer tokens when the user is disabled (review L9)', async () => {
+    const bob = await ctx.users.create({ username: 'bob', password: PASSWORD });
+    const admin = browser(createAdminApp(ctx));
+    await admin.init();
+    expect((await admin.post('/auth/login', { username: 'admin', password: PASSWORD })).status).toBe(200);
+
+    const tokensFor = async () => {
+      const { clientId, code, verifier } = await authorize([`${base}/echo`], undefined, 'bob');
+      const pair = (await (
+        await token({
+          grant_type: 'authorization_code',
+          client_id: clientId,
+          code,
+          redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
+          code_verifier: verifier,
+        })
+      ).json()) as { access_token: string; refresh_token: string };
+      return { clientId, ...pair };
+    };
+    const reaches = (accessToken: string) =>
+      fetch(`${base}/echo`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } },
+        }),
+      }).then((r) => r.status);
+
+    // A password change ends the grant: the refresh token no longer works.
+    const before = await tokensFor();
+    expect(await reaches(before.access_token)).toBe(200);
+    expect((await admin.patch(`/api/users/${bob.id}`, { password: `${PASSWORD}!` })).status).toBe(200);
+    expect(await reaches(before.access_token)).toBe(401);
+    expect(
+      (await token({ grant_type: 'refresh_token', client_id: before.clientId, refresh_token: before.refresh_token }))
+        .status,
+    ).toBe(400);
+    expect((await admin.patch(`/api/users/${bob.id}`, { password: PASSWORD })).status).toBe(200);
+
+    // Disabling ends grants and the bearer tokens bob created; re-enabling revives neither.
+    const live = await tokensFor();
+    const { token: bearer } = ctx.tokens.create({ name: 'bob', scope: [instanceId] }, { userId: bob.id });
+    expect(await reaches(bearer)).toBe(200);
+    expect((await admin.patch(`/api/users/${bob.id}`, { disabled: true })).status).toBe(200);
+    expect((await admin.patch(`/api/users/${bob.id}`, { disabled: false })).status).toBe(200);
+    expect(await reaches(live.access_token)).toBe(401);
+    expect(await reaches(bearer)).toBe(401);
+    expect(
+      (await token({ grant_type: 'refresh_token', client_id: live.clientId, refresh_token: live.refresh_token }))
+        .status,
+    ).toBe(400);
   });
 
   it('rotates refresh tokens and revokes the family on reuse', async () => {

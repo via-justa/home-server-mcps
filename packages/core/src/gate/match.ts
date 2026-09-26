@@ -7,13 +7,22 @@ import { canonicalJson } from './canonical.js';
  * Pre-approval `match` evaluator (design §5.2). A rule's match is a list of conditions that must all
  * hold. It fails closed: a missing field, a type mismatch or zero resolved targets means "no match",
  * which only ever sends the call to a human.
+ *
+ * Matching is **strict**: every parameter of the call must be covered by a condition. A parameter the
+ * rule doesn't mention must be absent, unless the rule accepts it with `{ field, op: 'any' }` (`field: ''`
+ * accepts all parameters). Otherwise a rule for one field would also approve whatever else the model
+ * chose to send (a quota, an ACL, encryption options).
  */
 
-export const ParamConditionSchema = z.object({
-  field: z.string().regex(/^\/.*/, 'must be a JSON pointer'),
-  op: z.enum(MATCH_OPS),
-  value: z.unknown(),
-});
+export const PARAM_OPS = [...MATCH_OPS, 'any'] as const;
+
+export const ParamConditionSchema = z
+  .object({
+    field: z.string().regex(/^(\/.*)?$/, 'must be a JSON pointer'),
+    op: z.enum(PARAM_OPS),
+    value: z.unknown().optional(),
+  })
+  .refine((c) => c.op === 'any' || c.field !== '', 'only "any" can apply to all parameters');
 
 export const TargetConditionSchema = z
   .object({
@@ -45,6 +54,7 @@ export function getPointer(doc: unknown, pointer: string): unknown {
 }
 
 function paramMatches(actual: unknown, op: string, expected: unknown): boolean {
+  if (op === 'any') return true; // present or not, any value
   if (actual === MISSING) return false;
   switch (op) {
     case 'eq':
@@ -56,8 +66,13 @@ function paramMatches(actual: unknown, op: string, expected: unknown): boolean {
       return values.length > 0 && values.every((v) => allowed.has(canonicalJson(v)));
     }
     case 'prefix':
+      // Path-segment boundary: "tank/media" matches "tank/media" and "tank/media/tv", not "tank/media-private".
       return (
-        typeof actual === 'string' && typeof expected === 'string' && expected !== '' && actual.startsWith(expected)
+        typeof actual === 'string' &&
+        typeof expected === 'string' &&
+        expected !== '' &&
+        (actual === expected ||
+          (actual.startsWith(expected) && (expected.endsWith('/') || actual[expected.length] === '/')))
       );
     case 'range': {
       const { min, max } = (expected ?? {}) as { min?: unknown; max?: unknown };
@@ -81,7 +96,28 @@ function targetMatches(target: ResolvedTarget, c: z.infer<typeof TargetCondition
   return true;
 }
 
-export function matches(
+const escapePointer = (key: string) => key.replace(/~/g, '~0').replace(/\//g, '~1');
+
+/**
+ * Whether every parameter is covered by some condition: a condition on a path covers everything under
+ * it; an object only partly covered has each of its keys checked in turn. Nothing (or `{}`) is covered.
+ */
+export function coversAllParams(match: readonly MatchCondition[], params: unknown): boolean {
+  const pointers = match.filter((c) => c.field !== '$targets').map((c) => c.field);
+  const covered = (value: unknown, path: string): boolean => {
+    if (pointers.includes(path)) return true;
+    if (value === undefined || value === null) return path === '';
+    if (typeof value !== 'object' || Array.isArray(value)) return false;
+    const entries = Object.entries(value);
+    if (entries.length === 0) return true;
+    if (!pointers.some((p) => p.startsWith(`${path}/`))) return false;
+    return entries.every(([k, v]) => covered(v, `${path}/${escapePointer(k)}`));
+  };
+  return covered(params, '');
+}
+
+/** The conditions alone, without the strict every-parameter check (used to spot rules strictness broke). */
+export function conditionsHold(
   match: readonly MatchCondition[],
   call: { params: unknown; targets: readonly ResolvedTarget[] },
 ): boolean {
@@ -93,4 +129,11 @@ export function matches(
     const pc = c as z.infer<typeof ParamConditionSchema>;
     return paramMatches(getPointer(call.params, pc.field), pc.op, pc.value);
   });
+}
+
+export function matches(
+  match: readonly MatchCondition[],
+  call: { params: unknown; targets: readonly ResolvedTarget[] },
+): boolean {
+  return conditionsHold(match, call) && coversAllParams(match, call.params);
 }

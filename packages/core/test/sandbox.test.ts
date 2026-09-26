@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createInstanceRedactor, GLOBAL_SENSITIVE_KEYS } from '../src/gate/redact.js';
 import { BindingError, runInSandbox } from '../src/sandbox/index.js';
 import type { Binding } from '../src/sandbox/index.js';
 
@@ -23,16 +24,21 @@ describe('runInSandbox', () => {
     await expect(run('const x = 1;')).resolves.toMatchObject({ ok: true, value: null });
   });
 
-  it('exposes no Node or network APIs', async () => {
+  it('exposes no Node or network APIs, and no host references', async () => {
+    // `import.meta` is a syntax error in a script.
+    await expect(run(`return typeof import.meta`)).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'SYNTAX_ERROR' },
+    });
     const r = await run(
-      `return [typeof require, typeof process, typeof fetch, typeof import.meta, typeof setTimeout, typeof __hsm, typeof __hsm_call].join(',')`,
+      `return [typeof require, typeof process, typeof fetch, typeof setTimeout, typeof __hsm, typeof __hsm_call, typeof __hsm_log, typeof call, typeof log, typeof bind].join(',')`,
     );
-    // `import.meta` is a syntax error in a script, so check it separately below.
-    expect(r.ok).toBe(false);
-    const r2 = await run(
-      `return [typeof require, typeof process, typeof fetch, typeof setTimeout, typeof __hsm].join(',')`,
+    expect(r).toMatchObject({ ok: true, value: Array(10).fill('undefined').join(',') });
+    // Nothing on the global object is a host reference either.
+    const globals = await run(
+      `return Object.getOwnPropertyNames(globalThis).filter((k) => { const v = globalThis[k]; return v && typeof v === 'object' && typeof v.applySync === 'function'; });`,
     );
-    expect(r2).toMatchObject({ ok: true, value: 'undefined,undefined,undefined,undefined,undefined' });
+    expect(globals).toMatchObject({ ok: true, value: [] });
   });
 
   it('cannot reach the host through binding functions or the constructor chain', async () => {
@@ -143,8 +149,54 @@ describe('runInSandbox', () => {
     await expect(run('return typeof leak')).resolves.toMatchObject({ ok: true, value: 'undefined' });
   });
 
-  it('rejects calls to functions that are not bindings', async () => {
+  it('only offers the bindings it was given, as own properties', async () => {
     const r = await run(`return Object.keys(t);`);
     expect(r).toMatchObject({ ok: true, value: ['call'] });
+    // Namespaces are frozen plain objects: nothing inherited is callable as a binding.
+    const inherited = await run(`return [typeof t.constructor, typeof t.hasOwnProperty, typeof t.__proto__.call];`);
+    expect(inherited).toMatchObject({ ok: true, value: ['function', 'function', 'undefined'] });
+    // Reserved and non-identifier names never become namespaces or functions.
+    const odd = await runInSandbox({
+      code: `return [typeof console.call, typeof globalThis['bad-name']];`,
+      bindings: { console: { call: echo }, 'bad-name': { call: echo } },
+    });
+    expect(odd).toMatchObject({ ok: true, value: ['undefined', 'undefined'] });
+  });
+});
+
+describe('redaction of everything leaving the sandbox', () => {
+  const SECRET = 'sk-live-0123456789';
+  const redact = createInstanceRedactor({ keyLists: [GLOBAL_SENSITIVE_KEYS], secretValues: [SECRET] });
+  const leaky: Binding = async () => ({ apiKey: SECRET, note: `key is ${SECRET}` });
+  const runR = (code: string, limits = {}) => runInSandbox({ code, bindings: { t: { call: leaky } }, limits, redact });
+
+  it('redacts console.log arguments before they are turned into text', async () => {
+    const r = await runR(`
+      const v = await t.call();
+      console.log(v);
+      console.log(JSON.stringify(v));
+      console.log('plain', { password: 'pw' }, v.apiKey);
+      return null;`);
+    expect(r.logs).toEqual([
+      '{"apiKey":"[REDACTED]","note":"key is [REDACTED]"}',
+      '{"apiKey":"[REDACTED]","note":"key is [REDACTED]"}',
+      'plain {"password":"[REDACTED]"} [REDACTED]',
+    ]);
+    expect(JSON.stringify(r)).not.toContain(SECRET);
+  });
+
+  it('redacts an oversized result before cutting its preview', async () => {
+    const r = await runR(`const v = await t.call(); return { pad: 'x'.repeat(2000), raw: JSON.stringify(v) };`, {
+      maxResultBytes: 500,
+    });
+    expect(r).toMatchObject({ ok: true, truncated: true });
+    expect(JSON.stringify(r)).not.toContain(SECRET);
+  });
+
+  it('redacts derived values and error messages', async () => {
+    const derived = await runR(`const v = await t.call(); return [v.apiKey.split('').join('')];`);
+    expect(derived).toMatchObject({ ok: true, value: ['[REDACTED]'] });
+    const thrown = await runR(`const v = await t.call(); throw new Error('boom ' + v.apiKey);`);
+    expect(thrown).toMatchObject({ ok: false, error: { message: 'boom [REDACTED]' } });
   });
 });

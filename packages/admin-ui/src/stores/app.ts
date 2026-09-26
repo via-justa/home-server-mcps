@@ -5,7 +5,7 @@ import type { Instance, Overview } from '../types';
 type Listener = (event: string, data: unknown) => void;
 
 /**
- * Shared portal state: the overview (endpoints for the sidebar, pending-approval count) and the live
+ * Shared portal state: the overview (endpoints for the sidebar) and the live
  * event stream from `/api/events`, which pages subscribe to instead of polling.
  */
 export const useAppStore = defineStore('app', {
@@ -16,7 +16,6 @@ export const useAppStore = defineStore('app', {
   }),
   getters: {
     instances: (s): Instance[] => s.overview?.instances ?? [],
-    pendingCount: (s) => s.overview?.pendingApprovals ?? 0,
   },
   actions: {
     async refresh() {
@@ -29,15 +28,7 @@ export const useAppStore = defineStore('app', {
     connect() {
       if (this.source || typeof EventSource === 'undefined') return;
       const source = new EventSource('/api/events');
-      const names = [
-        'approval.pending',
-        'approval.decided',
-        'instance.status',
-        'plugin.crashed',
-        'sync.completed',
-        'sync.failed',
-        'auth.lockout',
-      ];
+      const names = ['instance.status', 'plugin.crashed', 'sync.completed', 'sync.failed', 'auth.lockout'];
       for (const name of names) {
         source.addEventListener(name, (e) => {
           let data: unknown = null;

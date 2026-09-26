@@ -4,15 +4,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { eq } from 'drizzle-orm';
-import type { Hono } from 'hono';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createAppContext } from '../src/app.js';
-import { setGroupLevel, updateOperation } from '../src/catalog/groups.js';
 import { loadConfig } from '../src/config/env.js';
-import { auditLog, notifierChannels, operations } from '../src/db/schema.js';
+import { auditLog, notifierChannels } from '../src/db/schema.js';
 import { createAdminApp } from '../src/http/admin-app.js';
-import { createMcpApp } from '../src/http/mcp-app.js';
-import { executeCode } from '../src/runtime/index.js';
 import { browser } from './admin-client.js';
 
 const PLUGINS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/plugins');
@@ -62,28 +58,6 @@ async function until(check: () => boolean) {
 }
 
 /** Cookie-keeping browser for the MCP-port HTML forms. */
-function formBrowser(app: Pick<Hono, 'request'>) {
-  const jar = new Map<string, string>();
-  return async (url: string, fields?: Record<string, string>) => {
-    const headers: Record<string, string> = {};
-    if (jar.size) headers.cookie = [...jar].map(([k, v]) => `${k}=${v}`).join('; ');
-    if (fields) headers['content-type'] = 'application/x-www-form-urlencoded';
-    const res = await app.request(url, {
-      method: fields ? 'POST' : 'GET',
-      headers,
-      body: fields ? new URLSearchParams(fields).toString() : undefined,
-    });
-    for (const sc of res.headers.getSetCookie()) {
-      const [pair] = sc.split(';');
-      const i = pair!.indexOf('=');
-      const value = pair!.slice(i + 1);
-      if (value) jar.set(pair!.slice(0, i), value);
-      else jar.delete(pair!.slice(0, i));
-    }
-    return res;
-  };
-}
-const hidden = (page: string, name: string) => new RegExp(`name="${name}" value="([^"]*)"`).exec(page)?.[1] ?? '';
 
 describe('notification channels', () => {
   it('stores secrets encrypted, reports only whether they are set, and merges updates', async () => {
@@ -93,7 +67,7 @@ describe('notification channels', () => {
       name: 'Phone',
       config: { topic: 'homelab' },
       secrets: { token: 'tk_secret' },
-      events: ['approval.pending'],
+      events: ['instance.error'],
     });
     expect(ch.secrets).toEqual({ token: { set: true } });
     expect(JSON.stringify(ctx.notifier.list())).not.toContain('tk_secret');
@@ -105,7 +79,7 @@ describe('notification channels', () => {
     expect(ctx.notifier.save({ secrets: { token: null } }, { id: ch.id }).secrets).toEqual({ token: { set: false } });
     expect(() => ctx.notifier.save({ kind: 'webhook', config: { url: 'https://x' } }, { id: ch.id })).toThrow(/kind/);
     expect(() =>
-      ctx.notifier.save({ kind: 'ntfy', name: 'x', config: { topic: 'bad topic!' }, events: ['approval.pending'] }),
+      ctx.notifier.save({ kind: 'ntfy', name: 'x', config: { topic: 'bad topic!' }, events: ['instance.error'] }),
     ).toThrow(/Invalid channel/);
     const audit = ctx.db.select().from(auditLog).where(eq(auditLog.kind, 'config')).all();
     expect(audit.map((a) => a.decision)).toEqual(['notifier_created', 'notifier_updated', 'notifier_updated']);
@@ -176,14 +150,14 @@ describe('notification channels', () => {
     expect(ctx2.notifier.list()[0]).toMatchObject({ lastError: 'HTTP 404' });
   });
 
-  it('publishes ntfy JSON with approve/deny links for pending approvals', async () => {
+  it('publishes ntfy JSON, and has no approval events or links', async () => {
     const { ctx, sent } = await setup();
     ctx.notifier.save({
       kind: 'ntfy',
       name: 'Phone',
       config: { server: 'https://ntfy.example.com/', topic: 'homelab' },
       secrets: { token: 'tk' },
-      events: ['approval.pending', 'sync.pending_review'],
+      events: ['sync.pending_review'],
     });
     ctx.events.emit('sync.completed', { instanceId: 'i', slug: 'nas', added: 0, pendingReview: [], newGroups: [] });
     ctx.events.emit('sync.completed', {
@@ -194,110 +168,40 @@ describe('notification channels', () => {
       newGroups: [],
     });
     await until(() => sent.length === 1);
-    expect(JSON.parse(sent[0]!.body)).toMatchObject({ topic: 'homelab', title: '1 new write operation(s) on /nas' });
+    expect(JSON.parse(sent[0]!.body)).toMatchObject({
+      topic: 'homelab',
+      title: '1 write operation(s) to review on /nas',
+    });
     expect(sent[0]!.url).toBe('https://ntfy.example.com');
     expect(sent[0]!.headers.authorization).toBe('Bearer tk');
 
-    const { ctx: live, sent: liveSent } = await withApproval();
-    const body = JSON.parse(liveSent[0]!.body) as { click: string; actions: { url: string }[]; message: string };
-    expect(body.click).toMatch(/^https:\/\/mcp\.example\.com\/a\/[\w-]+$/);
-    expect(body.actions.map((a) => a.url)).toHaveLength(2);
-    expect(body.message).not.toContain('hunter2');
-    void live;
-  });
-});
+    expect(JSON.parse(sent[0]!.body)).not.toHaveProperty('actions');
 
-/** An echo instance with a pending echo.set approval (no elicitation, so it waits for portal/link). */
-async function withApproval(
-  code = `return (await echo.call('echo.set', { name: 'tank/a', password: 'hunter2' })).key;`,
-) {
-  const t = await setup();
-  const { ctx } = t;
-  await ctx.users.create({ username: 'admin', password: PASSWORD });
-  ctx.notifier.save({ kind: 'ntfy', name: 'Phone', config: { topic: 'homelab' }, events: ['approval.pending'] });
-  const instance = await ctx.instances.create({ pluginId: 'echo', slug: 'echo', connection: {} });
-  await ctx.instances.syncNow(instance.id);
-  const ops = ctx.db.select().from(operations).where(eq(operations.instanceId, instance.id)).all();
-  setGroupLevel(ctx.db, instance.id, 'echo', 'write', {
-    acknowledge: ops.filter((o) => o.classification === 'write' && !o.locked).map((o) => o.id),
-  });
-  updateOperation(ctx.db, instance.id, ops.find((o) => o.key === 'echo.delete')!.id, { lockedOptIn: true });
-  const run = executeCode(
-    ctx.gateDeps(),
-    ctx.instances.runtime(instance.id),
-    { client: { kind: 'mcp_client', id: 'claude' } },
-    code,
-  );
-  await until(() => t.sent.length > 0);
-  const links = (JSON.parse(t.sent[0]!.body) as { actions: { label: string; url: string }[] }).actions;
-  const linkPath = (label: string) => new URL(links.find((a) => a.label.startsWith(label))!.url).pathname;
-  return { ...t, run, approvePath: linkPath('Approve'), denyPath: linkPath('Deny') };
-}
-
-describe('approval links', () => {
-  it('needs a signed-in user and a POST: opening the link alone decides nothing', async () => {
-    const t = await withApproval();
-    const app = createMcpApp(t.ctx);
-    const browse = formBrowser(app);
-
-    const login = await (await browse(t.approvePath)).text();
-    expect(login).toContain('Sign in to review this approval request');
-    expect(hidden(login, 'continue')).toBe(t.approvePath);
-    // Still pending after the GET.
-    expect(t.ctx.db.select().from(auditLog).where(eq(auditLog.decidedVia, 'link')).all()).toHaveLength(0);
-
-    const signedIn = await browse('/oauth/login', {
-      username: 'admin',
-      password: PASSWORD,
-      csrf: hidden(login, 'csrf'),
-      continue: t.approvePath,
+    // Rules a sync disabled are reported even when no write needs review.
+    ctx.events.emit('sync.completed', {
+      instanceId: 'i',
+      slug: 'nas',
+      added: 0,
+      pendingReview: [],
+      newGroups: [],
+      rulesDisabled: 2,
     });
-    expect(signedIn.status).toBe(303);
-    expect(signedIn.headers.get('location')).toBe(t.approvePath);
+    await until(() => sent.length === 2);
+    expect(JSON.parse(sent[1]!.body)).toMatchObject({ title: 'Pre-approval rules disabled on /nas' });
+    expect(JSON.parse(sent[1]!.body).message).toMatch(/2 pre-approval rule\(s\) no longer fit/);
 
-    const pageHtml = await (await browse(t.approvePath)).text();
-    expect(pageHtml).toContain('echo.set');
-    expect(pageHtml).not.toContain('hunter2');
-    expect(pageHtml).toContain('Signed in as <strong>admin</strong>');
-
-    // Without the CSRF field the POST is refused.
-    expect((await browse(t.approvePath, { decision: 'approve' })).status).toBe(400);
-    const done = await browse(t.approvePath, { decision: 'approve', csrf: hidden(pageHtml, 'csrf') });
-    expect(await done.text()).toContain('was approved');
-    await expect(t.run).resolves.toMatchObject({ ok: true, value: 'echo.set' });
-    const audit = t.ctx.db.select().from(auditLog).where(eq(auditLog.decidedVia, 'link')).all();
-    expect(audit.map((a) => [a.decision, a.actorId, a.decidedBy])).toEqual([['human-approved', 'claude', 'admin']]);
-
-    // Every link of a decided approval is burnt.
-    expect((await browse(t.approvePath)).status).toBe(404);
-    expect((await browse(t.denyPath)).status).toBe(404);
-  });
-
-  it('requires the typed confirmation for locked operations and can deny', async () => {
-    const t = await withApproval(`return (await echo.call('echo.delete', { name: 'tank/x' })).key;`);
-    const app = createMcpApp(t.ctx);
-    const browse = formBrowser(app);
-    const login = await (await browse(t.denyPath)).text();
-    await browse('/oauth/login', {
-      username: 'admin',
-      password: PASSWORD,
-      csrf: hidden(login, 'csrf'),
-      continue: t.denyPath,
-    });
-    const pageHtml = await (await browse(t.denyPath)).text();
-    expect(pageHtml).toContain('Type <code>tank/x</code> to approve');
-    const csrf = hidden(pageHtml, 'csrf');
-    const wrong = await browse(t.denyPath, { decision: 'approve', confirm: 'nope', csrf });
-    expect(wrong.status).toBe(400);
-    expect(await wrong.text()).toContain('exactly to approve');
-    expect(await (await browse(t.denyPath, { decision: 'deny', csrf })).text()).toContain('was denied');
-    await expect(t.run).resolves.toMatchObject({ ok: false });
-  });
-
-  it('rejects unknown tokens', async () => {
-    const { ctx } = await setup();
-    const app = createMcpApp(ctx);
-    expect((await app.request('/a/not-a-real-token-at-all-000000')).status).toBe(404);
-    expect((await app.request('/a/short')).status).toBe(404);
+    // Approvals happen in the MCP client (design §5.3); channels can't subscribe to them.
+    expect(() =>
+      ctx.notifier.save({ kind: 'ntfy', name: 'x', config: { topic: 't' }, events: ['approval.pending'] }),
+    ).toThrow(/Invalid channel/);
+    // A channel saved before that change keeps working; the stale event is dropped.
+    const old = ctx.notifier.save({ kind: 'ntfy', name: 'Old', config: { topic: 't' }, events: ['auth.lockout'] });
+    ctx.db
+      .update(notifierChannels)
+      .set({ events: ['approval.pending', 'auth.lockout'] })
+      .where(eq(notifierChannels.id, old.id))
+      .run();
+    expect(ctx.notifier.list().find((c) => c.id === old.id)?.events).toEqual(['auth.lockout']);
+    expect(ctx.notifier.save({ name: 'Old 2' }, { id: old.id }).events).toEqual(['auth.lockout']);
   });
 });

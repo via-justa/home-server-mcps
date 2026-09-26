@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { writeAudit } from '../audit.js';
 import type { Db } from '../db/index.js';
 import { mcpTokens, pluginInstances } from '../db/schema.js';
 import { NotFoundError, ValidationError } from '../errors.js';
+import { ACCESS_CEILINGS } from '../gate/access.js';
 import { randomToken, sha256 } from './tokens.js';
 
 /**
@@ -17,6 +18,8 @@ export const TOKEN_PREFIX = 'hsm_';
 export const CreateTokenSchema = z.object({
   name: z.string().trim().min(1).max(100),
   scope: z.array(z.string().min(1)).min(1),
+  /** `read` (default) hides and blocks every write, whatever the endpoint's levels allow. */
+  access: z.enum(ACCESS_CEILINGS).default('read'),
   expiresAt: z.coerce.date().nullable().optional(),
 });
 
@@ -26,6 +29,7 @@ const publicToken = (t: TokenRow) => ({
   id: t.id,
   name: t.name,
   scope: t.scope,
+  access: t.access,
   createdAt: t.createdAt,
   expiresAt: t.expiresAt,
   lastUsedAt: t.lastUsedAt,
@@ -68,6 +72,7 @@ export class McpTokenService {
           name: input.name,
           tokenHash: sha256(token),
           scope: input.scope,
+          access: input.access,
           createdBy: actor.userId ?? null,
           createdAt: this.now(),
           expiresAt: input.expiresAt ?? null,
@@ -78,7 +83,7 @@ export class McpTokenService {
         decision: 'mcp_token_created',
         actorKind: 'user',
         actorId: actor.userId,
-        detail: { id, name: input.name, scope: input.scope, expiresAt: input.expiresAt ?? null },
+        detail: { id, name: input.name, scope: input.scope, access: input.access, expiresAt: input.expiresAt ?? null },
       });
     });
     return { ...publicToken(this.db.select().from(mcpTokens).where(eq(mcpTokens.id, id)).get()!), token };
@@ -96,6 +101,35 @@ export class McpTokenService {
         actorId: actor.userId,
         detail: { id, name: row.name },
       });
+    });
+  }
+
+  /** Their creator was disabled: bearer tokens they made are revoked (re-enabling revives none). */
+  revokeCreatedBy(userId: string, actor: { userId?: string } = {}) {
+    return this.db.transaction((tx) => {
+      const live = tx
+        .select({ id: mcpTokens.id, name: mcpTokens.name })
+        .from(mcpTokens)
+        .where(and(eq(mcpTokens.createdBy, userId), isNull(mcpTokens.revokedAt)))
+        .all();
+      if (!live.length) return 0;
+      tx.update(mcpTokens)
+        .set({ revokedAt: this.now() })
+        .where(
+          inArray(
+            mcpTokens.id,
+            live.map((t) => t.id),
+          ),
+        )
+        .run();
+      writeAudit(tx, {
+        kind: 'config',
+        decision: 'mcp_tokens_revoked',
+        actorKind: actor.userId ? 'user' : 'system',
+        actorId: actor.userId,
+        detail: { createdBy: userId, reason: 'user_disabled', tokens: live.map((t) => t.name) },
+      });
+      return live.length;
     });
   }
 

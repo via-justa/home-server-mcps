@@ -74,7 +74,9 @@ export const InstallSchema = z.object({
   confirm: z.string().optional(),
 });
 
-export type FetchBytes = (url: string, init?: { signal?: AbortSignal }) => Promise<Response>;
+const MAX_REDIRECTS = 5;
+
+export type FetchBytes = (url: string, init?: { signal?: AbortSignal; redirect?: 'manual' }) => Promise<Response>;
 
 type RepoRow = typeof pluginRepos.$inferSelect;
 type Actor = { userId?: string };
@@ -92,6 +94,49 @@ export interface RepoServiceOptions {
   stopPlugin: (pluginRowId: string) => Promise<void>;
   /** Start (and resync) every servable instance of a plugin row. */
   startPlugin: (pluginRowId: string) => Promise<void>;
+}
+
+/** The parts of a manifest that change what a plugin may do; an update touching them needs review. */
+export function permissionChanges(before: unknown, after: unknown): string[] {
+  const b = (before ?? {}) as Record<string, unknown>;
+  const a = (after ?? {}) as Record<string, unknown>;
+  const pick: Record<string, (m: Record<string, unknown>) => unknown> = {
+    binding: (m) => m.binding,
+    capabilities: (m) => m.capabilities,
+    sensitiveKeys: (m) => [...((m.sensitiveKeys as string[] | undefined) ?? [])].sort(),
+    'network.hosts': (m) => [...(((m.network as { hosts?: string[] } | undefined)?.hosts ?? []) as string[])].sort(),
+  };
+  return Object.entries(pick)
+    .filter(([, get]) => canonical(get(b)) !== canonical(get(a)))
+    .map(([name]) => name);
+}
+
+const canonical = (v: unknown): string =>
+  JSON.stringify(v, (_k, x: unknown) =>
+    x && typeof x === 'object' && !Array.isArray(x)
+      ? Object.fromEntries(Object.entries(x).sort(([p], [q]) => p.localeCompare(q)))
+      : x,
+  ) ?? 'null';
+
+/**
+ * Replaces `target` with `next`, keeping the previous copy at `backup` until the swap succeeded. If
+ * moving `next` in fails, the previous copy is moved back, so a failed update never leaves no plugin.
+ */
+export function swapDirectory(
+  next: string,
+  target: string,
+  backup: string,
+  rename: (from: string, to: string) => void = renameSync,
+) {
+  const hadOld = existsSync(target);
+  if (hadOld) rename(target, backup);
+  try {
+    rename(next, target);
+  } catch (err) {
+    if (hadOld) rename(backup, target);
+    throw err;
+  }
+  rmSync(backup, { recursive: true, force: true });
 }
 
 export class PluginRepoService {
@@ -122,16 +167,25 @@ export class PluginRepoService {
   }
 
   private async download(url: string, max: number): Promise<Buffer> {
-    const doFetch = this.opts.fetch ?? ((u: string, init?: { signal?: AbortSignal }) => fetch(u, init));
+    const doFetch: FetchBytes = this.opts.fetch ?? ((u, init) => fetch(u, init));
+    const signal = AbortSignal.timeout(60_000);
     let res: Response;
-    try {
-      res = await doFetch(url, { signal: AbortSignal.timeout(60_000) });
-    } catch (err) {
-      throw new ServiceError(
-        400,
-        'fetch_failed',
-        `Could not fetch ${url}: ${err instanceof Error ? err.message : err}`,
-      );
+    // Redirects are followed by hand, so every hop passes the same URL check (no https → http downgrade).
+    for (let hop = 0; ; hop++) {
+      try {
+        res = await doFetch(url, { signal, redirect: 'manual' });
+      } catch (err) {
+        throw new ServiceError(
+          400,
+          'fetch_failed',
+          `Could not fetch ${url}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+      const location = res.status >= 300 && res.status < 400 ? res.headers.get('location') : null;
+      if (!location) break;
+      if (hop >= MAX_REDIRECTS) throw new ServiceError(400, 'fetch_failed', `Too many redirects from ${url}`);
+      await res.body?.cancel().catch(() => undefined);
+      url = this.checkUrl(location, url);
     }
     if (!res.ok) throw new ServiceError(400, 'fetch_failed', `Could not fetch ${url}: HTTP ${res.status}`);
     if (Number(res.headers.get('content-length') ?? 0) > max)
@@ -546,16 +600,23 @@ export class PluginRepoService {
       if (current) await this.opts.stopPlugin(current.id);
       mkdirSync(this.pluginsDir, { recursive: true });
       const target = path.join(this.pluginsDir, input.pluginId);
-      const old = path.join(this.stagingDir, `${randomUUID()}-old`);
-      if (existsSync(target)) renameSync(target, old);
-      renameSync(root, target);
-      rmSync(old, { recursive: true, force: true });
+      try {
+        swapDirectory(root, target, path.join(this.stagingDir, `${randomUUID()}-old`));
+      } catch (err) {
+        // The old version is back in place: bring its instances back up before reporting the failure.
+        if (current) await this.opts.startPlugin(current.id);
+        throw err;
+      }
       this.opts.discover();
 
       const row = this.db.select().from(plugins).where(eq(plugins.pluginId, input.pluginId)).get()!;
+      // New installs start disabled, and an update that changes what the plugin may do is disabled
+      // again: enabling it is the admin's review of its binding, capabilities and hosts (design §4.2).
+      const review = current ? permissionChanges(current.manifest, inspected.manifest) : [];
+      const enabled = current ? current.enabled && review.length === 0 : false;
       this.db.transaction((tx) => {
         tx.update(plugins)
-          .set({ repoId: repo.id, sha256, signatureVerified, ...(current ? {} : { enabled: true }) })
+          .set({ repoId: repo.id, sha256, signatureVerified, enabled })
           .where(eq(plugins.id, row.id))
           .run();
         writeAudit(tx, {
@@ -570,10 +631,12 @@ export class PluginRepoService {
             repo: repo.url,
             sha256,
             signatureVerified,
+            enabled,
+            ...(review.length ? { needsReview: review } : {}),
           },
         });
       });
-      await this.opts.startPlugin(row.id);
+      if (enabled) await this.opts.startPlugin(row.id);
       return this.db.select().from(plugins).where(eq(plugins.id, row.id)).get()!;
     } finally {
       rmSync(work, { recursive: true, force: true });
