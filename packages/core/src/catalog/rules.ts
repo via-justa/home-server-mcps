@@ -47,10 +47,12 @@ function loadOperation(db: Db, instanceId: string, operationId: string): Operati
 
 /** Param conditions must use fields the plugin declared for this operation (design §8.3). */
 function checkMatchAgainstProfile(manifest: Manifest, op: OperationRow, match: RuleInput['match']) {
-  if (match.length === 0) return;
+  if (match.every((c) => c.field !== '$targets' && 'op' in c && c.op === 'any')) return;
   const profile = op.matchProfile ? manifest.matchProfiles[op.matchProfile] : undefined;
   if (!profile) throw new ValidationError('no_match_profile', `${op.key} has no matchable fields; use an empty match`);
   for (const c of match) {
+    // "Any value" can name any parameter: it only widens strict matching, never narrows a condition.
+    if (c.field !== '$targets' && 'op' in c && c.op === 'any') continue;
     const field = profile.find((f) => f.field === c.field);
     if (!field) throw new ValidationError('unknown_match_field', `${c.field} is not a matchable field of ${op.key}`);
     if (c.field !== '$targets' && 'op' in c && field.op !== c.op) {

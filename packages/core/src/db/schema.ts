@@ -256,6 +256,8 @@ export const preApprovalRules = sqliteTable('pre_approval_rules', {
   createdAt: createdAt(),
   updatedAt: ts('updated_at'),
   lastTriggeredAt: ts('last_triggered_at'),
+  /** Last time the conditions held but the call had parameters the rule doesn't accept (strict match). */
+  strictMissAt: ts('strict_miss_at'),
 });
 
 export const preApprovalHits = sqliteTable(

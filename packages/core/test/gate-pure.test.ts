@@ -62,12 +62,39 @@ describe('matches', () => {
     targets: targets.map((t) => ({ kind: 'entity', name: t.id, scopes: {}, ...t })),
   });
 
-  it('treats an empty match as matching anything', () => {
+  it('treats an empty match as "no parameters", and `any` on "" as "any parameters"', () => {
     expect(matches([], call({}))).toBe(true);
+    expect(matches([], call(undefined))).toBe(true);
+    expect(matches([], call({ name: 'x' }))).toBe(false);
+    expect(matches([{ field: '', op: 'any' }], call({ name: 'x', deep: { a: 1 } }))).toBe(true);
+  });
+
+  it('is strict: every parameter must be covered by a condition or accepted with `any`', () => {
+    const rule = [{ field: '/name', op: 'prefix', value: 'tank/media' }] as const;
+    expect(matches(rule, call({ name: 'tank/media/tv' }))).toBe(true);
+    expect(matches(rule, call({ name: 'tank/media/tv', quota: 1 }))).toBe(false);
+    const withQuota = [...rule, { field: '/quota', op: 'any' }] as const;
+    expect(matches(withQuota, call({ name: 'tank/media/tv', quota: 1 }))).toBe(true);
+    expect(matches(withQuota, call({ name: 'tank/media/tv' }))).toBe(true); // `any` also allows absence
+    // A condition deeper in an object only covers that key; its siblings still need one.
+    const deep = [{ field: '/body/is4k', op: 'bool', value: false }] as const;
+    expect(matches(deep, call({ body: { is4k: false } }))).toBe(true);
+    expect(matches(deep, call({ body: { is4k: false, userId: 7 } }))).toBe(false);
+    expect(matches([...deep, { field: '/body/userId', op: 'any' }], call({ body: { is4k: false, userId: 7 } }))).toBe(
+      true,
+    );
   });
 
   it.each([
     ['prefix hit', { field: '/name', op: 'prefix', value: 'tank/media/' }, { name: 'tank/media/tv' }, true],
+    ['prefix at a boundary', { field: '/name', op: 'prefix', value: 'tank/media' }, { name: 'tank/media/tv' }, true],
+    ['prefix equal', { field: '/name', op: 'prefix', value: 'tank/media' }, { name: 'tank/media' }, true],
+    [
+      'prefix mid-segment',
+      { field: '/name', op: 'prefix', value: 'tank/media' },
+      { name: 'tank/media-private' },
+      false,
+    ],
     ['prefix miss', { field: '/name', op: 'prefix', value: 'tank/media/' }, { name: 'tank/other' }, false],
     ['prefix on non-string', { field: '/name', op: 'prefix', value: 'tank/' }, { name: 5 }, false],
     ['empty prefix never matches', { field: '/name', op: 'prefix', value: '' }, { name: 'x' }, false],
@@ -112,6 +139,8 @@ describe('matches', () => {
     expect(MatchSchema.safeParse([{ field: '$targets' }]).success).toBe(false);
     expect(MatchSchema.safeParse([{ field: 'name', op: 'prefix', value: 'x' }]).success).toBe(false);
     expect(MatchSchema.safeParse([{ field: '/n', op: 'regex', value: '.*' }]).success).toBe(false);
+    expect(MatchSchema.safeParse([{ field: '', op: 'any' }]).success).toBe(true);
+    expect(MatchSchema.safeParse([{ field: '', op: 'eq', value: 1 }]).success).toBe(false);
   });
 });
 

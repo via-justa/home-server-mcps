@@ -408,7 +408,8 @@ binding(args)
 - **Pre-approval match evaluator** (generic, core). A rule's `match` is a list of conditions. Every condition must hold (AND):
   - `{ field: "/json/pointer", op: "eq" | "in" | "prefix" | "range" | "bool", value }` is evaluated against the **normalized params**. A missing field means **no match**.
   - `{ field: "$targets", areas?: [], entities?: [], domains?: [] }` holds only if **every** resolved target satisfies **all** the set selectors (HA §3.5). Zero resolved targets means no match.
-  - A rule with an empty `match` matches any params. The UI shows a warning for this (TN §3.5).
+  - **Matching is strict**: every parameter of the call must be covered by a condition (a condition on a path covers everything under it). A parameter the rule doesn't mention must be absent, unless the rule accepts it with `{ field, op: "any" }`; `{ field: "", op: "any" }` accepts any parameters and the UI marks it "not recommended". So an empty `match` only matches calls without parameters. When a rule's conditions held but the call carried parameters it doesn't accept, the rule records `strict_miss_at` and the rule list says so.
+  - `prefix` matches at a path-segment boundary: `tank/media` matches `tank/media` and `tank/media/tv`, not `tank/media-private`.
   - `rate_limit` / `window_seconds` are enforced via `pre_approval_hits`. When the limit is hit, the call **falls back to human approval** instead of being rejected.
 
 ### 5.2.1 Access levels (replace per-operation Enabled toggles)

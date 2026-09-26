@@ -487,6 +487,19 @@ describe('execute → gate → plugin', () => {
       });
     });
 
+    it('send calls with parameters the rule does not accept to a human, and say so on the rule', async () => {
+      const t = await setup();
+      t.setLevel('ask');
+      const ruleId = addRule(t);
+      await expect(t.exec(`await echo.call('echo.set', { name: 'tank/media/tv', quota: 5 });`)).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'PERMISSION_DENIED' },
+      });
+      const rule = t.db.select().from(preApprovalRules).where(eq(preApprovalRules.id, ruleId)).get()!;
+      expect(rule.strictMissAt).toBeInstanceOf(Date);
+      expect(rule.lastTriggeredAt).toBeNull();
+    });
+
     it('ignore expired and disabled rules', async () => {
       const t = await setup();
       t.setLevel('ask');

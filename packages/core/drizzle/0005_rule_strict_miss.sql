@@ -1,0 +1,1 @@
+ALTER TABLE `pre_approval_rules` ADD `strict_miss_at` integer;

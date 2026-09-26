@@ -338,3 +338,57 @@ describe('Endpoint settings', () => {
     });
   });
 });
+
+describe('Pre-approval rules', () => {
+  it('builds strict rules: a named field, "any value" fields and other accepted parameters', async () => {
+    const { calls } = fakeApi({
+      'GET /api/session': signedIn,
+      'GET /api/overview': overview,
+      'GET /api/instances/i1/rules': [],
+      'GET /api/instances/i1/operations': [
+        op('pool.dataset.create', { classification: 'write', matchProfile: 'ds', mode: 'approve' }),
+      ],
+      'GET /api/plugins': [
+        {
+          id: 'p1',
+          manifest: {
+            matchProfiles: {
+              ds: [
+                { field: '/name', label: 'Name', op: 'prefix', widget: 'text' },
+                { field: '/compression', label: 'Compression', op: 'in', widget: 'multiselect' },
+              ],
+            },
+          },
+        },
+      ],
+      'POST /api/instances/i1/rules': {},
+    });
+    const { wrapper } = await mountAt('/endpoints/nas/rules');
+    await wrapper
+      .findAll('button')
+      .find((b) => b.text() === 'New rule')!
+      .trigger('click');
+    const dialog = wrapper.get('[role="dialog"]');
+    await dialog.get('select#r-op').setValue('op-pool.dataset.create');
+    await flushPromises();
+    await wrapper.get('[role="dialog"] input[placeholder="tank/media/"]').setValue('tank/media');
+    const compression = wrapper
+      .get('[role="dialog"]')
+      .findAll('.field')
+      .find((f) => f.text().includes('Compression'))!;
+    await compression.get('.any input').setValue(true);
+    await wrapper.get('#r-reason').setValue('media datasets');
+    await wrapper
+      .get('[role="dialog"]')
+      .findAll('button')
+      .find((b) => b.text() === 'Save rule')!
+      .trigger('click');
+    await flushPromises();
+    expect(calls.find((c) => c.method === 'POST')?.body).toMatchObject({
+      match: [
+        { field: '/name', op: 'prefix', value: 'tank/media' },
+        { field: '/compression', op: 'any' },
+      ],
+    });
+  });
+});

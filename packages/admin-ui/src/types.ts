@@ -176,7 +176,7 @@ export interface Operation {
 }
 
 export type MatchCondition =
-  | { field: string; op: 'eq' | 'in' | 'prefix' | 'range' | 'bool'; value: unknown }
+  | { field: string; op: 'eq' | 'in' | 'prefix' | 'range' | 'bool' | 'any'; value?: unknown }
   | { field: '$targets'; areas?: string[]; entities?: string[]; domains?: string[] };
 
 export interface Rule {
@@ -191,6 +191,8 @@ export interface Rule {
   createdAt: string;
   operation: { id: string; key: string; locked: boolean; matchProfile: string | null };
   inert: string | null;
+  /** Last time the conditions held but the call had parameters the rule doesn't accept. */
+  strictMissAt: string | null;
 }
 
 export interface RegistryEntry {
