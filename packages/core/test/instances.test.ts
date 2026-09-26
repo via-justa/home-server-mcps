@@ -23,6 +23,14 @@ afterEach(async () => {
   for (const fn of cleanup.splice(0).reverse()) await fn();
 });
 
+const waitFor = async (pred: () => boolean, ms = 3000) => {
+  const until = Date.now() + ms;
+  while (!pred()) {
+    if (Date.now() > until) throw new Error('timed out waiting for condition');
+    await new Promise((r) => setTimeout(r, 10));
+  }
+};
+
 function setup() {
   const db = openDatabase(':memory:');
   syncPluginRegistry(db, discoverPlugins([{ dir: PLUGINS, source: 'core' }]), { autoEnableCore: true });
@@ -168,6 +176,24 @@ describe('InstanceManager', () => {
     await t.manager.updateConnection(inst.id, { config: { mode: 'bad-output' } });
     await expect(t.manager.syncNow(inst.id)).rejects.toThrow();
     expect(t.manager.get(inst.id).status).toBe('ready');
+  });
+
+  it('scrubs secret values out of plugin errors before they are stored, audited or notified (review L11)', async () => {
+    const t = setup();
+    const token = 'super-secret-token-1234';
+    const inst = await create(t.manager, { token, mode: 'leak-init' });
+    await waitFor(() => t.seen.some((e) => e.name === 'plugin.crashed'));
+    await t.manager.updateConnection(inst.id, { config: { mode: 'leak-sync' } });
+    await expect(t.manager.syncNow(inst.id)).rejects.toThrow();
+
+    const everything = JSON.stringify([
+      t.seen.filter((e) => e.name === 'plugin.crashed' || e.name === 'sync.failed'),
+      t.db.select().from(auditLog).all(),
+      t.manager.get(inst.id),
+    ]);
+    expect(everything).toContain('401 for token [REDACTED]');
+    expect(everything).toContain('sync refused for [REDACTED]');
+    expect(everything).not.toContain(token);
   });
 
   it('shares one sync between concurrent callers', async () => {

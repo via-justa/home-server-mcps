@@ -159,6 +159,19 @@ export class InstanceManager {
     return parseInstanceSettings(instance.settings);
   }
 
+  /**
+   * Scrubs an instance's secret values out of plugin/upstream error text before it is stored, audited
+   * or sent to notification channels (an init error can echo a config value or token).
+   */
+  private scrubError(instanceId: string, message: string): string {
+    try {
+      const instance = this.row(instanceId);
+      return createInstanceRedactor({ keyLists: [], secretValues: Object.values(this.readSecrets(instance)) })(message);
+    } catch {
+      return message;
+    }
+  }
+
   /** Everything the gate needs for one instance. */
   runtime(instanceId: string): InstanceRuntime {
     const instance = this.row(instanceId);
@@ -497,7 +510,8 @@ export class InstanceManager {
         const current = this.row(instanceId);
         return { config: current.config as Record<string, unknown>, secrets: this.readSecrets(current) };
       },
-      onStatus: (status, error) => {
+      onStatus: (status, rawError) => {
+        const error = rawError === undefined ? undefined : this.scrubError(instanceId, rawError);
         this.setStatus(instanceId, status, error);
         if (status === 'error' && error) {
           const slug =
@@ -563,7 +577,7 @@ export class InstanceManager {
         });
         return summary;
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = this.scrubError(instanceId, err instanceof Error ? err.message : String(err));
         this.db
           .update(pluginInstances)
           .set({ lastSyncStatus: `error: ${message}`.slice(0, 500) })

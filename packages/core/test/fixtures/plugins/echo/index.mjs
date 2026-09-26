@@ -31,12 +31,15 @@ const handlers = {
     if (config.mode === 'crash-init') process.exit(3);
     if (config.mode === 'fail-init') return fail(id, 'UPSTREAM_ERROR', 'cannot reach upstream');
     if (config.mode === 'hang-init') return;
+    // An upstream error that echoes the credential back (as some APIs do).
+    if (config.mode === 'leak-init') return fail(id, 'UPSTREAM_ERROR', `401 for token ${secrets.token}`);
     reply(id);
   },
   testConnection: (id) => reply(id, { ok: true, upstreamVersion: '1.0' }),
   getUpstreamVersion: (id) => reply(id, config.version ?? '1.0'),
   syncCatalog(id) {
     if (config.mode === 'bad-output') return reply(id, { upstreamVersion: '1.0', operations: 'nope' });
+    if (config.mode === 'leak-sync') return fail(id, 'UPSTREAM_ERROR', `sync refused for ${secrets.token}`);
     reply(id, { upstreamVersion: config.version ?? '1.0', operations: CATALOG });
   },
   resolveOperation(id, { args }) {
