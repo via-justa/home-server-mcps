@@ -20,6 +20,7 @@ import { ACCESS_LEVELS, effectiveAccess } from '../../gate/access.js';
 import { AUTH_MODES } from '../../instances/manager.js';
 import { clientIp, readJson } from '../common.js';
 import type { AdminEnv } from './auth.js';
+import { createRedactor, GLOBAL_SENSITIVE_KEYS } from '../../gate/redact.js';
 
 /** Instance-scoped Admin API routes (design §8.4). Every mutation is audited by the service layer. */
 export function registerInstanceRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
@@ -209,7 +210,15 @@ export function registerInstanceRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
 
   app.get('/api/instances/:id/registry', (c) => {
     exists(c.req.param('id'));
-    return c.json(findRegistryEntries(ctx.db, c.req.param('id'), c.req.query()));
+    // Mirrored attributes can hold tokens (HA camera `access_token`); the portal gets them redacted too.
+    const entries = findRegistryEntries(ctx.db, c.req.param('id'), c.req.query());
+    let redact = createRedactor(GLOBAL_SENSITIVE_KEYS);
+    try {
+      redact = ctx.instances.runtime(c.req.param('id')).redact;
+    } catch {
+      // Plugin not usable right now: the global keys still apply.
+    }
+    return c.json(redact(entries));
   });
 
   app.get('/api/instances/:id/options/:source', async (c) => {

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createAppContext } from '../src/app.js';
 import { base32Decode, currentStep, totpAt } from '../src/auth/totp.js';
+import { applyRegistrySync } from '../src/catalog/registry.js';
 import { loadConfig } from '../src/config/env.js';
 import { createAdminApp } from '../src/http/admin-app.js';
 import { browser } from './admin-client.js';
@@ -144,6 +145,29 @@ describe('setup, login and sessions', () => {
 });
 
 describe('instances and access', () => {
+  it('redacts registry attributes in the picker (review L12)', async () => {
+    const t = await setup();
+    const b = await signedIn(t);
+    const inst = await t.ctx.instances.create({
+      pluginId: 'echo',
+      slug: 'echo',
+      connection: { token: 'upstream-token-5678' },
+    });
+    applyRegistrySync(t.ctx.db, inst.id, [
+      {
+        kind: 'entity',
+        id: 'camera.door',
+        name: 'Door',
+        attrs: { access_token: 'cam-abc', entity_picture: '/api/camera_proxy?token=upstream-token-5678', fps: 5 },
+      },
+    ]);
+    const body = JSON.stringify(await (await b.get(`/api/instances/${inst.id}/registry?kind=entity`)).json());
+    expect(body).toContain('camera.door');
+    expect(body).not.toContain('cam-abc');
+    expect(body).not.toContain('upstream-token-5678');
+    expect(body).toContain('"fps":5');
+  });
+
   async function withInstance() {
     const t = await setup();
     const b = await signedIn(t);
