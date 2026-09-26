@@ -3,7 +3,7 @@ import { streamSSE } from 'hono/streaming';
 import { asc, count, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import type { AppContext } from '../../app.js';
-import { exportAuditCsv, queryAudit } from '../../audit-query.js';
+import { auditCsvChunks, queryAudit } from '../../audit-query.js';
 import { toPublicUser } from '../../auth/users.js';
 import { pluginInstances, plugins } from '../../db/schema.js';
 import { ConflictError, NotFoundError, ValidationError } from '../../errors.js';
@@ -124,7 +124,20 @@ export function registerSystemRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
   app.get('/api/audit/export.csv', (c) => {
     c.header('content-type', 'text/csv; charset=utf-8');
     c.header('content-disposition', `attachment; filename="audit-${new Date().toISOString().slice(0, 10)}.csv"`);
-    return c.body(exportAuditCsv(ctx.db, c.req.query()));
+    const chunks = auditCsvChunks(ctx.db, c.req.query());
+    const encoder = new TextEncoder();
+    return c.body(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          const next = chunks.next();
+          if (next.done) controller.close();
+          else controller.enqueue(encoder.encode(next.value));
+        },
+        cancel() {
+          chunks.return(undefined);
+        },
+      }),
+    );
   });
 
   // ── MCP bearer tokens (design §6.2) ──

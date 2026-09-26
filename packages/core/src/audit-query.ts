@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, lte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, lt, lte, or, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import type { DbLike } from './db/index.js';
@@ -83,20 +83,35 @@ function csvCell(v: unknown): string {
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-export function exportAuditCsv(db: DbLike, raw: unknown): string {
-  const q = AuditQuerySchema.parse({ ...(raw as object), limit: 1000 });
-  const lines = [CSV_COLUMNS.join(',')];
-  for (let offset = 0; ; offset += 1000) {
+const CSV_PAGE = 1000;
+
+/**
+ * The audit CSV, one page of rows at a time, so an export of a large log never sits in memory at once.
+ * Pages continue from the last row seen (keyset), not by offset: rows written during the export
+ * neither shift nor repeat what follows.
+ */
+export function* auditCsvChunks(db: DbLike, raw: unknown): Generator<string> {
+  const q = AuditQuerySchema.parse({ ...(raw as object), limit: CSV_PAGE });
+  yield `${CSV_COLUMNS.join(',')}\n`;
+  let last: { at: Date; id: number } | undefined;
+  for (;;) {
+    const after = last
+      ? or(lt(auditLog.at, last.at), and(eq(auditLog.at, last.at), lt(auditLog.id, last.id)))
+      : undefined;
     const rows = db
       .select()
       .from(auditLog)
-      .where(where(q))
+      .where(and(where(q), after))
       .orderBy(desc(auditLog.at), desc(auditLog.id))
-      .limit(1000)
-      .offset(offset)
+      .limit(CSV_PAGE)
       .all();
-    for (const r of rows) lines.push(CSV_COLUMNS.map((c) => csvCell(r[c])).join(','));
-    if (rows.length < 1000) break;
+    if (rows.length) yield rows.map((r) => `${CSV_COLUMNS.map((c) => csvCell(r[c])).join(',')}\n`).join('');
+    if (rows.length < CSV_PAGE) return;
+    const tail = rows.at(-1)!;
+    last = { at: tail.at, id: tail.id };
   }
-  return `${lines.join('\n')}\n`;
+}
+
+export function exportAuditCsv(db: DbLike, raw: unknown): string {
+  return [...auditCsvChunks(db, raw)].join('');
 }
