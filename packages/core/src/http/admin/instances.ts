@@ -80,7 +80,7 @@ export function registerInstanceRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
     return c.json(await ctx.instances.updateConnection(c.req.param('id'), body, actor(c)));
   });
 
-  // Testing a connection makes the server talk to arbitrary hosts; throttled so it can't be an oracle (TN §4).
+  // Testing a connection makes the server talk to arbitrary hosts; throttled so it can't be an oracle.
   app.post('/api/instances/:id/connection/test', async (c) => {
     if (!ctx.throttle.allowIp(clientIp(c, ctx.config.TRUST_PROXY))) {
       return c.json({ error: 'rate_limited', message: 'Too many attempts; try again later' }, 429);
@@ -210,7 +210,7 @@ export function registerInstanceRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
 
   app.get('/api/instances/:id/registry', (c) => {
     exists(c.req.param('id'));
-    // Mirrored attributes can hold tokens (HA camera `access_token`); the portal gets them redacted too.
+    // Mirrored attributes can hold tokens (an `access_token`, say); the portal gets them redacted too.
     const query = c.req.query();
     const entries = findRegistryEntries(ctx.db, c.req.param('id'), { ...query, scopes: scopesFromQuery(query) });
     let redact = createRedactor(GLOBAL_SENSITIVE_KEYS);

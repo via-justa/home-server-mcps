@@ -10,7 +10,7 @@ import { MatchSchema } from '../gate/match.js';
 import { resolveAccess } from './groups.js';
 
 /**
- * Pre-approval rules (design §5.2, TN §3.5): picked from the synced catalog, never free text; a
+ * Pre-approval rules (design §5.2): picked from the synced catalog, never free text; a
  * required reason; structured match; optional rate limit and expiry. Locked operations can never be
  * referenced (409), enforced here regardless of what the UI offers.
  */

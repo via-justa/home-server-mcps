@@ -45,15 +45,15 @@ describe('0002 access levels migration', () => {
       INSERT INTO plugin_instances (id, plugin_id, slug, display_name) VALUES ('i1', 'p1', 'nas', 'NAS');
       INSERT INTO operation_groups (id, instance_id, key, label, level, first_seen_at) VALUES
         ('gw', 'i1', 'app', 'Apps', 'write', ${now}),
-        ('gr', 'i1', 'pool', 'Pools', 'read', ${now});
+        ('gr', 'i1', 'store', 'Stores', 'read', ${now});
       INSERT INTO operations (id, instance_id, key, kind, plugin_group, group_id, classification, classification_source,
           inferred_classification, inferred_reason, locked, excluded, locked_opt_in, write_acknowledged,
           first_seen_at, last_seen_at) VALUES
         ('o1', 'i1', 'app.upgrade', 'method', 'app', 'gw', 'write', 'inferred', 'write', 'x', 0, 0, 0, 1, ${now}, ${now}),
         ('o2', 'i1', 'app.stop', 'method', 'app', 'gw', 'write', 'inferred', 'write', 'x', 0, 1, 0, 1, ${now}, ${now}),
         ('o3', 'i1', 'app.delete', 'method', 'app', 'gw', 'write', 'locked', 'write', 'x', 1, 0, 1, 1, ${now}, ${now}),
-        ('o4', 'i1', 'pool.export', 'method', 'pool', 'gr', 'write', 'locked', 'write', 'x', 1, 0, 1, 1, ${now}, ${now}),
-        ('o5', 'i1', 'pool.query', 'method', 'pool', 'gr', 'read', 'inferred', 'read', 'x', 0, 0, 0, 0, ${now}, ${now});
+        ('o4', 'i1', 'store.export', 'method', 'store', 'gr', 'write', 'locked', 'write', 'x', 1, 0, 1, 1, ${now}, ${now}),
+        ('o5', 'i1', 'store.query', 'method', 'store', 'gr', 'read', 'inferred', 'read', 'x', 0, 0, 0, 0, ${now}, ${now});
       INSERT INTO mcp_tokens (id, name, token_hash, scope) VALUES ('t1', 'old', 'h', '["*"]');
       INSERT INTO oauth_clients (id, client_id, name, redirect_uris, registered_via)
         VALUES ('c1', 'cid', 'Claude', '[]', 'dcr');
@@ -76,7 +76,7 @@ describe('0002 access levels migration', () => {
         .map((g) => [g.key, g.level]),
     ).toEqual([
       ['app', 'ask'],
-      ['pool', 'read'],
+      ['store', 'read'],
     ]);
     expect(access('app.upgrade')).toEqual({ reachable: true, mode: 'approve', level: 'ask' });
     // Exclusions become an explicit None.
@@ -84,8 +84,8 @@ describe('0002 access levels migration', () => {
     // An opted-in locked op stays callable (with approval) where it was: in a group that was at write.
     expect(access('app.delete')).toEqual({ reachable: true, mode: 'approve', level: 'ask' });
     // Its opt-in did nothing in a read-only group, so it isn't opened now either.
-    expect(access('pool.export')).toEqual({ reachable: false, reason: 'locked_not_opted_in' });
-    expect(access('pool.query')).toMatchObject({ reachable: true, mode: 'run' });
+    expect(access('store.export')).toEqual({ reachable: false, reason: 'locked_not_opted_in' });
+    expect(access('store.query')).toMatchObject({ reachable: true, mode: 'run' });
 
     // Credentials issued before ceilings existed keep their reach.
     expect(db.select().from(schema.mcpTokens).get()?.access).toBe('write');

@@ -131,7 +131,7 @@ async function withPendingCall(code: string, opts: { totp?: boolean; lockedAsk?:
 describe('approval page', () => {
   it('needs a signed-in user with TOTP and a POST: opening the link alone decides nothing', async () => {
     const t = await withPendingCall(
-      `return (await echo.call('echo.set', { name: 'tank/a', password: 'hunter2' })).key;`,
+      `return (await echo.call('echo.set', { name: 'vol/a', password: 'hunter2' })).key;`,
     );
     expect(t.page).toMatch(/^\/a\/[\w-]+$/);
 
@@ -159,7 +159,7 @@ describe('approval page', () => {
   });
 
   it('asks locked operations for a fresh TOTP and the typed confirmation, and can deny', async () => {
-    const t = await withPendingCall(`return (await echo.call('echo.delete', { name: 'tank/x' })).key;`, {
+    const t = await withPendingCall(`return (await echo.call('echo.delete', { name: 'vol/x' })).key;`, {
       lockedAsk: true,
     });
     await t.signIn(t.page);
@@ -168,11 +168,11 @@ describe('approval page', () => {
 
     t.advance(6 * 60_000);
     const pageHtml = await (await t.browse(t.page)).text();
-    expect(pageHtml).toContain('Type <code>tank/x</code> to approve');
+    expect(pageHtml).toContain('Type <code>vol/x</code> to approve');
     expect(pageHtml).toContain('Authenticator code');
     const csrf = hidden(pageHtml, 'csrf');
 
-    const noCode = await t.browse(t.page, { decision: 'approve', confirm: 'tank/x', csrf });
+    const noCode = await t.browse(t.page, { decision: 'approve', confirm: 'vol/x', csrf });
     expect(noCode.status).toBe(400);
     expect(await noCode.text()).toContain('valid authenticator code');
 
@@ -186,7 +186,7 @@ describe('approval page', () => {
   });
 
   it('never accepts or uses up a recovery code in place of a TOTP code', async () => {
-    const t = await withPendingCall(`return (await echo.call('echo.delete', { name: 'tank/x' })).key;`, {
+    const t = await withPendingCall(`return (await echo.call('echo.delete', { name: 'vol/x' })).key;`, {
       lockedAsk: true,
     });
     await t.signIn(t.page);
@@ -195,7 +195,7 @@ describe('approval page', () => {
     const before = t.ctx.users.get(t.adminId).recoveryCodesHash?.length;
     const res = await t.browse(t.page, {
       decision: 'approve',
-      confirm: 'tank/x',
+      confirm: 'vol/x',
       totp: t.recoveryCodes[0]!,
       csrf,
     });
@@ -231,7 +231,7 @@ describe('approval page', () => {
   });
 
   it('keeps approval sign-ins apart from OAuth consent sign-ins (review L14)', async () => {
-    const t = await withPendingCall(`return (await echo.call('echo.set', { name: 'tank/a' })).key;`);
+    const t = await withPendingCall(`return (await echo.call('echo.set', { name: 'vol/a' })).key;`);
     const signedIn = await t.signIn(t.page);
     const cookie = signedIn.headers.getSetCookie().find((c) => c.startsWith('syn_mcp_approve='))!;
     expect(cookie).toMatch(/Path=\/a(;|$)/);

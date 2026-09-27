@@ -6,7 +6,7 @@ import { z } from 'zod';
  */
 
 export const OperationDescriptorSchema = z.object({
-  /** Stable catalog key, unique per instance: `pool.query`, `POST /request`, `light.turn_on`. */
+  /** Stable catalog key, unique per instance: `widget.list`, `POST /orders`, `widget.set`. */
   key: z.string().min(1).max(512),
   displayName: z.string().optional(),
   /**
@@ -17,7 +17,7 @@ export const OperationDescriptorSchema = z.object({
   kind: z.string().min(1),
   /**
    * Access group: admins set one none/read/write level per group instead of toggling each operation
-   * (design §5.2). Derived during discovery: TrueNAS namespace, Seerr OpenAPI tag, HA domain.
+   * (design §5.2). Derived during discovery: a method namespace, an OpenAPI tag, a service domain.
    */
   group: z
     .string()
@@ -33,7 +33,7 @@ export const OperationDescriptorSchema = z.object({
   /** Defaults to `locked` when omitted. */
   typedConfirmation: z.boolean().optional(),
   attestationRequired: z.boolean().default(false),
-  /** Flags the operation for explicit admin review (e.g. Seerr GET-as-action, unknown HA WS command). */
+  /** Flags the operation for explicit admin review (e.g. a GET that acts, an unknown command). */
   needsReview: z.boolean().default(false),
   matchProfile: z.string().optional(),
   paramsSchema: z.record(z.string(), z.unknown()).optional(),
@@ -50,7 +50,7 @@ export type ParsedOperationDescriptor = z.output<typeof OperationDescriptorSchem
 
 export const SyncCatalogResultSchema = z.object({
   upstreamVersion: z.string(),
-  /** Where the catalog came from, e.g. the Seerr git ref the spec was fetched from. */
+  /** Where the catalog came from, e.g. the version or git ref of the spec it was read from. */
   sourceRef: z.string().optional(),
   operations: z.array(OperationDescriptorSchema),
 });

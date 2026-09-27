@@ -15,17 +15,17 @@ describe('applyCatalogSync', () => {
     const summary = applyCatalogSync(
       db,
       instanceId,
-      catalog(op('app.query'), op('app.upgrade'), op('app.delete', { locked: true }), op('pool.query')),
+      catalog(op('app.query'), op('app.upgrade'), op('app.delete', { locked: true }), op('store.query')),
     );
 
     expect(summary).toMatchObject({
       added: 4,
-      newGroups: ['app', 'pool'],
+      newGroups: ['app', 'store'],
       pendingReview: ['app.upgrade', 'app.delete'],
     });
     expect(listGroups(db, instanceId).map((g) => [g.key, g.level])).toEqual([
       ['app', 'read'],
-      ['pool', 'read'],
+      ['store', 'read'],
     ]);
     expect(opRow(db, 'app.delete')).toMatchObject({
       classification: 'write',
@@ -104,13 +104,13 @@ describe('applyCatalogSync', () => {
 
   it('disables pre-approval rules on operations that become locked', () => {
     const { db, instanceId } = seedInstance();
-    applyCatalogSync(db, instanceId, catalog(op('pool.dataset.create')));
+    applyCatalogSync(db, instanceId, catalog(op('store.volume.create')));
     db.insert(preApprovalRules)
-      .values({ id: randomUUID(), instanceId, operationId: opRow(db, 'pool.dataset.create').id, reason: 'media' })
+      .values({ id: randomUUID(), instanceId, operationId: opRow(db, 'store.volume.create').id, reason: 'media' })
       .run();
 
-    const summary = applyCatalogSync(db, instanceId, catalog(op('pool.dataset.create', { locked: true })));
-    expect(summary).toMatchObject({ newlyLocked: ['pool.dataset.create'], rulesDisabled: 1 });
+    const summary = applyCatalogSync(db, instanceId, catalog(op('store.volume.create', { locked: true })));
+    expect(summary).toMatchObject({ newlyLocked: ['store.volume.create'], rulesDisabled: 1 });
     expect(db.select().from(preApprovalRules).get()?.enabled).toBe(false);
     expect(
       db

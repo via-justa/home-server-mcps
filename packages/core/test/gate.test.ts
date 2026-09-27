@@ -91,7 +91,7 @@ function formClient() {
   const prompts: ClientPrompts = {
     form: async (req) => {
       asked.push(req);
-      return { action: 'accept', content: { approve: true, confirm: 'tank/x' } as { approve: unknown } };
+      return { action: 'accept', content: { approve: true, confirm: 'vol/x' } as { approve: unknown } };
     },
   };
   return { prompts, asked };
@@ -176,12 +176,12 @@ describe('execute → gate → plugin', () => {
     it('never auto-runs a locked operation', async () => {
       const t = await setup();
       t.setLevel('write');
-      await expect(t.exec(`await echo.call('echo.delete', { name: 'tank/x' });`)).resolves.toMatchObject({
+      await expect(t.exec(`await echo.call('echo.delete', { name: 'vol/x' });`)).resolves.toMatchObject({
         ok: false,
         error: { code: 'OPERATION_DISABLED', message: expect.stringContaining('protected operation') },
       });
       updateOperation(t.db, t.instanceId, t.opId('echo.delete'), { level: 'ask' });
-      await expect(t.exec(`await echo.call('echo.delete', { name: 'tank/x' });`)).resolves.toMatchObject({
+      await expect(t.exec(`await echo.call('echo.delete', { name: 'vol/x' });`)).resolves.toMatchObject({
         ok: false,
         error: { code: 'PERMISSION_DENIED' }, // it asked; this client has no way to answer
       });
@@ -193,7 +193,7 @@ describe('execute → gate → plugin', () => {
       const t = await setup();
       t.setLevel('ask');
       const client = urlClient((req) => t.approvals.decide(req.approvalId, { approve: true, decidedBy: 'admin' }));
-      const r = await t.exec(`return await echo.call('echo.set', { name: 'tank/a', password: 'pw' });`, client.prompts);
+      const r = await t.exec(`return await echo.call('echo.set', { name: 'vol/a', password: 'pw' });`, client.prompts);
       expect(r).toMatchObject({ ok: true, value: { key: 'echo.set' } });
 
       const [req] = client.opened;
@@ -210,7 +210,7 @@ describe('execute → gate → plugin', () => {
         classification: 'write',
       });
       const row = t.db.select().from(pendingApprovals).get()!;
-      expect(row).toMatchObject({ status: 'approved', paramsDisplay: { name: 'tank/a', password: '[REDACTED]' } });
+      expect(row).toMatchObject({ status: 'approved', paramsDisplay: { name: 'vol/a', password: '[REDACTED]' } });
       expect(row.paramsHash).toMatch(/^[0-9a-f]{64}$/);
     });
 
@@ -255,12 +255,12 @@ describe('execute → gate → plugin', () => {
 
       // Locked (typed-confirmation) operations still need the approval page.
       updateOperation(t.db, t.instanceId, t.opId('echo.delete'), { level: 'ask' });
-      await expect(
-        t.exec(`await echo.call('echo.delete', { name: 'tank/x' });`, client.prompts),
-      ).resolves.toMatchObject({
-        ok: false,
-        error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('only supports form') },
-      });
+      await expect(t.exec(`await echo.call('echo.delete', { name: 'vol/x' });`, client.prompts)).resolves.toMatchObject(
+        {
+          ok: false,
+          error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('only supports form') },
+        },
+      );
       expect(client.asked).toHaveLength(1);
     });
 
@@ -381,10 +381,10 @@ describe('execute → gate → plugin', () => {
       const r = await t.exec(`await echo.call('echo.set', { name: 'x', drift: true });`, client.prompts);
       expect(r).toMatchObject({ ok: false, error: { code: 'TARGETS_CHANGED' } });
       const approval = t.db.select().from(pendingApprovals).get()!;
-      expect(approval.resolvedTargets).toMatchObject([{ id: 'light.e1' }]);
+      expect(approval.resolvedTargets).toMatchObject([{ id: 'widget.e1' }]);
       expect(t.audits()[0]).toMatchObject({
         decision: 'rejected:targets_changed',
-        detail: expect.objectContaining({ targetsNow: [expect.objectContaining({ id: 'light.e2' })] }),
+        detail: expect.objectContaining({ targetsNow: [expect.objectContaining({ id: 'widget.e2' })] }),
       });
     });
 
@@ -401,7 +401,7 @@ describe('execute → gate → plugin', () => {
     it('stay unreachable until the operation itself is set to Ask', async () => {
       const t = await setup();
       t.setLevel('ask');
-      await expect(t.exec(`await echo.call('echo.delete', { name: 'tank/x' });`)).resolves.toMatchObject({
+      await expect(t.exec(`await echo.call('echo.delete', { name: 'vol/x' });`)).resolves.toMatchObject({
         ok: false,
         error: { code: 'OPERATION_DISABLED' },
       });
@@ -411,12 +411,12 @@ describe('execute → gate → plugin', () => {
       const t = await setup();
       updateOperation(t.db, t.instanceId, t.opId('echo.delete'), { level: 'ask' });
       const client = urlClient((req) => {
-        expect(() => t.approvals.decide(req.approvalId, { approve: true, confirm: 'tank/y', decidedBy: 'a' })).toThrow(
-          /Type "tank\/x" exactly/,
+        expect(() => t.approvals.decide(req.approvalId, { approve: true, confirm: 'vol/y', decidedBy: 'a' })).toThrow(
+          /Type "vol\/x" exactly/,
         );
-        t.approvals.decide(req.approvalId, { approve: true, confirm: 'tank/x', decidedBy: 'a' });
+        t.approvals.decide(req.approvalId, { approve: true, confirm: 'vol/x', decidedBy: 'a' });
       });
-      const r = await t.exec(`return (await echo.call('echo.delete', { name: 'tank/x' })).key;`, client.prompts);
+      const r = await t.exec(`return (await echo.call('echo.delete', { name: 'vol/x' })).key;`, client.prompts);
       expect(r).toMatchObject({ ok: true, value: 'echo.delete' });
     });
 
@@ -434,7 +434,7 @@ describe('execute → gate → plugin', () => {
         .insert(preApprovalRules)
         .values({ id: randomUUID(), instanceId: t.instanceId, operationId: t.opId('echo.delete'), reason: 'x' })
         .run();
-      const r = await t.exec(`await echo.call('echo.delete', { name: 'tank/x' });`);
+      const r = await t.exec(`await echo.call('echo.delete', { name: 'vol/x' });`);
       expect(r).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
     });
   });
@@ -448,8 +448,8 @@ describe('execute → gate → plugin', () => {
           id,
           instanceId: t.instanceId,
           operationId: t.opId('echo.set'),
-          match: [{ field: '/name', op: 'prefix', value: 'tank/media/' }],
-          reason: 'media datasets',
+          match: [{ field: '/name', op: 'prefix', value: 'vol/media/' }],
+          reason: 'media volumes',
           ...extra,
         })
         .run();
@@ -461,9 +461,9 @@ describe('execute → gate → plugin', () => {
       t.setLevel('ask');
       const ruleId = addRule(t);
       await expect(
-        t.exec(`return (await echo.call('echo.set', { name: 'tank/media/tv' })).key;`),
+        t.exec(`return (await echo.call('echo.set', { name: 'vol/media/tv' })).key;`),
       ).resolves.toMatchObject({ ok: true });
-      await expect(t.exec(`await echo.call('echo.set', { name: 'tank/other' });`)).resolves.toMatchObject({
+      await expect(t.exec(`await echo.call('echo.set', { name: 'vol/other' });`)).resolves.toMatchObject({
         ok: false,
         error: { code: 'PERMISSION_DENIED' },
       });
@@ -475,9 +475,9 @@ describe('execute → gate → plugin', () => {
       const t = await setup();
       t.setLevel('ask');
       const ruleId = addRule(t, { rateLimit: 1, windowSeconds: 3600 });
-      await t.exec(`await echo.call('echo.set', { name: 'tank/media/a' });`);
+      await t.exec(`await echo.call('echo.set', { name: 'vol/media/a' });`);
       const client = urlClient((req) => t.approvals.decide(req.approvalId, { approve: true, decidedBy: 'admin' }));
-      const r = await t.exec(`return (await echo.call('echo.set', { name: 'tank/media/b' })).key;`, client.prompts);
+      const r = await t.exec(`return (await echo.call('echo.set', { name: 'vol/media/b' })).key;`, client.prompts);
       expect(r).toMatchObject({ ok: true });
       const [first, second] = t.audits();
       expect(first?.decision).toBe(`auto-approved:rule:${ruleId}`);
@@ -491,7 +491,7 @@ describe('execute → gate → plugin', () => {
       const t = await setup();
       t.setLevel('ask');
       const ruleId = addRule(t);
-      await expect(t.exec(`await echo.call('echo.set', { name: 'tank/media/tv', quota: 5 });`)).resolves.toMatchObject({
+      await expect(t.exec(`await echo.call('echo.set', { name: 'vol/media/tv', quota: 5 });`)).resolves.toMatchObject({
         ok: false,
         error: { code: 'PERMISSION_DENIED' },
       });
@@ -505,7 +505,7 @@ describe('execute → gate → plugin', () => {
       t.setLevel('ask');
       addRule(t, { expiresAt: new Date(Date.now() - 1000) });
       addRule(t, { enabled: false });
-      await expect(t.exec(`await echo.call('echo.set', { name: 'tank/media/a' });`)).resolves.toMatchObject({
+      await expect(t.exec(`await echo.call('echo.set', { name: 'vol/media/a' });`)).resolves.toMatchObject({
         ok: false,
         error: { code: 'PERMISSION_DENIED' },
       });
@@ -593,7 +593,7 @@ describe('execute → gate → plugin', () => {
 
   it('charges write budgets per principal, and only for writes that run (review L20)', async () => {
     const t = await setup({ executePerMinute: 1000, writesPerMinute: 2 });
-    const write = `return (await echo.call('echo.set', { name: 'tank/a' })).key;`;
+    const write = `return (await echo.call('echo.set', { name: 'vol/a' })).key;`;
     // Denied writes (no way to ask anyone) don't use the budget.
     t.setLevel('ask');
     for (let i = 0; i < 3; i++)

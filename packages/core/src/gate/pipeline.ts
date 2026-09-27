@@ -28,7 +28,7 @@ import type { Redactor } from './redact.js';
  * Reads run straight away; acknowledged writes at level `write` are auto-approved.
  *
  * Every branch, including every rejection, writes one `call` audit event. Calls within one
- * `execute` run strictly one at a time, so a pending approval blocks the whole script (TN §3.1).
+ * `execute` run strictly one at a time, so a pending approval blocks the whole script.
  */
 
 export interface GateDeps {
@@ -181,7 +181,7 @@ export function createGateBindings(
     try {
       ensureRunning();
 
-      // 0. Map the raw binding call onto a catalog key (Seerr path templates, HA garage-door split…).
+      // 0. Map the raw binding call onto a catalog key (path templates, split keys…).
       const resolved = await rt.plugin().call('resolveOperation', { fn, args });
       audit.operationKey = resolved.key;
       const op = deps.db
@@ -191,7 +191,7 @@ export function createGateBindings(
         .get() as OperationRow | undefined;
       audit.params = rt.redact(resolved.params);
 
-      // 1. Attestation, before anything else about the op is revealed (HA §3.6).
+      // 1. Attestation, before anything else about the op is revealed.
       if (op && !op.stale && op.attestationRequired) {
         const presented = (resolved.params as { best_practice_key?: unknown } | null)?.best_practice_key;
         if (
@@ -241,7 +241,7 @@ export function createGateBindings(
         audit.resolvedTargets = targets;
       }
 
-      // 4. Config transforms: compute the real diff against the live object (HA §2.8).
+      // 4. Config transforms: compute the real diff against the live object.
       let params = resolved.params;
       let diff: unknown;
       let expectedHash: string | undefined;
@@ -265,7 +265,7 @@ export function createGateBindings(
         if (!deps.limiter.allows(writeBucket, rt.settings.writesPerMinute, 60_000)) overWriteBudget();
 
         // 6. Level `write`: acknowledged writes are auto-approved. Level `ask`: pre-approval rules, which
-        //    never cover locked ops (TN §3.4) nor writes still waiting for acknowledgement.
+        //    never cover locked ops nor writes still waiting for acknowledgement.
         let preapproved = false;
         if (mode === 'auto') {
           preapproved = true;

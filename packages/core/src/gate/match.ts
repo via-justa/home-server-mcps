@@ -68,7 +68,7 @@ function paramMatches(actual: unknown, op: string, expected: unknown): boolean {
       return values.length > 0 && values.every((v) => allowed.has(canonicalJson(v)));
     }
     case 'prefix':
-      // Path-segment boundary: "tank/media" matches "tank/media" and "tank/media/tv", not "tank/media-private".
+      // Path-segment boundary: "vol/media" matches "vol/media" and "vol/media/tv", not "vol/media-private".
       return (
         typeof actual === 'string' &&
         typeof expected === 'string' &&
@@ -105,7 +105,7 @@ const escapePointer = (key: string) => key.replace(/~/g, '~0').replace(/\//g, '~
 /**
  * Whether every parameter is covered by some condition: a condition on a path covers everything under
  * it; an object or array only partly covered has each of its keys (or indexes: `/0/name`) checked in
- * turn. Nothing (or `{}` / `[]`) is covered. Arrays matter for positional APIs such as TrueNAS, whose
+ * turn. Nothing (or `{}` / `[]`) is covered. Arrays matter for positional APIs, whose
  * params are `[{ name, … }]`.
  */
 export function coversAllParams(

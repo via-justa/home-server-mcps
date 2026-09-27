@@ -66,7 +66,7 @@ describe('port separation', () => {
   });
 
   it('does not expose MCP endpoints or OAuth on the admin port', async () => {
-    const post = await fetch(`${admin}/truenas`, {
+    const post = await fetch(`${admin}/acme`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
@@ -90,7 +90,7 @@ describe('mcp listener', () => {
 
 describe('admin listener', () => {
   it('serves the SPA for client-side routes', async () => {
-    const res = await fetch(`${admin}/endpoints/truenas/connection`);
+    const res = await fetch(`${admin}/endpoints/acme/connection`);
     expect(res.status).toBe(200);
     expect(await res.text()).toContain('<div id="app">');
   });

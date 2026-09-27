@@ -23,14 +23,14 @@ describe('OperationDescriptorSchema', () => {
     expect(() => OperationDescriptorSchema.parse(withoutGroup)).toThrow();
   });
 
-  it.each(['app', 'pool.dataset', 'sharing.smb', 'request', 'light', 'config_entries', 'alarm-panel'])(
+  it.each(['app', 'store.volume', 'share.files', 'request', 'widget', 'config_entries', 'alert-panel'])(
     'accepts group %s',
     (group) => {
       expect(() => OperationDescriptorSchema.parse({ ...base, group })).not.toThrow();
     },
   );
 
-  it.each(['', 'App', '.app', 'pool/dataset', 'a b', 'x'.repeat(129)])('rejects group %j', (group) => {
+  it.each(['', 'App', '.app', 'store/volume', 'a b', 'x'.repeat(129)])('rejects group %j', (group) => {
     expect(() => OperationDescriptorSchema.parse({ ...base, group })).toThrow();
   });
 });

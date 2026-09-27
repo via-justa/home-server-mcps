@@ -51,7 +51,7 @@ const handlers = {
   resolveTargets(id, { params }) {
     if (!params?.drift) return reply(id, []);
     resolutions++;
-    reply(id, [{ kind: 'entity', id: `light.e${resolutions}`, name: `Light ${resolutions}`, scopes: {} }]);
+    reply(id, [{ kind: 'entity', id: `widget.e${resolutions}`, name: `Widget ${resolutions}`, scopes: {} }]);
   },
   summarize(id, { key, params }) {
     const confirmLiteral = key === 'echo.delete' ? params.name : undefined;

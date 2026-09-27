@@ -97,7 +97,7 @@ export class InstanceManager {
     return { ...p, parsed: parseManifest(p.manifest) };
   }
 
-  /** Resolves a plugin by row id or by manifest id (`truenas`). */
+  /** Resolves a plugin by row id or by manifest id (`acme`). */
   private pluginByAnyId(id: string): PluginRow {
     const p =
       this.db.select().from(plugins).where(eq(plugins.id, id)).get() ??
@@ -632,7 +632,7 @@ export class InstanceManager {
 
   /**
    * Called before serving MCP traffic (session start, and cheaply on each tool call):
-   * - never synced → sync now; failure means the endpoint can't serve (TN §2.2, per instance);
+   * - never synced → sync now; failure means the endpoint can't serve (per instance);
    * - stale beyond `syncMaxAgeMs` → sync, but keep serving the last catalog if it fails;
    * - otherwise compare the upstream version (throttled) and sync on a mismatch.
    */

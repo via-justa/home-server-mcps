@@ -4,7 +4,7 @@ import { openDatabase } from '../src/db/index.js';
 import type { Db } from '../src/db/index.js';
 import { pluginInstances, plugins } from '../src/db/schema.js';
 
-export function seedInstance(db: Db = openDatabase(':memory:'), slug = 'truenas') {
+export function seedInstance(db: Db = openDatabase(':memory:'), slug = 'acme') {
   const pluginRowId = randomUUID();
   db.insert(plugins)
     .values({

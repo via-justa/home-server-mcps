@@ -23,8 +23,8 @@ const req = (method: string, params?: unknown) => ({ jsonrpc: '2.0' as const, id
 describe('createDispatcher', () => {
   it('returns handler results', async () => {
     await expect(dispatch(req('getUpstreamVersion'))).resolves.toEqual({ jsonrpc: '2.0', id: 7, result: '25.10.1' });
-    await expect(dispatch(req('resolveOperation', { fn: 'call', args: ['pool.query', {}] }))).resolves.toMatchObject({
-      result: { key: 'pool.query', params: {} },
+    await expect(dispatch(req('resolveOperation', { fn: 'call', args: ['store.query', {}] }))).resolves.toMatchObject({
+      result: { key: 'store.query', params: {} },
     });
   });
 

@@ -46,7 +46,7 @@ export type Binding = (args: unknown[], budget: BudgetControl) => Promise<unknow
 
 export interface SandboxRun {
   code: string;
-  /** `{ truenas: { call: fn } }` becomes `truenas.call(...)` inside the sandbox. */
+  /** `{ acme: { call: fn } }` becomes `acme.call(...)` inside the sandbox. */
   bindings: Record<string, Record<string, Binding>>;
   limits?: Partial<SandboxLimits>;
   /**

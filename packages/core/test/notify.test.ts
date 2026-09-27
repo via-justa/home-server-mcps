@@ -164,7 +164,7 @@ describe('notification channels', () => {
       instanceId: 'i',
       slug: 'nas',
       added: 1,
-      pendingReview: ['pool.create'],
+      pendingReview: ['store.create'],
       newGroups: [],
     });
     await until(() => sent.length === 1);
