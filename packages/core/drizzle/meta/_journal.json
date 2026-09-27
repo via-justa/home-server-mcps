@@ -50,6 +50,20 @@
       "when": 1790412927063,
       "tag": "0006_attestation_waived",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1790508627728,
+      "tag": "0007_registry_scopes",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1790508628574,
+      "tag": "0008_drop_registry_domain",
+      "breakpoints": true
     }
   ]
 }

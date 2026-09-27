@@ -197,6 +197,15 @@ Validated by a zod schema in `@synoikia/plugin-sdk`. Abridged example for Home A
   },
   "sensitiveKeys": ["access_token", "webhook_id", "entity_picture"],
   "network": { "hosts": ["{{connection.baseUrl}}"] }, // declared intent, shown on install (§4.4)
+  "targets": {
+    // what resolved targets are, and the scopes rules can select them by (§5.2)
+    "label": "Entity",
+    "registryKind": "entity", // registry entries of this kind are the targets; the picker suggests them
+    "scopes": [
+      { "key": "area", "label": "Area", "registryKind": "area" },
+      { "key": "domain", "label": "Domain" },
+    ],
+  },
   "matchProfiles": {
     // reusable match-field sets, referenced by operations
     "light": [
@@ -204,7 +213,8 @@ Validated by a zod schema in `@synoikia/plugin-sdk`. Abridged example for Home A
         "field": "$targets",
         "label": "Targets",
         "widget": "registry-picker",
-        "options": { "kinds": ["area", "entity"], "domainFilter": "light" },
+        "options": { "scopes": ["area"], "filter": { "domain": "light" } },
+        "covers": ["/target"], // params subtrees the selector stands for (strict matching, §5.2)
       },
     ],
     "climate.set_temperature": [
@@ -212,7 +222,8 @@ Validated by a zod schema in `@synoikia/plugin-sdk`. Abridged example for Home A
         "field": "$targets",
         "label": "Targets",
         "widget": "registry-picker",
-        "options": { "kinds": ["entity"], "domainFilter": "climate" },
+        "options": { "scopes": [], "filter": { "domain": "climate" } },
+        "covers": ["/target"],
       },
       {
         "field": "/temperature",
@@ -228,6 +239,14 @@ Validated by a zod schema in `@synoikia/plugin-sdk`. Abridged example for Home A
 
 Secret fields (`writeOnly: true`) are the only connection fields that are encrypted and never returned by the API (§7.2). Every other connection field is plain config.
 
+**Targets are the plugin's to define.** Core has no notion of areas, entities or any other upstream concept. A plugin with `capabilities.targets` declares `targets`:
+
+- `label`: what one target is called in the portal.
+- `registryKind` (optional): the registry kind whose entries are the targets.
+- `scopes`: the dimensions a rule can select targets by. Each has a `key` (lowercase), a `label`, and optionally a `registryKind` whose entry ids are its values.
+
+Every target `resolveTargets` returns reports its value for each declared scope in `scopes[key]`, and registry entries may carry the same `scopes`. A `$targets` match field's `options` choose which declared scopes it offers (`scopes`, all when omitted) and fixed scope values that narrow the picker's suggestions (`filter`). The manifest is rejected if either names an undeclared scope.
+
 ### 3.3 RPC contract (core ⇄ plugin child)
 
 Transport: the Node `child_process.fork` IPC channel, carrying JSON-RPC 2.0 messages. Each request has a timeout (default 30 s; `invoke` inherits the sandbox's remaining budget). The SDK's `runPlugin(handlers)` implements the child side, and the core `PluginHost` implements the parent side. All types are exported from `@synoikia/plugin-sdk`.
@@ -238,9 +257,9 @@ Transport: the Node `child_process.fork` IPC channel, carrying JSON-RPC 2.0 mess
 | `testConnection()` → `{ ok, message?, upstreamVersion? }`                              | ✅                   | Connection page "Test connection". Rate-limited by core.                                                                                                                                                                                                                                                                                     |
 | `getUpstreamVersion()` → `string`                                                      | ✅                   | Cheap version probe for version-triggered sync (TN §5).                                                                                                                                                                                                                                                                                      |
 | `syncCatalog()` → `{ upstreamVersion, sourceRef?, operations: OperationDescriptor[] }` | ✅                   | Full catalog. Core diffs it into `operations` and marks missing rows `stale`.                                                                                                                                                                                                                                                                |
-| `syncRegistry()` → `RegistryEntry[]`                                                   | if `registry`        | Mirror of pickable upstream objects (HA entities, areas, devices, floors).                                                                                                                                                                                                                                                                   |
+| `syncRegistry()` → `RegistryEntry[]`                                                   | if `registry`        | Mirror of pickable upstream objects: `{ kind, id, name, parentId?, scopes?, attrs? }`, kinds chosen by the plugin.                                                                                                                                                                                                                           |
 | `resolveOperation(fn, args)` → `{ key, params }`                                       | ✅                   | Maps a raw binding call to a catalog key. TrueNAS: `call("pool.query", p)` → key `pool.query`. Seerr: `request({method:"POST", path:"/request", body})` → key `POST /request` via path-template matching. HA: `call("light.turn_on", p)` → key `light.turn_on`. An unknown operation throws, and core records `rejected: unknown_operation`. |
-| `resolveTargets(key, params)` → `ResolvedTarget[]`                                     | if `targets`         | Expands area/device targets to concrete entities using the plugin's current registry view. **Must throw** on an unknown area or device (fail closed, HA §7 phase 4).                                                                                                                                                                         |
+| `resolveTargets(key, params)` → `ResolvedTarget[]`                                     | if `targets`         | Expands the call's targets to concrete ones, `{ kind, id, name, scopes }` with a value for each declared scope, using the plugin's current view. **Must throw** on an unknown area or device (fail closed, HA §7 phase 4).                                                                                                                   |
 | `summarize(key, params, targets)` → `{ text, confirmLiteral? }`                        | ✅                   | The human sentence for approvals ("This will unlock **Front Door**"). `confirmLiteral` is the string the approver must type for locked operations (a dataset name, an entity friendly name).                                                                                                                                                 |
 | `prepareWrite(key, params)` → `{ params, diff, expectedHash }`                         | if `configTransform` | Applies a transform against the current object. Throws `ConfigConflict` if the submitted hash is stale. Core shows the diff in the approval prompt and passes `expectedHash` back to `invoke`.                                                                                                                                               |
 | `invoke(key, params, ctx)` → `unknown`                                                 | ✅                   | Performs the upstream call. Core calls it **only after the gate passes**. Upstream permission errors map to a structured `UpstreamDenied` error.                                                                                                                                                                                             |
@@ -397,7 +416,7 @@ The harness offers:
    - `catalog.find({ text?, group?, tag?, kind?, classification?, includeDisabled? })` → descriptors. By default this returns **callable operations only** (§5.2.1), each with `approval: 'none' | 'required' | 'auto'` (runs, asks a human, or is auto-approved at level `write`). When `includeDisabled` is set, the others are included and tagged `disabled` with their `reason` (`level_none`, `read_only`, `token_read_only`, `locked_not_opted_in`) (TN §3.1).
    - `catalog.groups()` → `{ key, label, level, counts: { read, write, locked, pendingReview, overridden } }[]`, so the model can explain why something isn't callable ("TrueNAS apps are read-only on this endpoint").
    - `catalog.get(key)` → the full descriptor with `paramsSchema` and docs.
-   - `registry.find({ kind?, text?, parent?, domain? })` (only if the plugin has `registry`) → matched entries only, never the whole registry (HA §2.4).
+   - `registry.find({ kind?, text?, parent?, scopes? })` (only if the plugin has `registry`) → matched entries only, never the whole registry. `scopes` matches entries whose scope values equal the ones given.
    - `guides.get(key)` (only if `attestation`) → `{ content, best_practice_key }`. The key is `HMAC(server_secret, instance ‖ key ‖ guideVersion ‖ mcpSessionId)`, so it only works in the MCP session that read the guide; a key copied into another session or conversation is refused. Each guide read is audited (`search` / `guide_read`, with the guide version and session).
 3. The return value is redacted (§5.5), size-capped (default 64 KB, truncated with a marker), and audited as a `search` event.
 
@@ -432,8 +451,8 @@ binding(args)
 - **Rate limiting.** `execute` and `search` runs per minute, per principal and instance (default 30; refused with `RATE_LIMITED` before an isolate is created), and upstream write calls per minute, per principal and instance (default 10; checked before any approval is requested, but charged only when the write actually runs, so denied or timed-out calls cost nothing). At most 4 sandboxes run at once per instance and 16 in total (`BUSY`), and each principal keeps at most 16 open MCP sessions (a new one closes its least recently used). These are separate from pre-approval rule rate limits.
 - **Pre-approval match evaluator** (generic, core). A rule's `match` is a list of conditions. Every condition must hold (AND):
   - `{ field: "/json/pointer", op: "eq" | "in" | "prefix" | "range" | "bool", value }` is evaluated against the **normalized params**. A missing field means **no match**.
-  - `{ field: "$targets", areas?: [], entities?: [], domains?: [] }` holds only if **every** resolved target satisfies **all** the set selectors (HA §3.5). Zero resolved targets means no match.
-  - **Matching is strict**: every parameter of the call must be covered by a condition (a condition on a path covers everything under it). A parameter the rule doesn't mention must be absent, unless the rule accepts it with `{ field, op: "any" }`; `{ field: "", op: "any" }` accepts any parameters and the UI marks it "not recommended". So an empty `match` only matches calls without parameters. When a rule's conditions held but the call carried parameters it doesn't accept, the rule records `strict_miss_at` and the rule list says so.
+  - `{ field: "$targets", ids?: [], scopes?: { <key>: [] } }` holds only if **every** resolved target satisfies **all** the set selectors: its id is in `ids`, and for each scope key its value is one of those listed. A target with no value for a selected scope doesn't match. Zero resolved targets means no match. Rules can only use scope keys the operation's `$targets` field offers (§3.2).
+  - **Matching is strict**: every parameter of the call must be covered by a condition (a condition on a path covers everything under it). A rule with a `$targets` condition also covers the params subtrees its field declares in `covers`, since the condition already checks every target they resolve to. A parameter the rule doesn't mention must be absent, unless the rule accepts it with `{ field, op: "any" }`; `{ field: "", op: "any" }` accepts any parameters and the UI marks it "not recommended". So an empty `match` only matches calls without parameters. When a rule's conditions held but the call carried parameters it doesn't accept, the rule records `strict_miss_at` and the rule list says so.
   - `prefix` matches at a path-segment boundary: `tank/media` matches `tank/media` and `tank/media/tv`, not `tank/media-private`.
   - `rate_limit` / `window_seconds` are enforced via `pre_approval_hits`. When the limit is hit, the call **falls back to human approval** instead of being rejected.
 
@@ -622,7 +641,7 @@ operations(id, instance_id FK, key, display_name, kind, tag,
            match_profile, params_schema TEXT, docs TEXT,
            first_seen_at, last_seen_at, stale,
            UNIQUE(instance_id, key))
-registry_entries(id, instance_id FK, kind, ext_id, name, parent_ext_id, domain, attrs TEXT, stale, last_synced_at,
+registry_entries(id, instance_id FK, kind, ext_id, name, parent_ext_id, scopes TEXT, attrs TEXT, stale, last_synced_at,
                  UNIQUE(instance_id, kind, ext_id))
 guides(id, instance_id FK, operation_id FK, version, content, fetched_at)
 
@@ -741,15 +760,15 @@ The per-instance pages are the mockup pages (Connection, Methods, Pre-Approval R
 
 Plugins never ship JavaScript to the admin origin. The places where plugin-specific UI is needed use JSON Schema + UI hints rendered by a **fixed core widget library**:
 
-| Widget                                    | Used for                                                                                                                                                                                                                                                      |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `text`, `url`, `number`, `bool`, `select` | connection fields, scalar match fields                                                                                                                                                                                                                        |
-| `secret`                                  | write-only credential fields (masked hint, rotate)                                                                                                                                                                                                            |
-| `multiselect`                             | static options, or dynamic via `optionsFor(source)` (e.g. TN "app in: plex, sonarr"; mockup `PreApprovalRules.dc.html`)                                                                                                                                       |
-| `prefix`                                  | path/name prefix match (TN `pool.dataset.create` name prefix)                                                                                                                                                                                                 |
-| `range`                                   | numeric range with unit (HA thermostat 65–78 °F)                                                                                                                                                                                                              |
-| `registry-picker`                         | HA Option A (`OptionA.dc.html`): a "Match by" segmented control (Area / Entity / Domain), a checkbox list with live entity counts, an optional narrowing entity search, and a separate optional domain dropdown. Backed by `GET /api/instances/:id/registry`. |
-| `diff`                                    | before/after field diff on the approval page (HA §2.8)                                                                                                                                                                                                        |
+| Widget                                    | Used for                                                                                                                                                                                                                                                                                                                  |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `text`, `url`, `number`, `bool`, `select` | connection fields, scalar match fields                                                                                                                                                                                                                                                                                    |
+| `secret`                                  | write-only credential fields (masked hint, rotate)                                                                                                                                                                                                                                                                        |
+| `multiselect`                             | static options, or dynamic via `optionsFor(source)` (e.g. TN "app in: plex, sonarr"; mockup `PreApprovalRules.dc.html`)                                                                                                                                                                                                   |
+| `prefix`                                  | path/name prefix match (TN `pool.dataset.create` name prefix)                                                                                                                                                                                                                                                             |
+| `range`                                   | numeric range with unit (HA thermostat 65–78 °F)                                                                                                                                                                                                                                                                          |
+| `registry-picker`                         | Built from the plugin's `targets` (§3.2): one chips input per scope the field offers, suggested from that scope's registry kind if it has one, and one for target ids, searched in the targets' registry kind and narrowed by the field's `filter`. Backed by `GET /api/instances/:id/registry?kind=&text=&scope.<key>=`. |
+| `diff`                                    | before/after field diff on the approval page (HA §2.8)                                                                                                                                                                                                                                                                    |
 
 Adding a widget is a core change. Plugins can only reference widgets that exist. An unknown widget name in a manifest fails validation, so a plugin cannot silently degrade to a free-text field.
 

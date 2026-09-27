@@ -50,7 +50,7 @@ export function applyCatalogSync(
   instanceId: string,
   rawResult: unknown,
   now = new Date(),
-  manifest?: Pick<Manifest, 'matchProfiles'>,
+  manifest?: Pick<Manifest, 'matchProfiles' | 'targets'>,
 ): SyncSummary {
   const result = SyncCatalogResultSchema.parse(rawResult);
   const seen = new Set<string>();

@@ -301,7 +301,8 @@ describe('re-sync of changed operations (review M14)', () => {
   it('disables rules whose match no longer fits the operation, and audits it', () => {
     const { db, instanceId, id } = setup();
     applyCatalogSync(db, instanceId, all(), new Date(), { matchProfiles: profiles });
-    const manifest = { matchProfiles: profiles } as never;
+    const targets = { label: 'Widget', scopes: [{ key: 'zone', label: 'Zone' }] };
+    const manifest = { matchProfiles: profiles, targets } as never;
     const fits = createRule(db, manifest, instanceId, {
       operationId: id('app.upgrade'),
       match: [{ field: '/name', op: 'eq', value: 'web' }],
@@ -337,12 +338,13 @@ describe('re-sync of changed operations (review M14)', () => {
 describe('rules on $targets (design §3.4)', () => {
   const profiles = {
     targets: [
-      { field: '$targets', label: 'Targets', widget: 'registry-picker' as const, covers: '/selector' },
+      { field: '$targets', label: 'Targets', widget: 'registry-picker' as const, covers: ['/selector'] },
       { field: '/level', label: 'Level', widget: 'range' as const, op: 'range' as const },
     ],
   };
-  const manifest = { matchProfiles: profiles } as never;
-  const target = (id: string, area: string) => ({ kind: 'entity', id, name: id, scopes: { area, domain: 'widget' } });
+  const targets = { label: 'Widget', scopes: [{ key: 'zone', label: 'Zone' }] };
+  const manifest = { matchProfiles: profiles, targets } as never;
+  const target = (id: string, area: string) => ({ kind: 'entity', id, name: id, scopes: { zone: area } });
   const inZoneA = [target('widget.one', 'zone-a')];
 
   function withRules() {
@@ -352,11 +354,11 @@ describe('rules on $targets (design §3.4)', () => {
       ctx.instanceId,
       catalog(op('app.upgrade', { matchProfile: 'targets' }), op('app.stop', { matchProfile: 'targets' })),
       new Date(),
-      { matchProfiles: profiles },
+      { matchProfiles: profiles, targets } as never,
     );
     const areaRule = createRule(ctx.db, manifest, ctx.instanceId, {
       operationId: ctx.id('app.upgrade'),
-      match: [{ field: '$targets', areas: ['zone-a'] }],
+      match: [{ field: '$targets', scopes: { zone: ['zone-a'] } }],
       reason: 'widgets in zone A',
     });
     const anyTarget = createRule(ctx.db, manifest, ctx.instanceId, {
@@ -367,7 +369,7 @@ describe('rules on $targets (design §3.4)', () => {
       ],
       reason: 'low level on anything',
     });
-    const evaluate = (key: string, params: unknown, targets: ReturnType<typeof target>[], targetCovers?: string) =>
+    const evaluate = (key: string, params: unknown, targets: ReturnType<typeof target>[], targetCovers?: string[]) =>
       evaluatePreApproval(ctx.db, {
         instanceId: ctx.instanceId,
         operationId: ctx.id(key),
@@ -380,30 +382,38 @@ describe('rules on $targets (design §3.4)', () => {
 
   it('stores a rule exactly as written, with no hidden conditions', () => {
     const { areaRule, anyTarget, db, instanceId } = withRules();
-    expect(areaRule.match).toEqual([{ field: '$targets', areas: ['zone-a'] }]);
+    expect(areaRule.match).toEqual([{ field: '$targets', scopes: { zone: ['zone-a'] } }]);
     // An explicit "any target" without a $targets condition is the admin's choice, and is kept.
     expect(anyTarget.match).toEqual([
       { field: '/selector', op: 'any' },
       { field: '/level', op: 'range', value: { max: 50 } },
     ]);
     const updated = updateRule(db, manifest, instanceId, areaRule.id, {
-      match: [{ field: '$targets', areas: ['zone-b'] }],
+      match: [{ field: '$targets', scopes: { zone: ['zone-b'] } }],
     });
-    expect(updated.match).toEqual([{ field: '$targets', areas: ['zone-b'] }]);
+    expect(updated.match).toEqual([{ field: '$targets', scopes: { zone: ['zone-b'] } }]);
+    // Only the scopes the plugin declares can be selected.
+    expect(() =>
+      updateRule(db, manifest, instanceId, areaRule.id, { match: [{ field: '$targets', scopes: { floor: ['1'] } }] }),
+    ).toThrow(/can't select targets by "floor"/);
   });
 
   it('lets a $targets condition cover the raw selector at match time, never widening the target check', () => {
     const { evaluate } = withRules();
     const params = { selector: { zone: ['zone-a'] } };
-    expect(evaluate('app.upgrade', params, inZoneA, '/selector')).toMatchObject({ kind: 'auto_approved' });
+    expect(evaluate('app.upgrade', params, inZoneA, ['/selector'])).toMatchObject({ kind: 'auto_approved' });
     // Without the profile's covers pointer, the raw selector is an uncovered param under strict matching.
     expect(evaluate('app.upgrade', params, inZoneA)).toEqual({ kind: 'no_match' });
     // One target outside the area still asks.
-    expect(evaluate('app.upgrade', params, [...inZoneA, target('widget.two', 'zone-b')], '/selector')).toEqual({
+    expect(evaluate('app.upgrade', params, [...inZoneA, target('widget.two', 'zone-b')], ['/selector'])).toEqual({
       kind: 'no_match',
     });
     // Other params still need their own condition.
-    expect(evaluate('app.upgrade', { ...params, level: 10 }, inZoneA, '/selector')).toEqual({ kind: 'no_match' });
+    expect(evaluate('app.upgrade', { ...params, level: 10 }, inZoneA, ['/selector'])).toEqual({ kind: 'no_match' });
+    // A selector spread over several params is covered when the profile names every subtree.
+    const split = { ...params, host: { id: 'h1' } };
+    expect(evaluate('app.upgrade', split, inZoneA, ['/selector', '/host'])).toMatchObject({ kind: 'auto_approved' });
+    expect(evaluate('app.upgrade', split, inZoneA, ['/selector'])).toEqual({ kind: 'no_match' });
   });
 
   it('applies an explicit "any target" rule on its own terms', () => {
@@ -413,7 +423,7 @@ describe('rules on $targets (design §3.4)', () => {
         'app.stop',
         { selector: { zone: ['zone-b'] }, level: 40 },
         [target('widget.two', 'zone-b')],
-        '/selector',
+        ['/selector'],
       ),
     ).toMatchObject({ kind: 'auto_approved' });
     expect(
@@ -421,7 +431,7 @@ describe('rules on $targets (design §3.4)', () => {
         'app.stop',
         { selector: { zone: ['zone-b'] }, level: 90 },
         [target('widget.two', 'zone-b')],
-        '/selector',
+        ['/selector'],
       ),
     ).toEqual({ kind: 'no_match' });
   });

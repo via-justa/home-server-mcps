@@ -340,6 +340,75 @@ describe('Endpoint settings', () => {
 });
 
 describe('Pre-approval rules', () => {
+  it('builds $targets selectors from what the plugin declares', async () => {
+    const { calls } = fakeApi({
+      'GET /api/session': signedIn,
+      'GET /api/overview': overview,
+      'GET /api/instances/i1/rules': [],
+      'GET /api/instances/i1/operations': [
+        op('widget.set', { classification: 'write', matchProfile: 'w', mode: 'approve' }),
+      ],
+      'GET /api/instances/i1/registry': (_body: unknown, url: URL) =>
+        url.searchParams.get('kind') === 'zone'
+          ? [{ kind: 'zone', id: 'zone_a', name: 'Zone A', parentId: null, scopes: null }]
+          : [{ kind: 'item', id: 'widget.one', name: 'Widget One', parentId: null, scopes: { type: 'widget' } }],
+      'GET /api/plugins': [
+        {
+          id: 'p1',
+          manifest: {
+            targets: {
+              label: 'Widget',
+              registryKind: 'item',
+              scopes: [
+                { key: 'zone', label: 'Zone', registryKind: 'zone' },
+                { key: 'type', label: 'Type' },
+              ],
+            },
+            matchProfiles: {
+              w: [
+                {
+                  field: '$targets',
+                  label: 'Targets',
+                  widget: 'registry-picker',
+                  options: { scopes: ['zone'], filter: { type: 'widget' } },
+                },
+              ],
+            },
+          },
+        },
+      ],
+      'POST /api/instances/i1/rules': {},
+    });
+    const { wrapper } = await mountAt('/endpoints/nas/rules');
+    await wrapper
+      .findAll('button')
+      .find((b) => b.text() === 'New rule')!
+      .trigger('click');
+    await wrapper.get('[role="dialog"] select#r-op').setValue('op-widget.set');
+    await flushPromises();
+    const picker = wrapper.get('[role="dialog"] .picker');
+    // Only the scopes this field offers; the target field is named as the plugin names its targets.
+    expect(picker.findAll('label').map((l) => l.text())).toEqual(['Zone', 'Widget']);
+    // Scope values come from their registry kind; target suggestions are narrowed by the field's filter.
+    const registryCalls = calls.filter((c) => c.path.startsWith('/api/instances/i1/registry')).map((c) => c.path);
+    expect(registryCalls).toContain('/api/instances/i1/registry?kind=zone&limit=500');
+    expect(registryCalls.some((p) => p.includes('kind=item') && p.includes('scope.type=widget'))).toBe(true);
+
+    const zone = picker.findAll('.field').find((f) => f.text().includes('Zone'))!;
+    await zone.get('input').setValue('zone_a');
+    await zone.get('input').trigger('keydown', { key: 'Enter' });
+    await wrapper.get('#r-reason').setValue('zone A widgets');
+    await wrapper
+      .get('[role="dialog"]')
+      .findAll('button')
+      .find((b) => b.text() === 'Save rule')!
+      .trigger('click');
+    await flushPromises();
+    expect(calls.find((c) => c.method === 'POST')?.body).toMatchObject({
+      match: [{ field: '$targets', scopes: { zone: ['zone_a'] } }],
+    });
+  });
+
   it('builds strict rules: a named field, "any value" fields and other accepted parameters', async () => {
     const { calls } = fakeApi({
       'GET /api/session': signedIn,

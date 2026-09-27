@@ -5,7 +5,7 @@ const minimal = {
   id: 'example',
   name: 'Example',
   version: '1.0.0',
-  sdk: '^0.1.0',
+  sdk: '^0.2.0',
   entry: 'dist/index.js',
   binding: { namespace: 'example', functions: ['call'] },
   connection: { schema: { type: 'object' } },
@@ -48,19 +48,66 @@ describe('parseManifest', () => {
     ).toThrow(/op/);
   });
 
-  it('requires the targets capability for $targets match fields', () => {
+  it('requires the targets capability, and a targets declaration, for $targets match fields', () => {
     const profile = { p: [{ field: '$targets', label: 'Targets', widget: 'registry-picker' }] };
+    const targets = { scopes: [{ key: 'zone', label: 'Zone' }] };
     expect(() => parseManifest({ ...minimal, matchProfiles: profile })).toThrow(/capabilities.targets/);
-    expect(() => parseManifest({ ...minimal, capabilities: { targets: true }, matchProfiles: profile })).not.toThrow();
+    expect(() => parseManifest({ ...minimal, capabilities: { targets: true }, matchProfiles: profile })).toThrow(
+      /requires a targets declaration/,
+    );
+    expect(() => parseManifest({ ...minimal, targets })).toThrow(/targets requires capabilities.targets/);
+    expect(
+      parseManifest({ ...minimal, capabilities: { targets: true }, targets, matchProfiles: profile }).targets,
+    ).toEqual({ label: 'Target', scopes: [{ key: 'zone', label: 'Zone' }] });
   });
 
-  it('accepts covers only on $targets fields, as a JSON pointer', () => {
+  it('declares target scopes by key, and $targets fields may only offer or filter by declared ones', () => {
+    const withTargets = (targets: unknown, options?: unknown) =>
+      parseManifest({
+        ...minimal,
+        capabilities: { targets: true },
+        targets,
+        matchProfiles: { p: [{ field: '$targets', label: 'Targets', widget: 'registry-picker', options }] },
+      });
+    const targets = {
+      label: 'Widget',
+      registryKind: 'item',
+      scopes: [
+        { key: 'zone', label: 'Zone', registryKind: 'zone' },
+        { key: 'type', label: 'Type' },
+      ],
+    };
+    expect(withTargets(targets, { scopes: ['zone'], filter: { type: 'widget' } }).targets).toEqual(targets);
+    expect(() => withTargets(targets, { scopes: ['floor'] })).toThrow(/floor.*is not declared in targets.scopes/);
+    expect(() => withTargets(targets, { filter: { floor: '1' } })).toThrow(/floor.*is not declared in targets.scopes/);
+    expect(() => withTargets(targets, { kinds: ['zone'] })).toThrow();
+    expect(() => withTargets({ scopes: [{ key: 'Zone', label: 'Zone' }] })).toThrow(/lowercase/);
+    expect(() =>
+      withTargets({
+        scopes: [
+          { key: 'zone', label: 'Zone' },
+          { key: 'zone', label: 'Area' },
+        ],
+      }),
+    ).toThrow(/unique/);
+  });
+
+  it('accepts covers only on $targets fields, as a list of JSON pointers', () => {
     const withCovers = (field: Record<string, unknown>) =>
-      parseManifest({ ...minimal, capabilities: { targets: true }, matchProfiles: { p: [field] } });
+      parseManifest({
+        ...minimal,
+        capabilities: { targets: true },
+        targets: { scopes: [] },
+        matchProfiles: { p: [field] },
+      });
     const targets = { field: '$targets', label: 'Targets', widget: 'registry-picker' };
-    expect(withCovers({ ...targets, covers: '/selector' }).matchProfiles.p![0]).toMatchObject({ covers: '/selector' });
-    expect(() => withCovers({ ...targets, covers: 'selector' })).toThrow(/JSON pointer/);
-    expect(() => withCovers({ field: '/name', label: 'Name', op: 'eq', widget: 'text', covers: '/x' })).toThrow(
+    expect(withCovers({ ...targets, covers: ['/selector', '/host'] }).matchProfiles.p![0]).toMatchObject({
+      covers: ['/selector', '/host'],
+    });
+    expect(() => withCovers({ ...targets, covers: ['selector'] })).toThrow(/JSON pointer/);
+    expect(() => withCovers({ ...targets, covers: '/selector' })).toThrow();
+    expect(() => withCovers({ ...targets, covers: [] })).toThrow();
+    expect(() => withCovers({ field: '/name', label: 'Name', op: 'eq', widget: 'text', covers: ['/x'] })).toThrow(
       /only \$targets/,
     );
   });

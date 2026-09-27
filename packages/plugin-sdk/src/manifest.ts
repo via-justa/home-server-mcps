@@ -52,6 +52,42 @@ export const UiHintSchema = z.object({
 });
 export type UiHint = z.infer<typeof UiHintSchema>;
 
+const scopeKey = z.string().regex(/^[a-z][a-z0-9_-]*$/, 'must be lowercase letters, digits, _ or -');
+
+/**
+ * What a plugin's resolved targets are and how rules can select them (design §3.4). Each target from
+ * `resolveTargets` reports its value for every declared scope in `scopes[key]`; a `$targets` rule
+ * condition selects by target id and by those scope values. Core knows nothing more about them.
+ */
+export const TargetsSchema = z.object({
+  /** What one target is called in the portal, e.g. "Entity", "Host", "Container". */
+  label: z.string().min(1).default('Target'),
+  /** Registry kind whose entries are the targets themselves; the picker suggests ids from it. */
+  registryKind: z.string().min(1).optional(),
+  /** Dimensions a rule can select targets by, e.g. a location or a type. */
+  scopes: z
+    .array(
+      z.object({
+        key: scopeKey,
+        label: z.string().min(1),
+        /** Registry kind whose entry ids are this scope's values; the picker suggests from it. */
+        registryKind: z.string().min(1).optional(),
+      }),
+    )
+    .default([]),
+});
+export type Targets = z.infer<typeof TargetsSchema>;
+
+/** `options` of a `$targets` match field. */
+export const TargetFieldOptionsSchema = z
+  .object({
+    /** Declared scope keys this field offers; all of them when omitted. */
+    scopes: z.array(scopeKey).optional(),
+    /** Fixed scope values that narrow the picker's target suggestions, e.g. to one type. */
+    filter: z.record(scopeKey, z.string().min(1)).optional(),
+  })
+  .strict();
+
 export const MatchFieldSchema = z
   .object({
     /** JSON pointer into the normalized params (`/name`), or `$targets` for the resolved-target selector. */
@@ -63,16 +99,22 @@ export const MatchFieldSchema = z
     /** Source name passed to the plugin's `optionsFor` RPC to populate pickers. */
     optionsSource: z.string().optional(),
     /**
-     * `$targets` only: the params subtree the target selector stands for (e.g. `/selector`). A rule with a
-     * `$targets` condition already checks every resolved target, so core lets it cover that subtree
-     * under strict matching instead of requiring an "any value" condition on it.
+     * `$targets` only: the params subtrees the target selector stands for (e.g. `["/selector"]`). A rule
+     * with a `$targets` condition already checks every resolved target, so core lets it cover those
+     * subtrees under strict matching instead of requiring an "any value" condition on each.
      */
-    covers: z.string().regex(/^\/.+/, 'must be a JSON pointer').optional(),
+    covers: z.array(z.string().regex(/^\/.+/, 'must be a JSON pointer')).min(1).optional(),
   })
   .superRefine((f, ctx) => {
     if (f.field === '$targets') {
       if (f.widget !== 'registry-picker') {
         ctx.addIssue({ code: 'custom', message: '$targets fields must use the registry-picker widget' });
+      }
+      const options = TargetFieldOptionsSchema.safeParse(f.options ?? {});
+      if (!options.success) {
+        for (const issue of options.error.issues) {
+          ctx.addIssue({ code: 'custom', path: ['options', ...issue.path], message: issue.message });
+        }
       }
     } else if (f.covers) {
       ctx.addIssue({ code: 'custom', message: 'only $targets fields can declare covers' });
@@ -118,6 +160,8 @@ export const ManifestSchema = z
     sensitiveKeys: z.array(z.string().min(1)).default([]),
     network: z.object({ hosts: z.array(z.string()).default([]) }).prefault({}),
     matchProfiles: z.record(z.string(), z.array(MatchFieldSchema)).default({}),
+    /** Required with `capabilities.targets`. */
+    targets: TargetsSchema.optional(),
   })
   .superRefine((m, ctx) => {
     if ((RESERVED_NAMESPACES as readonly string[]).includes(m.binding.namespace)) {
@@ -157,14 +201,42 @@ export const ManifestSchema = z
         });
       }
     }
+    if (m.capabilities.targets && !m.targets) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['targets'],
+        message: 'capabilities.targets requires a targets declaration',
+      });
+    }
+    if (m.targets && !m.capabilities.targets) {
+      ctx.addIssue({ code: 'custom', path: ['targets'], message: 'targets requires capabilities.targets' });
+    }
+    const declared = new Set(m.targets?.scopes.map((s) => s.key) ?? []);
+    if (m.targets && declared.size !== m.targets.scopes.length) {
+      ctx.addIssue({ code: 'custom', path: ['targets', 'scopes'], message: 'scope keys must be unique' });
+    }
     for (const [profile, fields] of Object.entries(m.matchProfiles)) {
-      if (fields.some((f) => f.field === '$targets') && !m.capabilities.targets) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['matchProfiles', profile],
-          message: '$targets match fields require capabilities.targets',
-        });
-      }
+      fields.forEach((f, i) => {
+        if (f.field !== '$targets') return;
+        if (!m.capabilities.targets) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['matchProfiles', profile],
+            message: '$targets match fields require capabilities.targets',
+          });
+          return;
+        }
+        const options = TargetFieldOptionsSchema.safeParse(f.options ?? {});
+        if (!options.success) return;
+        const keys = [...(options.data.scopes ?? []), ...Object.keys(options.data.filter ?? {})];
+        for (const key of keys.filter((k) => !declared.has(k))) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['matchProfiles', profile, i, 'options'],
+            message: `scope "${key}" is not declared in targets.scopes`,
+          });
+        }
+      });
     }
   });
 export type Manifest = z.infer<typeof ManifestSchema>;

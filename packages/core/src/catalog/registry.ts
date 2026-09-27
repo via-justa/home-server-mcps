@@ -4,10 +4,11 @@ import { and, asc, eq, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, DbLike } from '../db/index.js';
 import { registryEntries } from '../db/schema.js';
+import { ValidationError } from '../errors.js';
 
 /**
- * Registry mirror (design §2.4 / HA §2.4): pickable upstream objects — HA areas, devices, entities —
- * mirrored locally so pickers and `search` never pull the whole registry from the upstream.
+ * Registry mirror (design §2.4): pickable upstream objects, of kinds the plugin defines, mirrored
+ * locally so pickers and `search` never pull the whole registry from the upstream.
  */
 
 export function applyRegistrySync(
@@ -34,7 +35,7 @@ export function applyRegistrySync(
       const fields = {
         name: e.name,
         parentExtId: e.parentId ?? null,
-        domain: e.domain ?? null,
+        scopes: e.scopes ?? null,
         attrs: e.attrs ?? null,
         stale: false,
         lastSyncedAt: now,
@@ -57,11 +58,23 @@ export function applyRegistrySync(
   });
 }
 
+const SCOPE_KEY = /^[a-z][a-z0-9_-]*$/;
+
+/** Reads `scope.<key>=value` query-string pairs (the admin API's form of `RegistryQuery.scopes`). */
+export function scopesFromQuery(query: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(query)
+      .filter(([k]) => k.startsWith('scope.'))
+      .map(([k, v]) => [k.slice('scope.'.length), v]),
+  );
+}
+
 export interface RegistryQuery {
   kind?: string;
   text?: string;
   parent?: string;
-  domain?: string;
+  /** Entries whose scope values equal these (see the manifest's `targets.scopes`). */
+  scopes?: Record<string, string>;
   limit?: number;
   offset?: number;
 }
@@ -71,7 +84,10 @@ export function findRegistryEntries(db: DbLike, instanceId: string, q: RegistryQ
   const conditions = [eq(registryEntries.instanceId, instanceId), eq(registryEntries.stale, false)];
   if (q.kind) conditions.push(eq(registryEntries.kind, q.kind));
   if (q.parent) conditions.push(eq(registryEntries.parentExtId, q.parent));
-  if (q.domain) conditions.push(eq(registryEntries.domain, q.domain));
+  for (const [key, value] of Object.entries(q.scopes ?? {})) {
+    if (!SCOPE_KEY.test(key)) throw new ValidationError('invalid_scope', `"${key}" is not a scope key`);
+    conditions.push(sql`json_extract(${registryEntries.scopes}, ${`$."${key}"`}) = ${String(value)}`);
+  }
   if (q.text) {
     const pattern = `%${q.text.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
     conditions.push(
@@ -87,7 +103,7 @@ export function findRegistryEntries(db: DbLike, instanceId: string, q: RegistryQ
       id: registryEntries.extId,
       name: registryEntries.name,
       parentId: registryEntries.parentExtId,
-      domain: registryEntries.domain,
+      scopes: registryEntries.scopes,
       attrs: registryEntries.attrs,
     })
     .from(registryEntries)

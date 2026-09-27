@@ -164,14 +164,25 @@ describe('matches', () => {
     expect(matches([condition], call(params))).toBe(expected);
   });
 
-  it('requires every resolved target to satisfy every target selector', () => {
-    const cond = { field: '$targets' as const, areas: ['living_room'], domains: ['light'] };
-    const inRoom = { id: 'light.lamp', scopes: { area: 'living_room', domain: 'light' } };
-    const elsewhere = { id: 'light.porch', scopes: { area: 'exterior', domain: 'light' } };
-    expect(matches([cond], call({}, [inRoom]))).toBe(true);
-    expect(matches([cond], call({}, [inRoom, elsewhere]))).toBe(false);
+  it('requires every resolved target to satisfy every target selector, on whatever scopes the plugin declares', () => {
+    const cond = { field: '$targets' as const, scopes: { zone: ['zone_a'], type: ['widget'] } };
+    const inZone = { id: 'widget.one', scopes: { zone: 'zone_a', type: 'widget' } };
+    const elsewhere = { id: 'widget.two', scopes: { zone: 'zone_b', type: 'widget' } };
+    const unscoped = { id: 'widget.three', scopes: { type: 'widget' } };
+    expect(matches([cond], call({}, [inZone]))).toBe(true);
+    expect(matches([cond], call({}, [inZone, elsewhere]))).toBe(false);
+    // A target that reports no value for a selected scope never matches it.
+    expect(matches([cond], call({}, [inZone, unscoped]))).toBe(false);
     expect(matches([cond], call({}, []))).toBe(false);
-    expect(matches([{ field: '$targets', entities: ['light.lamp'] }], call({}, [inRoom]))).toBe(true);
+    expect(matches([{ field: '$targets', ids: ['widget.one'] }], call({}, [inZone]))).toBe(true);
+    expect(matches([{ field: '$targets', ids: ['widget.one'] }], call({}, [inZone, unscoped]))).toBe(false);
+  });
+
+  it('rejects $targets conditions that select nothing or use unknown keys', () => {
+    expect(MatchSchema.safeParse([{ field: '$targets' }]).success).toBe(false);
+    expect(MatchSchema.safeParse([{ field: '$targets', scopes: {} }]).success).toBe(false);
+    expect(MatchSchema.safeParse([{ field: '$targets', scopes: { zone: [] } }]).success).toBe(false);
+    expect(MatchSchema.safeParse([{ field: '$targets', areas: ['zone_a'] }]).success).toBe(false);
   });
 
   it('ANDs conditions', () => {

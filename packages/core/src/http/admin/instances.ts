@@ -12,7 +12,7 @@ import {
   updateOperation,
   accessInput,
 } from '../../catalog/groups.js';
-import { findRegistryEntries } from '../../catalog/registry.js';
+import { findRegistryEntries, scopesFromQuery } from '../../catalog/registry.js';
 import { createRule, deleteRule, listRules, updateRule } from '../../catalog/rules.js';
 import { operationGroups, operations } from '../../db/schema.js';
 import { ValidationError } from '../../errors.js';
@@ -211,7 +211,8 @@ export function registerInstanceRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
   app.get('/api/instances/:id/registry', (c) => {
     exists(c.req.param('id'));
     // Mirrored attributes can hold tokens (HA camera `access_token`); the portal gets them redacted too.
-    const entries = findRegistryEntries(ctx.db, c.req.param('id'), c.req.query());
+    const query = c.req.query();
+    const entries = findRegistryEntries(ctx.db, c.req.param('id'), { ...query, scopes: scopesFromQuery(query) });
     let redact = createRedactor(GLOBAL_SENSITIVE_KEYS);
     try {
       redact = ctx.instances.runtime(c.req.param('id')).redact;
