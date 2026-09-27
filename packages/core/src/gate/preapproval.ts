@@ -23,9 +23,9 @@ export function evaluatePreApproval(
     params: unknown;
     targets: readonly ResolvedTarget[];
     /**
-     * The params subtree a `$targets` condition stands for (the profile field's `covers`, HA's
-     * `/target`). A rule with a `$targets` condition already checks every resolved target, so under
-     * strict matching that subtree counts as covered. Nothing is stored on the rule.
+     * The params subtree a `$targets` condition stands for (the profile field's `covers`). A rule with
+     * a `$targets` condition already checks every resolved target, so under strict matching that
+     * subtree counts as covered. Nothing is stored on the rule.
      */
     targetCovers?: string;
   },

@@ -46,7 +46,7 @@ export interface Instance {
   status: 'starting' | 'ready' | 'error' | 'stopped';
   statusError: string | null;
   upstreamVersion: string | null;
-  /** Where the last catalog came from, e.g. the Seerr git ref its spec was fetched from. */
+  /** Where the last catalog came from, as the plugin reports it (e.g. a version or git ref). */
   sourceRef?: string | null;
   lastSyncedAt: string | null;
   lastSyncStatus: string | null;

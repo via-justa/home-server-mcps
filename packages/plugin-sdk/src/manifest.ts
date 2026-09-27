@@ -63,7 +63,7 @@ export const MatchFieldSchema = z
     /** Source name passed to the plugin's `optionsFor` RPC to populate pickers. */
     optionsSource: z.string().optional(),
     /**
-     * `$targets` only: the params subtree the target selector stands for (e.g. `/target`). A rule with a
+     * `$targets` only: the params subtree the target selector stands for (e.g. `/selector`). A rule with a
      * `$targets` condition already checks every resolved target, so core lets it cover that subtree
      * under strict matching instead of requiring an "any value" condition on it.
      */

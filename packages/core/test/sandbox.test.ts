@@ -201,10 +201,10 @@ describe('redaction of everything leaving the sandbox', () => {
   });
 
   it("keeps the error code when a plugin's sensitive keys include `code`, and still scrubs secret values", async () => {
-    // HA lists `code` (lock and alarm codes) as sensitive; that must not hide OPERATION_DISABLED & co.
+    // A plugin may list `code` (a PIN, say) as sensitive; that must not hide OPERATION_DISABLED & co.
     const byCode = createInstanceRedactor({ keyLists: [GLOBAL_SENSITIVE_KEYS, ['code']], secretValues: [SECRET] });
     const denied: Binding = async () => {
-      throw new BindingError('OPERATION_DISABLED', 'light.turn_on is not enabled');
+      throw new BindingError('OPERATION_DISABLED', 'widget.set is not enabled');
     };
     const r = await runInSandbox({
       code: 'return await t.call();',
@@ -214,7 +214,7 @@ describe('redaction of everything leaving the sandbox', () => {
     });
     expect(r).toMatchObject({
       ok: false,
-      error: { code: 'OPERATION_DISABLED', message: 'light.turn_on is not enabled' },
+      error: { code: 'OPERATION_DISABLED', message: 'widget.set is not enabled' },
     });
     const thrown = await runInSandbox({
       code: `throw Object.assign(new Error('x'), { code: '${SECRET}' });`,

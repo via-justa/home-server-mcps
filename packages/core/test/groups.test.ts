@@ -334,16 +334,16 @@ describe('re-sync of changed operations (review M14)', () => {
   });
 });
 
-describe('rules on $targets (design §3.4, HA §3.5)', () => {
+describe('rules on $targets (design §3.4)', () => {
   const profiles = {
     targets: [
-      { field: '$targets', label: 'Targets', widget: 'registry-picker' as const, covers: '/target' },
-      { field: '/brightness', label: 'Brightness', widget: 'range' as const, op: 'range' as const },
+      { field: '$targets', label: 'Targets', widget: 'registry-picker' as const, covers: '/selector' },
+      { field: '/level', label: 'Level', widget: 'range' as const, op: 'range' as const },
     ],
   };
   const manifest = { matchProfiles: profiles } as never;
-  const target = (id: string, area: string) => ({ kind: 'entity', id, name: id, scopes: { area, domain: 'light' } });
-  const living = [target('light.a', 'living_room')];
+  const target = (id: string, area: string) => ({ kind: 'entity', id, name: id, scopes: { area, domain: 'widget' } });
+  const inZoneA = [target('widget.one', 'zone-a')];
 
   function withRules() {
     const ctx = setup();
@@ -356,16 +356,16 @@ describe('rules on $targets (design §3.4, HA §3.5)', () => {
     );
     const areaRule = createRule(ctx.db, manifest, ctx.instanceId, {
       operationId: ctx.id('app.upgrade'),
-      match: [{ field: '$targets', areas: ['living_room'] }],
-      reason: 'living room lights',
+      match: [{ field: '$targets', areas: ['zone-a'] }],
+      reason: 'widgets in zone A',
     });
     const anyTarget = createRule(ctx.db, manifest, ctx.instanceId, {
       operationId: ctx.id('app.stop'),
       match: [
-        { field: '/target', op: 'any' },
-        { field: '/brightness', op: 'range', value: { max: 50 } },
+        { field: '/selector', op: 'any' },
+        { field: '/level', op: 'range', value: { max: 50 } },
       ],
-      reason: 'dim anything',
+      reason: 'low level on anything',
     });
     const evaluate = (key: string, params: unknown, targets: ReturnType<typeof target>[], targetCovers?: string) =>
       evaluatePreApproval(ctx.db, {
@@ -380,30 +380,30 @@ describe('rules on $targets (design §3.4, HA §3.5)', () => {
 
   it('stores a rule exactly as written, with no hidden conditions', () => {
     const { areaRule, anyTarget, db, instanceId } = withRules();
-    expect(areaRule.match).toEqual([{ field: '$targets', areas: ['living_room'] }]);
+    expect(areaRule.match).toEqual([{ field: '$targets', areas: ['zone-a'] }]);
     // An explicit "any target" without a $targets condition is the admin's choice, and is kept.
     expect(anyTarget.match).toEqual([
-      { field: '/target', op: 'any' },
-      { field: '/brightness', op: 'range', value: { max: 50 } },
+      { field: '/selector', op: 'any' },
+      { field: '/level', op: 'range', value: { max: 50 } },
     ]);
     const updated = updateRule(db, manifest, instanceId, areaRule.id, {
-      match: [{ field: '$targets', areas: ['kitchen'] }],
+      match: [{ field: '$targets', areas: ['zone-b'] }],
     });
-    expect(updated.match).toEqual([{ field: '$targets', areas: ['kitchen'] }]);
+    expect(updated.match).toEqual([{ field: '$targets', areas: ['zone-b'] }]);
   });
 
-  it('lets a $targets condition cover the raw target at match time, never widening the target check', () => {
+  it('lets a $targets condition cover the raw selector at match time, never widening the target check', () => {
     const { evaluate } = withRules();
-    const params = { target: { area_id: ['living_room'] } };
-    expect(evaluate('app.upgrade', params, living, '/target')).toMatchObject({ kind: 'auto_approved' });
-    // Without the profile's covers pointer, the raw target is an uncovered param under strict matching.
-    expect(evaluate('app.upgrade', params, living)).toEqual({ kind: 'no_match' });
-    // One entity outside the area still asks.
-    expect(evaluate('app.upgrade', params, [...living, target('light.k', 'kitchen')], '/target')).toEqual({
+    const params = { selector: { zone: ['zone-a'] } };
+    expect(evaluate('app.upgrade', params, inZoneA, '/selector')).toMatchObject({ kind: 'auto_approved' });
+    // Without the profile's covers pointer, the raw selector is an uncovered param under strict matching.
+    expect(evaluate('app.upgrade', params, inZoneA)).toEqual({ kind: 'no_match' });
+    // One target outside the area still asks.
+    expect(evaluate('app.upgrade', params, [...inZoneA, target('widget.two', 'zone-b')], '/selector')).toEqual({
       kind: 'no_match',
     });
     // Other params still need their own condition.
-    expect(evaluate('app.upgrade', { ...params, brightness: 10 }, living, '/target')).toEqual({ kind: 'no_match' });
+    expect(evaluate('app.upgrade', { ...params, level: 10 }, inZoneA, '/selector')).toEqual({ kind: 'no_match' });
   });
 
   it('applies an explicit "any target" rule on its own terms', () => {
@@ -411,17 +411,17 @@ describe('rules on $targets (design §3.4, HA §3.5)', () => {
     expect(
       evaluate(
         'app.stop',
-        { target: { area_id: ['kitchen'] }, brightness: 40 },
-        [target('light.k', 'kitchen')],
-        '/target',
+        { selector: { zone: ['zone-b'] }, level: 40 },
+        [target('widget.two', 'zone-b')],
+        '/selector',
       ),
     ).toMatchObject({ kind: 'auto_approved' });
     expect(
       evaluate(
         'app.stop',
-        { target: { area_id: ['kitchen'] }, brightness: 90 },
-        [target('light.k', 'kitchen')],
-        '/target',
+        { selector: { zone: ['zone-b'] }, level: 90 },
+        [target('widget.two', 'zone-b')],
+        '/selector',
       ),
     ).toEqual({ kind: 'no_match' });
   });

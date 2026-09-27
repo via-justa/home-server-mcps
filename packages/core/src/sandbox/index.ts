@@ -142,7 +142,7 @@ export async function runInSandbox(run: SandboxRun): Promise<SandboxResult> {
   const limits = { ...DEFAULT_LIMITS, ...run.limits };
   const redact = run.redact ?? ((v: unknown) => v);
   // Redacted as strings, so secret values are scrubbed but a plugin's sensitive key named `code`
-  // (HA lock codes) can't hide the error code itself.
+  // (a PIN, say) can't hide the error code itself.
   const redactError = (e: { code: string; message: string }) => ({
     code: String(redact(e.code)),
     message: String(redact(e.message)),

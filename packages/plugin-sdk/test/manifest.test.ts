@@ -58,8 +58,8 @@ describe('parseManifest', () => {
     const withCovers = (field: Record<string, unknown>) =>
       parseManifest({ ...minimal, capabilities: { targets: true }, matchProfiles: { p: [field] } });
     const targets = { field: '$targets', label: 'Targets', widget: 'registry-picker' };
-    expect(withCovers({ ...targets, covers: '/target' }).matchProfiles.p![0]).toMatchObject({ covers: '/target' });
-    expect(() => withCovers({ ...targets, covers: 'target' })).toThrow(/JSON pointer/);
+    expect(withCovers({ ...targets, covers: '/selector' }).matchProfiles.p![0]).toMatchObject({ covers: '/selector' });
+    expect(() => withCovers({ ...targets, covers: 'selector' })).toThrow(/JSON pointer/);
     expect(() => withCovers({ field: '/name', label: 'Name', op: 'eq', widget: 'text', covers: '/x' })).toThrow(
       /only \$targets/,
     );
