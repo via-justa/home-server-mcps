@@ -55,7 +55,7 @@ These decisions are not reopened. Each is now implemented once in core and appli
 | One SQLite DB per server                                                                   | **One SQLite DB** with instance-scoped tables                                                                                                                                                                               | One portal and one audit log. Cross-instance views (the audit log across endpoints) are simple queries.                                                                                                                                     |
 | Basic-auth via env vars (TN §10)                                                           | **Login page**: local users (argon2id) in the DB, optional TOTP, optional OIDC                                                                                                                                              | Requested explicitly. Basic-auth has no logout, no 2FA, and no SSO.                                                                                                                                                                         |
 | Portal on the same process/port or "as a module in the Vue frontend" (TN §8)               | **Admin listener on its own port (8081)**, MCP listener on 8080                                                                                                                                                             | Requested explicitly. The public reverse proxy only ever forwards 8080, so the admin surface is not internet-reachable by construction.                                                                                                     |
-| MCP transport auth = "bearer token if exposed" (TN §4)                                     | **Four auth modes**, a global default plus a per-endpoint override: `external`, `bearer`, `oauth`, `bearer+oauth` (§6.2)                                                                                                    | Remote clients such as claude.ai custom connectors need OAuth. CLI and automation clients want static tokens. Homelabs often already run Cloudflare Access or Authelia.                                                                     |
+| MCP transport auth = "bearer token if exposed" (TN §4)                                     | **Four auth modes**, a global default plus a per-endpoint override: `external`, `bearer`, `oauth`, `bearer+oauth` (§6.2)                                                                                                    | Remote clients such as claude.ai custom connectors need OAuth. CLI and automation clients want static tokens. Self-hosted setups often already run Cloudflare Access or Authelia.                                                           |
 | Notification channel deferred (TN §10)                                                     | **ntfy + generic webhook in v1**, informational only: endpoint down/recovered, plugin crashes, sync failures, new writes, sign-in lockouts (§9)                                                                             | Several endpoints in one server fail in more ways than one; operators want to hear about it. Approvals are not delivered this way (§5.3).                                                                                                   |
 | Per-operation Enabled toggle (TN §2.3, SR §2.3, HA §2.3)                                   | **Access levels** — `none` / `read` / `ask` / `write` — set per plugin-derived group (TrueNAS namespace, Seerr tag, HA domain) as a convenience, with an optional level per operation that wins over its group (§5.2.1)     | Hundreds to 1,000+ rows per instance made per-op toggles unmanageable. One control per resource ("TrueNAS apps: ask") works the same for every plugin and keeps auto-discovery; a per-operation level handles the exceptions.               |
 | Elicitation answers approve calls; portal inbox; approval links in notifications (TN §3.3) | **Approvals only on a page the server renders to a signed-in human with TOTP**, reached through a URL-mode elicitation prompt; form prompts can only approve plain writes where an endpoint opts in; no portal inbox (§5.3) | A form answer comes back through the MCP client that made the call, so a scripted or prompt-injected client can "approve" its own writes. Cloudflare's own MCP server never treats a client-relayed answer as consent either (§5.3).        |
@@ -161,7 +161,7 @@ The rule behind the split: **anything that decides whether a call may reach the 
 
 ### 3.2 Manifest (`manifest.json`)
 
-Validated by a zod schema in `@home-server-mcps/plugin-sdk`. Abridged example for Home Assistant:
+Validated by a zod schema in `@synoikia/plugin-sdk`. Abridged example for Home Assistant:
 
 ```jsonc
 {
@@ -230,7 +230,7 @@ Secret fields (`writeOnly: true`) are the only connection fields that are encryp
 
 ### 3.3 RPC contract (core ⇄ plugin child)
 
-Transport: the Node `child_process.fork` IPC channel, carrying JSON-RPC 2.0 messages. Each request has a timeout (default 30 s; `invoke` inherits the sandbox's remaining budget). The SDK's `runPlugin(handlers)` implements the child side, and the core `PluginHost` implements the parent side. All types are exported from `@home-server-mcps/plugin-sdk`.
+Transport: the Node `child_process.fork` IPC channel, carrying JSON-RPC 2.0 messages. Each request has a timeout (default 30 s; `invoke` inherits the sandbox's remaining budget). The SDK's `runPlugin(handlers)` implements the child side, and the core `PluginHost` implements the parent side. All types are exported from `@synoikia/plugin-sdk`.
 
 | Method                                                                                 | Required             | Purpose                                                                                                                                                                                                                                                                                                                                      |
 | -------------------------------------------------------------------------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -667,13 +667,13 @@ Invariants, enforced in the service layer and tested:
 
 ## 8. Admin Portal UI
 
-Vue 3 + Vite + vue-router + Pinia, served as static assets by the admin listener. The visual language follows the mockups: a dark sidebar, light content area, pill badges for `read`/`write`/`locked`, and the toggle style from `Methods.dc.html`.
+Vue 3 + Vite + vue-router + Pinia, served as static assets by the admin listener. The layout follows the mockups (sidebar navigation, pill badges for `read`/`write`/`locked`, the toggle style from `Methods.dc.html`); the visual language is the Synoikia brand: warm plaster surfaces, terracotta for the one primary action per view, desaturated status colors, Fraunces for the wordmark, IBM Plex Sans and Mono for everything else, in light and dark themes.
 
 ### 8.1 Navigation
 
 ```
 ┌ Sidebar ───────────────────┐
-│ ▣ MCP Admin                │
+│ ▣ Synoikia                 │
 │                            │
 │ Overview                   │  Endpoints dashboard (§8.2)
 │ Audit Log                  │  global
@@ -846,7 +846,7 @@ Residual risks, stated up front:
 
 ## 13. Development Phases (TDD)
 
-Same discipline as TN §7: tests first, phase gates, no loosening tests to pass. Coverage is tracked separately for the security-critical path: `pnpm --filter @home-server-mcps/core test:coverage` (V8 coverage) fails when `gate/`, `auth/`, `approvals/`, `sandbox/` or `crypto/` drop below their thresholds in `packages/core/vitest.config.ts`.
+Same discipline as TN §7: tests first, phase gates, no loosening tests to pass. Coverage is tracked separately for the security-critical path: `pnpm --filter @synoikia/core test:coverage` (V8 coverage) fails when `gate/`, `auth/`, `approvals/`, `sandbox/` or `crypto/` drop below their thresholds in `packages/core/vitest.config.ts`.
 
 | #   | Phase                                        | Tests first (highlights)                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | --- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

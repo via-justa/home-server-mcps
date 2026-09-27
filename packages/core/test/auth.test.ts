@@ -108,7 +108,7 @@ describe('UserService', () => {
     const t = setup();
     const u = await t.users.create({ username: 'admin', password: PASSWORD });
     const { secret, uri } = t.users.beginTotp(u.id);
-    expect(uri).toMatch(/^otpauth:\/\/totp\/MCP%20Admin%3Aadmin\?secret=/);
+    expect(uri).toMatch(/^otpauth:\/\/totp\/Synoikia%3Aadmin\?secret=/);
     expect(() => t.users.confirmTotp(u.id, '000000')).toThrow(/not valid/);
 
     const step = currentStep();

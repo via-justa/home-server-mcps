@@ -41,7 +41,7 @@ export function notify(notification: Omit<RpcNotification, 'jsonrpc'>): void {
  */
 export function runPlugin(handlers: PluginHandlers): void {
   if (typeof process.send !== 'function') {
-    throw new Error('runPlugin() must be started by the home-server-mcps core (no IPC channel)');
+    throw new Error('runPlugin() must be started by the Synoikia core (no IPC channel)');
   }
   const dispatch = createDispatcher(handlers);
   process.on('message', (msg: unknown) => {

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { Manifest } from '@home-server-mcps/plugin-sdk';
+import type { Manifest } from '@synoikia/plugin-sdk';
 import { and, asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { writeAudit } from '../audit.js';

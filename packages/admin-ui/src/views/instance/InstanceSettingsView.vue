@@ -206,6 +206,6 @@ async function remove() {
 
 <style scoped>
 .warn {
-  color: var(--warn) !important;
+  color: var(--warning-text) !important;
 }
 </style>

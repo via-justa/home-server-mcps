@@ -126,7 +126,7 @@ async function create() {
   max-width: 640px;
 }
 .bad {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 h2 {
   margin-top: 18px;

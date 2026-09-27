@@ -87,7 +87,7 @@ export function createAppRouter(history: RouterHistory = createWebHistory()) {
     return true;
   });
   router.afterEach((to) => {
-    if (typeof document !== 'undefined') document.title = to.meta.title ? `${to.meta.title} · MCP Admin` : 'MCP Admin';
+    if (typeof document !== 'undefined') document.title = to.meta.title ? `${to.meta.title} · Synoikia` : 'Synoikia';
   });
 
   // A session that expires mid-use: back to the login page, keeping the current page.

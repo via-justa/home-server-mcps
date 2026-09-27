@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { errorText } from '../api';
+import BrandLockup from '../components/BrandLockup.vue';
 import { useSessionStore } from '../stores/session';
 
 const session = useSessionStore();
@@ -40,6 +41,7 @@ async function submit() {
 <template>
   <main class="setup">
     <form class="card" @submit.prevent="submit">
+      <BrandLockup :size="36" class="brand" />
       <h1>Create the first admin account</h1>
       <p class="muted small">
         Every account is an administrator. You can add more accounts, two-factor authentication and single sign-on later
@@ -75,12 +77,16 @@ form {
   width: 400px;
   max-width: 100%;
 }
+.brand {
+  margin-bottom: 20px;
+}
 h1 {
   font-size: 18px;
+  line-height: 24px;
   margin: 0 0 6px;
 }
 .error {
-  color: var(--danger);
+  color: var(--danger-text);
   font-size: 13px;
 }
 </style>

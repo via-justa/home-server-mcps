@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router';
+import BrandLockup from '../components/BrandLockup.vue';
 import TotpEnrollment from '../components/TotpEnrollment.vue';
 import { useSessionStore } from '../stores/session';
 
@@ -19,6 +20,7 @@ async function logout() {
 <template>
   <main class="enroll">
     <div class="card">
+      <BrandLockup :size="36" class="brand" />
       <h1>Two-factor authentication is required</h1>
       <p class="muted small">This server requires every account to use an authenticator app before continuing.</p>
       <TotpEnrollment @enrolled="enrolled" />
@@ -39,8 +41,12 @@ async function logout() {
   width: 460px;
   max-width: 100%;
 }
+.brand {
+  margin-bottom: 20px;
+}
 h1 {
   font-size: 18px;
+  line-height: 24px;
   margin: 0 0 6px;
 }
 </style>

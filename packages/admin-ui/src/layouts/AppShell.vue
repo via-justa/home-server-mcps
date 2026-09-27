@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import BrandLockup from '../components/BrandLockup.vue';
 import { useAppStore } from '../stores/app';
 import { useSessionStore } from '../stores/session';
 
@@ -45,8 +46,7 @@ async function logout() {
   <div class="shell">
     <aside class="sidebar" :class="{ open: menuOpen }">
       <div class="brand">
-        <div class="logo">M</div>
-        <div class="name">MCP Admin</div>
+        <RouterLink to="/" class="home" aria-label="Synoikia, overview"><BrandLockup :size="32" /></RouterLink>
         <button class="menu mobile-only" type="button" :aria-expanded="menuOpen" @click="menuOpen = !menuOpen">
           {{ menuOpen ? 'Close' : 'Menu' }}
         </button>
@@ -95,103 +95,119 @@ async function logout() {
   min-height: 100vh;
 }
 .sidebar {
-  width: 220px;
+  width: 232px;
   flex-shrink: 0;
-  background: var(--sidebar);
+  background: var(--surface-200);
+  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  padding: 22px 0;
+  padding: 20px 0;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
 }
 .brand {
-  padding: 0 20px 22px;
+  padding: 0 20px 20px;
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.logo {
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  background: var(--accent);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.name {
-  font-size: 14px;
-  font-weight: 700;
-  color: #fff;
+.home {
+  text-decoration: none;
+  border-radius: var(--radius-md);
 }
 nav {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
+  padding: 0 10px;
 }
 .nav-item {
-  padding: 10px 20px 10px 17px;
-  border-left: 3px solid transparent;
-  color: var(--sidebar-text);
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  color: var(--ink-muted);
   font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
   text-decoration: none;
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
+}
+.nav-item:hover {
+  background: var(--surface-300);
+  color: var(--ink);
 }
 .nav-item.active {
-  border-left-color: var(--accent-soft);
-  background: var(--sidebar-active);
-  color: #fff;
+  background: var(--brand-subtle);
+  color: var(--ink);
   font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--brand);
+}
+.nav-item.mono {
+  font-size: 13px;
 }
 .nav-section {
-  margin: 16px 20px 6px;
-  font-size: 11px;
+  margin: 18px 10px 6px;
+  font-size: 12px;
+  line-height: 16px;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: #6f6d66;
+  color: var(--ink-muted);
+}
+.nav-section:empty {
+  margin: 12px 10px;
+  border-top: 1px solid var(--border);
 }
 .nav-empty {
-  padding: 4px 20px;
-  font-size: 12px;
-  color: #6f6d66;
+  padding: 4px 10px;
+  font-size: 13px;
+  color: var(--ink-muted);
 }
 .footer {
   margin-top: auto;
   padding: 16px 20px 0;
-  border-top: 1px solid #33353a;
+  border-top: 1px solid var(--border);
   display: flex;
   justify-content: space-between;
-  font-size: 12px;
-  color: var(--subtle);
+  align-items: center;
+  font-size: 13px;
+  color: var(--ink-muted);
 }
 .add {
   font-size: 13px;
-  color: var(--subtle);
+  color: var(--link);
 }
 .me {
-  color: var(--sidebar-text);
+  color: var(--ink);
+  font-weight: 500;
   text-decoration: none;
 }
 .link {
   background: none;
   border: none;
-  color: var(--sidebar-text);
+  color: var(--ink-muted);
   cursor: pointer;
-  font-size: 12px;
+  font: inherit;
+  font-size: 13px;
   padding: 0;
+}
+.link:hover {
+  color: var(--ink);
 }
 .menu {
   margin-left: auto;
-  background: none;
-  border: 1px solid #44464b;
-  color: var(--sidebar-text);
-  border-radius: 6px;
-  padding: 5px 10px;
-  font-size: 12px;
+  background: var(--surface-100);
+  border: 1px solid var(--border-strong);
+  color: var(--ink);
+  border-radius: var(--radius-md);
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
 }
 .mobile-only {
@@ -203,7 +219,11 @@ nav {
   }
   .sidebar {
     width: 100%;
+    height: auto;
+    position: static;
     padding: 12px 0;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
   }
   .brand {
     padding: 0 16px;
@@ -222,7 +242,7 @@ nav {
   .sidebar.open .footer {
     display: flex;
     margin-top: 12px;
-    padding: 12px 20px 0;
+    padding: 12px 16px 0;
   }
 }
 .content {

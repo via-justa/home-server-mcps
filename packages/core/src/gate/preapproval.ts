@@ -1,4 +1,4 @@
-import type { ResolvedTarget } from '@home-server-mcps/plugin-sdk';
+import type { ResolvedTarget } from '@synoikia/plugin-sdk';
 import { and, asc, count, eq, gt } from 'drizzle-orm';
 import type { Db } from '../db/index.js';
 import { preApprovalHits, preApprovalRules } from '../db/schema.js';

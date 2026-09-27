@@ -1,5 +1,5 @@
-import type { InitParams } from '@home-server-mcps/plugin-sdk';
-import { SDK_VERSION } from '@home-server-mcps/plugin-sdk';
+import type { InitParams } from '@synoikia/plugin-sdk';
+import { SDK_VERSION } from '@synoikia/plugin-sdk';
 import { PluginProcess, PluginUnavailableError } from './process.js';
 import type { SpawnOptions } from './process.js';
 

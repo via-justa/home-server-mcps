@@ -183,7 +183,7 @@ function setSecret(name: string, value: string) {
 
 <style scoped>
 .req {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .multi {
   display: flex;
@@ -191,7 +191,7 @@ function setSecret(name: string, value: string) {
   align-items: center;
   font-size: 13px;
   font-weight: 500;
-  color: var(--text);
+  color: var(--ink);
   margin: 0;
 }
 .multi input {

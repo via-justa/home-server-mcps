@@ -1,0 +1,15 @@
+<svg viewBox="6 6 108 108" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .p { stroke: #8f3d22; } .d { fill: #4f6b52; } .h { fill: #b5502f; }
+    @media (prefers-color-scheme: dark) { .p { stroke: #e88a63; } .d { fill: #8fae8a; } .h { fill: #d97250; } }
+  </style>
+  <g class="p" stroke-width="4" stroke-linecap="round" opacity="0.55">
+    <line x1="60" y1="60" x2="60" y2="25"/><line x1="60" y1="60" x2="95" y2="60"/>
+    <line x1="60" y1="60" x2="60" y2="95"/><line x1="60" y1="60" x2="25" y2="60"/>
+  </g>
+  <g class="d">
+    <rect x="52" y="8" width="16" height="16" rx="4"/><rect x="96" y="52" width="16" height="16" rx="4"/>
+    <rect x="52" y="96" width="16" height="16" rx="4"/><rect x="8" y="52" width="16" height="16" rx="4"/>
+  </g>
+  <rect class="h" x="48" y="48" width="24" height="24" rx="6"/>
+</svg>

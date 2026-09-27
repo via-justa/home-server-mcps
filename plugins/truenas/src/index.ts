@@ -1,4 +1,4 @@
-import { ErrorCodes, PluginError, runPlugin } from '@home-server-mcps/plugin-sdk';
+import { ErrorCodes, PluginError, runPlugin } from '@synoikia/plugin-sdk';
 
 // Skeleton only: behavior follows docs/reference/truenas-mcp-design.md §2.2–§2.3 (core.get_methods sync, naming inference, locked seeds),
 // mapped onto the plugin hooks in docs/design/unified-mcp-server.md §3.4.

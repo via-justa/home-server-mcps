@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { RegistryEntrySchema } from '@home-server-mcps/plugin-sdk';
+import { RegistryEntrySchema } from '@synoikia/plugin-sdk';
 import { and, asc, eq, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, DbLike } from '../db/index.js';

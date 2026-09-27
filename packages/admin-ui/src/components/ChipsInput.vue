@@ -56,17 +56,17 @@ const labelOf = (v: string) => props.suggestions?.find((s) => s.value === v)?.la
   gap: 6px;
   padding: 6px 8px;
   border: 1px solid var(--border-strong);
-  border-radius: 7px;
-  background: #fbfbf9;
+  border-radius: var(--radius-md);
+  background: var(--surface-100);
 }
 .chip {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   font-size: 12px;
-  background: var(--info-bg);
-  color: #1e40af;
-  border-radius: 999px;
+  background: var(--accent-subtle);
+  color: var(--accent-strong);
+  border-radius: var(--radius-full);
   padding: 2px 4px 2px 9px;
 }
 .chip button {

@@ -216,7 +216,7 @@ export class NotifierService {
     return this.deliver(row, {
       event: 'sync.failed',
       title: 'Test notification',
-      message: 'Notifications from home-server-mcps are working.',
+      message: 'Notifications from Synoikia are working.',
       data: { test: true },
     });
   }

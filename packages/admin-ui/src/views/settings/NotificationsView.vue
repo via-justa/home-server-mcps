@@ -270,7 +270,7 @@ async function remove(ch: Notifier) {
   opacity: 0.55;
 }
 .err {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .right {
   text-align: right;

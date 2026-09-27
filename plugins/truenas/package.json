@@ -1,5 +1,5 @@
 {
-  "name": "@home-server-mcps/plugin-truenas",
+  "name": "@synoikia/plugin-truenas",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,6 +10,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@home-server-mcps/plugin-sdk": "workspace:*"
+    "@synoikia/plugin-sdk": "workspace:*"
   }
 }

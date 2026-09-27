@@ -60,19 +60,19 @@ watch(entityQuery, (q) => {
 <style scoped>
 .picker {
   border: 1px dashed var(--border-strong);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 10px 12px 2px;
 }
 .search {
   width: 100%;
   padding: 7px 10px;
   border: 1px solid var(--border-strong);
-  border-radius: 7px;
+  border-radius: var(--radius-md);
   margin-bottom: 6px;
   font-size: 13px;
 }
 .help {
   font-size: 12px;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 </style>

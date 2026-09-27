@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseManifest } from '@home-server-mcps/plugin-sdk';
+import { parseManifest } from '@synoikia/plugin-sdk';
 import { eq } from 'drizzle-orm';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ApprovalLinkService } from '../src/approvals/links.js';

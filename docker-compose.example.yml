@@ -1,9 +1,9 @@
 # Example deployment. Publish 8080 through your reverse proxy as https://mcp.example.com and keep
 # 8081 (admin portal) reachable from the LAN/VPN only — see docs/design/unified-mcp-server.md §11.
 services:
-  home-server-mcps:
+  synoikia:
     build: .
-    image: home-server-mcps:latest
+    image: synoikia:latest
     restart: unless-stopped
     env_file: .env
     environment:

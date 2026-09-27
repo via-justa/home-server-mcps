@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { isSdkCompatible, parseManifest, SDK_VERSION } from '@home-server-mcps/plugin-sdk';
-import type { Manifest } from '@home-server-mcps/plugin-sdk';
+import { isSdkCompatible, parseManifest, SDK_VERSION } from '@synoikia/plugin-sdk';
+import type { Manifest } from '@synoikia/plugin-sdk';
 import { eq } from 'drizzle-orm';
 import { ZodError } from 'zod';
 import { writeAudit } from '../audit.js';

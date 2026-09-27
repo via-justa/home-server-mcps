@@ -442,8 +442,11 @@ const BLOCKED: Record<string, string> = {
 </template>
 
 <style scoped>
+strong + .mono {
+  margin-left: 6px;
+}
 .err {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .right {
   text-align: right;

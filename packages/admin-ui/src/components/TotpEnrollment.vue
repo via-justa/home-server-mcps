@@ -74,7 +74,7 @@ async function confirm() {
 
 <style scoped>
 .secret {
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: 14px;
   letter-spacing: 0.08em;
   word-break: break-all;
@@ -83,7 +83,7 @@ async function confirm() {
   width: 140px;
   padding: 9px 11px;
   border: 1px solid var(--border-strong);
-  border-radius: 7px;
+  border-radius: var(--radius-md);
   font-size: 14px;
 }
 .recovery {

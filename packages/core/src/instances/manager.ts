@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { parseManifest } from '@home-server-mcps/plugin-sdk';
-import type { Manifest } from '@home-server-mcps/plugin-sdk';
+import { parseManifest } from '@synoikia/plugin-sdk';
+import type { Manifest } from '@synoikia/plugin-sdk';
 import { asc, eq } from 'drizzle-orm';
 import { writeAudit } from '../audit.js';
 import { applyRegistrySync } from '../catalog/registry.js';

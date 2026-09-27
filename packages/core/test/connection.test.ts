@@ -1,4 +1,4 @@
-import type { Manifest } from '@home-server-mcps/plugin-sdk';
+import type { Manifest } from '@synoikia/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 import { ValidationError } from '../src/errors.js';
 import { validateConnection } from '../src/instances/connection.js';

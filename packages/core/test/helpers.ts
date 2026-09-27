@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { OperationDescriptor } from '@home-server-mcps/plugin-sdk';
+import type { OperationDescriptor } from '@synoikia/plugin-sdk';
 import { openDatabase } from '../src/db/index.js';
 import type { Db } from '../src/db/index.js';
 import { pluginInstances, plugins } from '../src/db/schema.js';
