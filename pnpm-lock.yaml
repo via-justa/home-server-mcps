@@ -143,12 +143,20 @@ importers:
       '@home-server-mcps/plugin-sdk':
         specifier: workspace:*
         version: link:../../packages/plugin-sdk
+    devDependencies:
+      '@home-server-mcps/core':
+        specifier: workspace:*
+        version: link:../../packages/core
 
   plugins/seerr:
     dependencies:
       '@home-server-mcps/plugin-sdk':
         specifier: workspace:*
         version: link:../../packages/plugin-sdk
+    devDependencies:
+      '@home-server-mcps/core':
+        specifier: workspace:*
+        version: link:../../packages/core
 
   plugins/truenas:
     dependencies:
@@ -159,6 +167,9 @@ importers:
         specifier: ^8.22.0
         version: 8.22.0
     devDependencies:
+      '@home-server-mcps/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
