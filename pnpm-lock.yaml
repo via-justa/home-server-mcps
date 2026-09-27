@@ -17,9 +17,6 @@ importers:
       '@vitest/coverage-v8':
         specifier: ^5.0.2
         version: 5.0.2(vitest@5.0.2)
-      esbuild:
-        specifier: ^0.28.2
-        version: 0.28.2
       eslint:
         specifier: ^10.11.0
         version: 10.11.0
@@ -146,36 +143,6 @@ importers:
       '@types/semver':
         specifier: ^7.7.1
         version: 7.8.0
-
-  plugins/homeassistant:
-    dependencies:
-      '@synoikia/plugin-sdk':
-        specifier: workspace:*
-        version: link:../../packages/plugin-sdk
-    devDependencies:
-      '@synoikia/core':
-        specifier: workspace:*
-        version: link:../../packages/core
-
-  plugins/seerr:
-    dependencies:
-      '@synoikia/plugin-sdk':
-        specifier: workspace:*
-        version: link:../../packages/plugin-sdk
-    devDependencies:
-      '@synoikia/core':
-        specifier: workspace:*
-        version: link:../../packages/core
-
-  plugins/truenas:
-    dependencies:
-      '@synoikia/plugin-sdk':
-        specifier: workspace:*
-        version: link:../../packages/plugin-sdk
-    devDependencies:
-      '@synoikia/core':
-        specifier: workspace:*
-        version: link:../../packages/core
 
 packages:
 

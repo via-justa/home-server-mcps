@@ -44,7 +44,7 @@ export const toPublicUser = (u: UserRow): PublicUser => ({
   lastLoginAt: u.lastLoginAt,
 });
 
-export function checkPasswordPolicy(password: string) {
+function checkPasswordPolicy(password: string) {
   if (typeof password !== 'string' || password.length < 12) {
     throw new ValidationError('weak_password', 'Passwords must be at least 12 characters');
   }

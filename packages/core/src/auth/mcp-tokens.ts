@@ -15,7 +15,7 @@ import { randomToken, sha256 } from './tokens.js';
 
 export const TOKEN_PREFIX = 'syn_';
 
-export const CreateTokenSchema = z.object({
+const CreateTokenSchema = z.object({
   name: z.string().trim().min(1).max(100),
   scope: z.array(z.string().min(1)).min(1),
   /** `read` (default) hides and blocks every write, whatever the endpoint's levels allow. */

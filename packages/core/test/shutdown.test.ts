@@ -1,19 +1,16 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { afterAll, describe, expect, it } from 'vitest';
-import { createAppContext } from '../src/app.js';
 import { setGroupLevel } from '../src/catalog/groups.js';
-import { loadConfig } from '../src/config/env.js';
 import { pendingApprovals } from '../src/db/schema.js';
 import { sessionLimits } from '../src/http/admin/auth.js';
 import { startServers } from '../src/server.js';
+import { createTestApp } from './helpers.js';
 
-const PLUGINS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/plugins');
 const dirs: string[] = [];
 afterAll(() => {
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
@@ -23,16 +20,14 @@ describe('graceful shutdown (review M16)', () => {
   it('finishes promptly with an admin SSE stream, an MCP session and a pending approval open', async () => {
     const dataDir = mkdtempSync(path.join(tmpdir(), 'synoikia-shutdown-'));
     dirs.push(dataDir);
-    const ctx = await createAppContext(
-      loadConfig({
+    const ctx = await createTestApp(
+      {
         DATA_DIR: dataDir,
-        CORE_PLUGINS_DIR: PLUGINS,
-        CORE_PLUGINS_AUTOENABLE: 'true',
         MCP_HOST: '127.0.0.1',
         MCP_PORT: '0',
         ADMIN_HOST: '127.0.0.1',
         ADMIN_PORT: '0',
-      }),
+      },
       { memoryDb: true },
     );
     const user = await ctx.users.create({ username: 'admin', password: 'correct horse battery' });

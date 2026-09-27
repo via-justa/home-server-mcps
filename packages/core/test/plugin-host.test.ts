@@ -200,7 +200,7 @@ describe('PluginSupervisor', () => {
 });
 
 describe('discovery', () => {
-  it('finds the fixture and the repo core plugins (once built) and validates manifests', () => {
+  it('finds plugin directories and validates their manifests', () => {
     const root = tmp();
     cpSync(FIXTURE, path.join(root, 'echo'), { recursive: true });
     mkdirSync(path.join(root, 'broken'));
@@ -221,7 +221,7 @@ describe('discovery', () => {
       }),
     );
 
-    const found = discoverPlugins([{ dir: root, source: 'repo' }]);
+    const found = discoverPlugins(root);
     expect(found.map((p) => [p.status, p.status === 'ok' ? p.manifest.id : p.pluginId])).toEqual([
       ['invalid', 'broken'],
       ['ok', 'echo'],
@@ -234,69 +234,37 @@ describe('discovery', () => {
     const dir = path.join(root, 'evil');
     mkdirSync(dir);
     cpSync(path.join(FIXTURE, 'manifest.json'), path.join(dir, 'manifest.json'));
-    expect(inspectPluginDir(dir, 'repo')).toMatchObject({
+    expect(inspectPluginDir(dir)).toMatchObject({
       status: 'invalid',
       error: expect.stringMatching(/not found/),
     });
     symlinkSync(path.join(FIXTURE, 'index.mjs'), path.join(dir, 'index.mjs'));
-    expect(inspectPluginDir(dir, 'repo')).toMatchObject({ status: 'invalid', error: expect.stringMatching(/outside/) });
+    expect(inspectPluginDir(dir)).toMatchObject({ status: 'invalid', error: expect.stringMatching(/outside/) });
   });
 
-  it('upserts the registry: core auto-enable, no shadowing of core ids, missing plugins kept', () => {
+  it('upserts the registry: new plugins start disabled, duplicate ids rejected, missing plugins kept', () => {
     const db = openDatabase(':memory:');
-    const coreRoot = tmp();
-    const repoRoot = tmp();
-    cpSync(FIXTURE, path.join(coreRoot, 'echo'), { recursive: true });
-    cpSync(FIXTURE, path.join(repoRoot, 'echo'), { recursive: true });
+    const root = tmp();
+    cpSync(FIXTURE, path.join(root, 'echo'), { recursive: true });
+    // A second directory declaring the same id.
+    cpSync(FIXTURE, path.join(root, 'echo-copy'), { recursive: true });
 
-    const first = syncPluginRegistry(
-      db,
-      discoverPlugins([
-        { dir: coreRoot, source: 'core' },
-        { dir: repoRoot, source: 'repo' },
-      ]),
-      { autoEnableCore: true },
-    );
+    const first = syncPluginRegistry(db, discoverPlugins(root));
     expect(first).toMatchObject({ added: ['echo'], rejected: ['echo'] });
+    expect(db.select().from(plugins).all()).toHaveLength(1);
     expect(db.select().from(plugins).get()).toMatchObject({
       pluginId: 'echo',
-      source: 'core',
-      enabled: true,
+      path: path.join(root, 'echo'),
+      enabled: false,
       status: 'ok',
     });
 
-    const second = syncPluginRegistry(db, discoverPlugins([{ dir: repoRoot, source: 'repo' }]), {
-      autoEnableCore: false,
-    });
+    db.update(plugins).set({ enabled: true }).run();
+    const second = syncPluginRegistry(db, discoverPlugins(root));
     expect(second.updated).toEqual(['echo']);
 
-    const third = syncPluginRegistry(db, [], { autoEnableCore: false });
+    const third = syncPluginRegistry(db, []);
     expect(third.missing).toEqual(['echo']);
     expect(db.select().from(plugins).get()).toMatchObject({ status: 'invalid', enabled: true });
-  });
-
-  it('keeps a repo plugin row when a later core release claims its id (review L6)', () => {
-    const db = openDatabase(':memory:');
-    const repoRoot = tmp();
-    cpSync(FIXTURE, path.join(repoRoot, 'echo'), { recursive: true });
-    syncPluginRegistry(db, discoverPlugins([{ dir: repoRoot, source: 'repo' }]), { autoEnableCore: true });
-    const before = db.select().from(plugins).get()!;
-    expect(before).toMatchObject({ source: 'repo', status: 'ok' });
-
-    const coreRoot = tmp();
-    cpSync(FIXTURE, path.join(coreRoot, 'echo'), { recursive: true });
-    const found = discoverPlugins([
-      { dir: coreRoot, source: 'core' },
-      { dir: repoRoot, source: 'repo' },
-    ]);
-    const out = syncPluginRegistry(db, found, { autoEnableCore: true });
-    expect(out.rejected).toContain('echo');
-    const after = db.select().from(plugins).get()!;
-    expect(after).toMatchObject({ id: before.id, source: 'repo', path: before.path, status: 'invalid' });
-    expect(after.statusError).toMatch(/core plugin now uses/);
-    // Re-running discovery doesn't flip it either.
-    syncPluginRegistry(db, found, { autoEnableCore: true });
-    expect(db.select().from(plugins).all()).toHaveLength(1);
-    expect(db.select().from(plugins).get()).toMatchObject({ source: 'repo', status: 'invalid' });
   });
 });

@@ -133,7 +133,6 @@ export interface PluginRow {
   id: string;
   pluginId: string;
   version: string;
-  source: 'core' | 'repo';
   repoId: string | null;
   sha256: string | null;
   signatureVerified: boolean;
@@ -295,7 +294,7 @@ export interface AvailablePlugin {
   description: string | null;
   versions: { version: string; compatible: boolean }[];
   latest: string | null;
-  installed: { version: string; fromThisRepo: boolean; source: string } | null;
+  installed: { version: string; fromThisRepo: boolean } | null;
   updateAvailable: boolean;
   blocked: string | null;
 }

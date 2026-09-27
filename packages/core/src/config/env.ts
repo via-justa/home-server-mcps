@@ -56,8 +56,6 @@ const EnvSchema = z
           .map((h) => h.trim().toLowerCase())
           .filter(Boolean),
       ),
-    CORE_PLUGINS_AUTOENABLE: bool,
-    CORE_PLUGINS_DIR: z.string().default(path.join(workspaceRoot, 'plugins')),
     ADMIN_UI_DIR: z.string().default(path.join(workspaceRoot, 'packages/admin-ui/dist')),
     ADMIN_BOOTSTRAP_USERNAME: z.string().optional(),
     ADMIN_BOOTSTRAP_PASSWORD: z.string().optional(),

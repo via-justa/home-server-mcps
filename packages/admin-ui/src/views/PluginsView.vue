@@ -134,7 +134,6 @@ async function confirmKey() {
 }
 
 const BLOCKED: Record<string, string> = {
-  core_plugin_id: 'Same id as a core plugin',
   installed_from_elsewhere: 'Installed from another source',
   key_changed: 'Repository key changed',
 };
@@ -142,7 +141,7 @@ const BLOCKED: Record<string, string> = {
 
 <template>
   <div class="page">
-    <PageHeader title="Plugins" subtitle="Core plugins ship with the server; others come from repositories you add">
+    <PageHeader title="Plugins" subtitle="Plugins are installed from signed or unsigned repositories">
       <button class="btn" type="button" @click="rescan">Rescan</button>
     </PageHeader>
 
@@ -167,7 +166,7 @@ const BLOCKED: Record<string, string> = {
           <tr>
             <th>Plugin</th>
             <th>Version</th>
-            <th>Source</th>
+            <th>Signature</th>
             <th>Status</th>
             <th>Endpoints</th>
             <th />
@@ -185,12 +184,8 @@ const BLOCKED: Record<string, string> = {
             </td>
             <td class="mono">{{ p.version }}</td>
             <td>
-              <span v-if="p.source === 'core'" class="pill info">core</span>
-              <template v-else>
-                <span class="pill">repository</span>
-                <span v-if="p.signatureVerified" class="pill ok">signed</span>
-                <span v-else class="pill warn">unsigned</span>
-              </template>
+              <span v-if="p.signatureVerified" class="pill ok">signed</span>
+              <span v-else class="pill warn">unsigned</span>
             </td>
             <td>
               <span class="pill" :class="{ ok: p.status === 'ok', danger: p.status !== 'ok' }">{{ p.status }}</span>
@@ -201,13 +196,7 @@ const BLOCKED: Record<string, string> = {
               <button class="btn btn-sm" type="button" :disabled="p.status !== 'ok' && !p.enabled" @click="toggle(p)">
                 {{ p.enabled ? 'Disable' : 'Enable' }}
               </button>
-              <button
-                v-if="p.source === 'repo'"
-                class="btn btn-sm btn-danger"
-                type="button"
-                :disabled="p.instances > 0"
-                @click="uninstall(p)"
-              >
+              <button class="btn btn-sm btn-danger" type="button" :disabled="p.instances > 0" @click="uninstall(p)">
                 Uninstall
               </button>
             </td>
@@ -316,7 +305,7 @@ const BLOCKED: Record<string, string> = {
             </tr>
           </tbody>
         </table>
-        <div v-if="!repos.length" class="empty">No repositories. Core plugins are always available.</div>
+        <div v-if="!repos.length" class="empty">No repositories. Add one to install plugins.</div>
       </div>
     </div>
 

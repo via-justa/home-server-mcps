@@ -146,3 +146,25 @@ describe('registry scopes migration', () => {
     expect(scopes('r2')).toBeNull();
   });
 });
+
+describe('plugin source migration', () => {
+  it('drops the source column and keeps every plugin and its instances', () => {
+    const { dir, sqlite } = databaseAt('0008_drop_registry_domain');
+    sqlite.exec(`
+      INSERT INTO plugins (id, plugin_id, version, source, path, manifest, status)
+        VALUES ('p1', 'echo', '1.0.0', 'core', '/x', '{}', 'ok'), ('p2', 'other', '1.0.0', 'repo', '/y', '{}', 'ok');
+      INSERT INTO plugin_instances (id, plugin_id, slug, display_name) VALUES ('i1', 'p1', 'acme', 'Acme');
+    `);
+    sqlite.close();
+
+    const db = openDatabase({ dataDir: dir });
+    expect(
+      db
+        .select()
+        .from(schema.plugins)
+        .all()
+        .map((p) => p.pluginId),
+    ).toEqual(['echo', 'other']);
+    expect(db.select().from(schema.pluginInstances).get()).toMatchObject({ id: 'i1', pluginId: 'p1' });
+  });
+});

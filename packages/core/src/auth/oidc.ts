@@ -16,7 +16,7 @@ import type { UserRow, UserService } from './users.js';
  * Used by both the admin login and the MCP-port login pages (OAuth consent, approval links).
  */
 
-export const AllowPolicySchema = z
+const AllowPolicySchema = z
   .object({
     emails: z.array(z.string().email()).default([]),
     subjects: z.array(z.string().min(1)).default([]),
@@ -26,7 +26,7 @@ export const AllowPolicySchema = z
   })
   .prefault({});
 
-export const OidcSettingsSchema = z.object({
+const OidcSettingsSchema = z.object({
   enabled: z.boolean().default(false),
   issuer: z.url(),
   clientId: z.string().min(1),
@@ -60,7 +60,7 @@ export interface OidcIdentity {
 const STATE_TTL_MS = 10 * 60_000;
 const policyIsEmpty = (p: OidcSettings['allowPolicy']) => !p.emails.length && !p.subjects.length && !p.group;
 
-export class OidcError extends ServiceError {
+class OidcError extends ServiceError {
   constructor(code: string, message: string) {
     super(400, code, message);
   }

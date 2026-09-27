@@ -15,7 +15,7 @@ import type { CoreEventMap, CoreEventName, CoreEvents } from '../events.js';
  * Payloads carry summaries, never raw params or secrets.
  */
 
-export const NOTIFY_EVENTS = [
+const NOTIFY_EVENTS = [
   'instance.error',
   'instance.recovered',
   'plugin.crashed',
@@ -35,7 +35,7 @@ const NtfyConfig = z.object({
 });
 const WebhookConfig = z.object({ url: z.url() });
 
-export const ChannelInputSchema = z.discriminatedUnion('kind', [
+const ChannelInputSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('ntfy'),
     name: z.string().trim().min(1).max(100),

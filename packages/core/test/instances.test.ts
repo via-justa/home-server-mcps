@@ -33,7 +33,8 @@ const waitFor = async (pred: () => boolean, ms = 3000) => {
 
 function setup(opts: { versionCheckIntervalMs?: number } = {}) {
   const db = openDatabase(':memory:');
-  syncPluginRegistry(db, discoverPlugins([{ dir: PLUGINS, source: 'core' }]), { autoEnableCore: true });
+  syncPluginRegistry(db, discoverPlugins(PLUGINS));
+  db.update(plugins).set({ enabled: true }).run();
   const events = new CoreEvents();
   const seen: { name: string; payload: unknown }[] = [];
   for (const name of ['instance.status', 'sync.completed', 'sync.failed', 'plugin.crashed'] as const) {

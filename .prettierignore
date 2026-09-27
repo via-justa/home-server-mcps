@@ -1,5 +1,6 @@
 dist
 coverage
 pnpm-lock.yaml
-docs/reference
+docs/mockups/**/*.html
+docs/mockups/**/*.json
 packages/core/drizzle

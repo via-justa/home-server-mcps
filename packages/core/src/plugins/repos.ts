@@ -10,7 +10,7 @@ import * as tar from 'tar';
 import { z } from 'zod';
 import { writeAudit } from '../audit.js';
 import type { Db } from '../db/index.js';
-import { pluginInstances, pluginRepos, plugins } from '../db/schema.js';
+import { pluginInstances, pluginRepos, plugins, settings } from '../db/schema.js';
 import { ConflictError, NotFoundError, ServiceError, ValidationError } from '../errors.js';
 import { CORE_VERSION } from '../version.js';
 import { inspectPluginDir } from './discovery.js';
@@ -56,7 +56,7 @@ export const IndexSchema = z.object({
 });
 export type RepoIndex = z.infer<typeof IndexSchema>;
 
-export const AddRepoSchema = z.object({
+const AddRepoSchema = z.object({
   url: z.url(),
   signingMode: z.enum(['signed', 'unsigned']),
   /**
@@ -75,6 +75,9 @@ export const InstallSchema = z.object({
 });
 
 const MAX_REDIRECTS = 5;
+
+/** `settings` row recording that the pre-configured repository was added once. */
+const DEFAULT_REPO_MARKER = 'plugin_repos.preconfigured';
 
 export type FetchBytes = (url: string, init?: { signal?: AbortSignal; redirect?: 'manual' }) => Promise<Response>;
 
@@ -97,7 +100,7 @@ export interface RepoServiceOptions {
 }
 
 /** The parts of a manifest that change what a plugin may do; an update touching them needs review. */
-export function permissionChanges(before: unknown, after: unknown): string[] {
+function permissionChanges(before: unknown, after: unknown): string[] {
   const b = (before ?? {}) as Record<string, unknown>;
   const a = (after ?? {}) as Record<string, unknown>;
   const pick: Record<string, (m: Record<string, unknown>) => unknown> = {
@@ -272,8 +275,8 @@ export class PluginRepoService {
   }
 
   /**
-   * Adds a repository. Signed repos take two calls: the first answers 409 `confirm_key` with the key
-   * id, the second repeats the request with `confirmKeyId` once the admin has checked it out of band.
+   * Adds a repository. Signed repos take two calls: the first answers 409 `confirm_key` with the
+   * public key, the second repeats the request with `confirmPublicKey` once the admin has checked it out of band.
    */
   async add(raw: unknown, actor: Actor = {}) {
     const input = AddRepoSchema.parse(raw);
@@ -317,6 +320,42 @@ export class PluginRepoService {
       });
     });
     return this.publicRepo(this.repoRow(id));
+  }
+
+  /**
+   * Adds a signed repository whose key ships with core, without fetching its index (the next refresh
+   * does). Runs once per `marker`: a repo the admin removed stays removed.
+   */
+  addPreconfigured(repo: { url: string; name: string; publicKey: string }, marker = DEFAULT_REPO_MARKER) {
+    if (this.db.select().from(settings).where(eq(settings.key, marker)).get()) return null;
+    const url = this.checkUrl(repo.url);
+    const key = parsePublicKey(repo.publicKey);
+    const exists = this.db.select().from(pluginRepos).where(eq(pluginRepos.url, url)).get();
+    const id = randomUUID();
+    this.db.transaction((tx) => {
+      tx.insert(settings)
+        .values({ key: marker, value: { url, addedAt: this.now().toISOString() } })
+        .run();
+      if (exists) return;
+      tx.insert(pluginRepos)
+        .values({
+          id,
+          url,
+          name: repo.name,
+          signingMode: 'signed',
+          publicKey: key.base64,
+          keyFingerprint: key.keyId,
+          keyStatus: 'ok',
+        })
+        .run();
+      writeAudit(tx, {
+        kind: 'config',
+        decision: 'plugin_repo_added',
+        actorKind: 'system',
+        detail: { id, url, name: repo.name, signingMode: 'signed', keyId: key.keyId, preconfigured: true },
+      });
+    });
+    return exists ? null : this.publicRepo(this.repoRow(id));
   }
 
   /** Re-reads the index. A changed signing key blocks installs until re-confirmed. */
@@ -431,7 +470,7 @@ export class PluginRepoService {
           .map((v) => v.version);
         const latest = semver.rsort([...compatible])[0] ?? null;
         const current = installed.get(p.id);
-        const fromHere = current?.source === 'repo' && current.repoId === repo.id;
+        const fromHere = !!current && current.repoId === repo.id;
         out.push({
           repoId: repo.id,
           repoName: repo.name,
@@ -441,16 +480,10 @@ export class PluginRepoService {
           description: p.description ?? null,
           versions: p.versions.map((v) => ({ version: v.version, compatible: compatible.includes(v.version) })),
           latest,
-          installed: current ? { version: current.version, fromThisRepo: fromHere, source: current.source } : null,
+          installed: current ? { version: current.version, fromThisRepo: fromHere } : null,
           updateAvailable: !!(fromHere && latest && semver.gt(latest, current.version)),
           blocked:
-            current?.source === 'core'
-              ? 'core_plugin_id'
-              : current && !fromHere
-                ? 'installed_from_elsewhere'
-                : repo.keyStatus === 'key_changed'
-                  ? 'key_changed'
-                  : null,
+            current && !fromHere ? 'installed_from_elsewhere' : repo.keyStatus === 'key_changed' ? 'key_changed' : null,
         });
       }
     }
@@ -551,7 +584,6 @@ export class PluginRepoService {
       );
     }
     const current = this.db.select().from(plugins).where(eq(plugins.pluginId, input.pluginId)).get();
-    if (current?.source === 'core') throw new ConflictError('core_plugin_id', `"${input.pluginId}" is a core plugin`);
     if (current && current.repoId !== repo.id) {
       throw new ConflictError(
         'installed_from_elsewhere',
@@ -587,7 +619,7 @@ export class PluginRepoService {
     const work = path.join(this.stagingDir, randomUUID());
     try {
       const root = await this.extract(tarball, work);
-      const inspected = inspectPluginDir(root, 'repo');
+      const inspected = inspectPluginDir(root);
       if (inspected.status !== 'ok') throw new ValidationError('invalid_plugin', inspected.error);
       if (inspected.manifest.id !== input.pluginId || inspected.manifest.version !== input.version) {
         throw new ValidationError(
@@ -643,14 +675,12 @@ export class PluginRepoService {
     }
   }
 
-  /** Removes an installed (repo) plugin. Blocked while any instance uses it. */
+  /** Removes an installed plugin. Blocked while any instance uses it. */
   uninstall(pluginRowOrId: string, actor: Actor = {}) {
     const row =
       this.db.select().from(plugins).where(eq(plugins.id, pluginRowOrId)).get() ??
       this.db.select().from(plugins).where(eq(plugins.pluginId, pluginRowOrId)).get();
     if (!row) throw new NotFoundError('plugin_not_found', 'No such plugin');
-    if (row.source === 'core')
-      throw new ConflictError('core_plugin', 'Core plugins cannot be uninstalled; disable them instead');
     const instances = this.db.select().from(pluginInstances).where(eq(pluginInstances.pluginId, row.id)).all();
     if (instances.length) {
       throw new ConflictError('plugin_has_instances', 'Delete this plugin’s endpoints first', {

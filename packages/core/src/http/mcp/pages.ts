@@ -61,7 +61,7 @@ const BRAND = `<div class="brand"><svg viewBox="0 0 120 120" width="36" height="
 <rect x="52" y="96" width="16" height="16" rx="4"/><rect x="8" y="52" width="16" height="16" rx="4"/></g>
 <rect class="hearth" x="48" y="48" width="24" height="24" rx="6"/></svg><span>Syn<span class="root">oikia</span></span></div>`;
 
-export function page(c: Context, title: string, body: Body, status: 200 | 400 | 401 | 403 | 404 | 429 = 200) {
+function page(c: Context, title: string, body: Body, status: 200 | 400 | 401 | 403 | 404 | 429 = 200) {
   c.header(
     'Content-Security-Policy',
     "default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'; base-uri 'none'",

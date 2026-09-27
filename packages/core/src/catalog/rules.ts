@@ -15,7 +15,7 @@ import { resolveAccess } from './groups.js';
  * referenced (409), enforced here regardless of what the UI offers.
  */
 
-export const RuleInputSchema = z.object({
+const RuleInputSchema = z.object({
   operationId: z.string().min(1),
   match: MatchSchema.default([]),
   rateLimit: z.number().int().min(1).max(100_000).nullable().optional(),

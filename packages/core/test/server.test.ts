@@ -27,7 +27,6 @@ beforeAll(async () => {
       ADMIN_PORT: '0',
       ADMIN_UI_DIR: uiDir,
       DATA_DIR: dataDir,
-      CORE_PLUGINS_DIR: path.join(dataDir, 'no-core-plugins'),
     }),
   );
   servers = await startServers(ctx);

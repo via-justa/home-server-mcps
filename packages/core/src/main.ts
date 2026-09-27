@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { createAppContext } from './app.js';
 import { loadConfig } from './config/env.js';
 import { acquireServerLock } from './lock.js';
+import { DEFAULT_PLUGIN_REPO } from './plugins/default-repo.js';
 import { startServers } from './server.js';
 
 const config = loadConfig();
@@ -11,6 +12,8 @@ process.on('exit', releaseLock);
 const ctx = await createAppContext(config);
 for (const warning of ctx.warnings) console.warn(`WARN ${warning}`);
 if (ctx.users.count() === 0) console.log('No users yet: open the admin portal to create the first account.');
+// Its index is fetched by the startup refresh; an unreachable index is recorded on the repo, not fatal.
+if (ctx.repos.addPreconfigured(DEFAULT_PLUGIN_REPO)) console.log(`Added plugin repository ${DEFAULT_PLUGIN_REPO.url}`);
 await ctx.start();
 
 const servers = await startServers(ctx);

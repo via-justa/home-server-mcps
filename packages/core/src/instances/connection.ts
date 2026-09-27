@@ -110,7 +110,7 @@ const ADDRESS_FORMATS = new Set(['uri', 'url', 'hostname', 'ipv4', 'ipv6', 'idn-
 const ADDRESS_NAME = /(url|uri|host|server|endpoint|address|domain|origin)/i;
 
 /** Non-secret fields that say where the upstream is: changing one decides where the secrets are sent. */
-export function addressFieldNames(manifest: Manifest): string[] {
+function addressFieldNames(manifest: Manifest): string[] {
   const props = (manifest.connection.schema.properties ?? {}) as Record<
     string,
     { writeOnly?: boolean; format?: string }

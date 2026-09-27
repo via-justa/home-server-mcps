@@ -30,7 +30,7 @@ declare module 'vue-router' {
   }
 }
 
-export const routes: RouteRecordRaw[] = [
+const routes: RouteRecordRaw[] = [
   { path: '/login', component: LoginView, meta: { public: true, title: 'Sign in' } },
   { path: '/setup', component: SetupView, meta: { public: true, title: 'Setup' } },
   { path: '/enroll-totp', component: EnrollTotpView, meta: { title: 'Two-factor setup' } },

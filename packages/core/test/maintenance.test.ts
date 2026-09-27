@@ -4,19 +4,16 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { hostname } from 'node:os';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { eq } from 'drizzle-orm';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createAppContext } from '../src/app.js';
 import { currentStep, totpAt } from '../src/auth/totp.js';
 import { rotateMasterKeyCommand } from '../src/cli.js';
-import { loadConfig } from '../src/config/env.js';
 import { acquireServerLock, LOCK_FILENAME } from '../src/lock.js';
 import { auditLog, preApprovalHits, sessions } from '../src/db/schema.js';
 import { runHousekeeping } from '../src/maintenance.js';
 import { updateSettings } from '../src/settings.js';
+import { createTestApp } from './helpers.js';
 
-const PLUGINS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/plugins');
 const PASSWORD = 'correct horse battery';
 
 const cleanup: (() => unknown)[] = [];
@@ -25,11 +22,11 @@ afterEach(async () => {
 });
 
 function env(dataDir: string, extra: Record<string, string> = {}) {
-  return { DATA_DIR: dataDir, CORE_PLUGINS_DIR: PLUGINS, CORE_PLUGINS_AUTOENABLE: 'true', ...extra };
+  return { DATA_DIR: dataDir, ...extra };
 }
 
 async function open(dataDir: string, extra: Record<string, string> = {}, now?: () => Date) {
-  const ctx = await createAppContext(loadConfig(env(dataDir, extra)), { now });
+  const ctx = await createTestApp(env(dataDir, extra), { now });
   return ctx;
 }
 

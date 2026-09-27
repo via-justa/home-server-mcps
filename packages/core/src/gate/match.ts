@@ -14,7 +14,7 @@ import { canonicalJson } from './canonical.js';
  * chose to send (a quota, an ACL, encryption options).
  */
 
-export const PARAM_OPS = [...MATCH_OPS, 'any'] as const;
+const PARAM_OPS = [...MATCH_OPS, 'any'] as const;
 
 export const ParamConditionSchema = z
   .object({

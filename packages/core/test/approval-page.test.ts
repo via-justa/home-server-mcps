@@ -1,21 +1,18 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { eq } from 'drizzle-orm';
 import type { Hono } from 'hono';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createAppContext } from '../src/app.js';
 import type { UrlPromptRequest } from '../src/approvals/service.js';
 import { currentStep, totpAt } from '../src/auth/totp.js';
 import { setGroupLevel, updateOperation } from '../src/catalog/groups.js';
-import { loadConfig } from '../src/config/env.js';
 import { updateSettings } from '../src/settings.js';
 import { auditLog, operations } from '../src/db/schema.js';
 import { createMcpApp } from '../src/http/mcp-app.js';
 import { executeCode } from '../src/runtime/index.js';
+import { createTestApp } from './helpers.js';
 
-const PLUGINS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/plugins');
 const PASSWORD = 'correct horse battery';
 
 const cleanup: (() => unknown)[] = [];
@@ -54,10 +51,7 @@ async function withPendingCall(code: string, opts: { totp?: boolean; lockedAsk?:
   const dataDir = mkdtempSync(path.join(tmpdir(), 'synoikia-approval-'));
   cleanup.push(() => rmSync(dataDir, { recursive: true, force: true }));
   let clock = Date.now();
-  const ctx = await createAppContext(
-    loadConfig({ DATA_DIR: dataDir, CORE_PLUGINS_DIR: PLUGINS, CORE_PLUGINS_AUTOENABLE: 'true' }),
-    { memoryDb: true, now: () => new Date(clock) },
-  );
+  const ctx = await createTestApp({ DATA_DIR: dataDir }, { memoryDb: true, now: () => new Date(clock) });
   cleanup.push(() => ctx.stop());
 
   const admin = await ctx.users.create({ username: 'admin', password: PASSWORD });
