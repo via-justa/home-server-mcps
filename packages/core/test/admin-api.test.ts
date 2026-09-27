@@ -182,14 +182,14 @@ describe('instances and access', () => {
     applyRegistrySync(t.ctx.db, inst.id, [
       {
         kind: 'entity',
-        id: 'camera.door',
+        id: 'widget.door',
         name: 'Door',
-        attrs: { access_token: 'cam-abc', entity_picture: '/api/camera_proxy?token=upstream-token-5678', fps: 5 },
+        attrs: { access_token: 'img-abc', image_url: '/api/image?token=upstream-token-5678', fps: 5 },
       },
     ]);
     const body = JSON.stringify(await (await b.get(`/api/instances/${inst.id}/registry?kind=entity`)).json());
-    expect(body).toContain('camera.door');
-    expect(body).not.toContain('cam-abc');
+    expect(body).toContain('widget.door');
+    expect(body).not.toContain('img-abc');
     expect(body).not.toContain('upstream-token-5678');
     expect(body).toContain('"fps":5');
   });
@@ -304,8 +304,8 @@ describe('instances and access', () => {
 
     const created = await t.b.post(`/api/instances/${t.id}/rules`, {
       operationId: opId('echo.set'),
-      reason: 'media datasets',
-      match: [{ field: '/name', op: 'prefix', value: 'tank/media/' }],
+      reason: 'media volumes',
+      match: [{ field: '/name', op: 'prefix', value: 'vol/media/' }],
       rateLimit: 10,
     });
     expect(created.status).toBe(201);

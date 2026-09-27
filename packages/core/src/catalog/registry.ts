@@ -6,7 +6,7 @@ import type { Db, DbLike } from '../db/index.js';
 import { registryEntries } from '../db/schema.js';
 
 /**
- * Registry mirror (design §2.4 / HA §2.4): pickable upstream objects — HA areas, devices, entities —
+ * Registry mirror (design §2.4): pickable upstream objects — areas, devices, entities —
  * mirrored locally so pickers and `search` never pull the whole registry from the upstream.
  */
 

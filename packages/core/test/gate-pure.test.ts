@@ -4,20 +4,20 @@ import { getPointer, matches, MatchSchema } from '../src/gate/match.js';
 import { createInstanceRedactor, createRedactor, GLOBAL_SENSITIVE_KEYS, REDACTED } from '../src/gate/redact.js';
 
 describe('createRedactor', () => {
-  const redact = createRedactor(GLOBAL_SENSITIVE_KEYS, ['plexToken']);
+  const redact = createRedactor(GLOBAL_SENSITIVE_KEYS, ['vendorToken']);
 
   it('redacts sensitive keys at any depth, case- and separator-insensitively', () => {
     expect(
       redact({
         name: 'share',
         API_KEY: 'k1',
-        nested: [{ 'private-key': 'pem', plextoken: 'p', keep: 'me' }],
+        nested: [{ 'private-key': 'pem', vendortoken: 'p', keep: 'me' }],
         auth: { password: 'x', user: 'u' },
       }),
     ).toEqual({
       name: 'share',
       API_KEY: REDACTED,
-      nested: [{ 'private-key': REDACTED, plextoken: REDACTED, keep: 'me' }],
+      nested: [{ 'private-key': REDACTED, vendortoken: REDACTED, keep: 'me' }],
       auth: { password: REDACTED, user: 'u' },
     });
   });
@@ -106,12 +106,12 @@ describe('matches', () => {
   });
 
   it('is strict: every parameter must be covered by a condition or accepted with `any`', () => {
-    const rule = [{ field: '/name', op: 'prefix', value: 'tank/media' }] as const;
-    expect(matches(rule, call({ name: 'tank/media/tv' }))).toBe(true);
-    expect(matches(rule, call({ name: 'tank/media/tv', quota: 1 }))).toBe(false);
+    const rule = [{ field: '/name', op: 'prefix', value: 'vol/media' }] as const;
+    expect(matches(rule, call({ name: 'vol/media/tv' }))).toBe(true);
+    expect(matches(rule, call({ name: 'vol/media/tv', quota: 1 }))).toBe(false);
     const withQuota = [...rule, { field: '/quota', op: 'any' }] as const;
-    expect(matches(withQuota, call({ name: 'tank/media/tv', quota: 1 }))).toBe(true);
-    expect(matches(withQuota, call({ name: 'tank/media/tv' }))).toBe(true); // `any` also allows absence
+    expect(matches(withQuota, call({ name: 'vol/media/tv', quota: 1 }))).toBe(true);
+    expect(matches(withQuota, call({ name: 'vol/media/tv' }))).toBe(true); // `any` also allows absence
     // A condition deeper in an object only covers that key; its siblings still need one.
     const deep = [{ field: '/body/is4k', op: 'bool', value: false }] as const;
     expect(matches(deep, call({ body: { is4k: false } }))).toBe(true);
@@ -122,33 +122,28 @@ describe('matches', () => {
   });
 
   it('covers positional (array) params by index, and whole arrays by their own path', () => {
-    const rule = [{ field: '/0/name', op: 'prefix', value: 'tank/media' }] as const;
-    expect(matches(rule, call([{ name: 'tank/media/tv' }]))).toBe(true);
-    expect(matches(rule, call([{ name: 'tank/media/tv', quota: 1 }]))).toBe(false);
-    expect(matches(rule, call([{ name: 'tank/media/tv' }, { recursive: true }]))).toBe(false);
-    expect(matches([...rule, { field: '/1', op: 'any' }], call([{ name: 'tank/media/tv' }, { a: 1 }]))).toBe(true);
-    expect(matches([{ field: '/0', op: 'in', value: ['plex'] }], call(['plex']))).toBe(true);
-    expect(matches([{ field: '/0', op: 'in', value: ['plex'] }], call(['plex', { force: true }]))).toBe(false);
+    const rule = [{ field: '/0/name', op: 'prefix', value: 'vol/media' }] as const;
+    expect(matches(rule, call([{ name: 'vol/media/tv' }]))).toBe(true);
+    expect(matches(rule, call([{ name: 'vol/media/tv', quota: 1 }]))).toBe(false);
+    expect(matches(rule, call([{ name: 'vol/media/tv' }, { recursive: true }]))).toBe(false);
+    expect(matches([...rule, { field: '/1', op: 'any' }], call([{ name: 'vol/media/tv' }, { a: 1 }]))).toBe(true);
+    expect(matches([{ field: '/0', op: 'in', value: ['alpha'] }], call(['alpha']))).toBe(true);
+    expect(matches([{ field: '/0', op: 'in', value: ['alpha'] }], call(['alpha', { force: true }]))).toBe(false);
     // An array covered at its own path is covered whole, as before.
     expect(matches([{ field: '/apps', op: 'in', value: ['a', 'b'] }], call({ apps: ['a', 'b'] }))).toBe(true);
     expect(matches([], call([]))).toBe(true);
   });
 
   it.each([
-    ['prefix hit', { field: '/name', op: 'prefix', value: 'tank/media/' }, { name: 'tank/media/tv' }, true],
-    ['prefix at a boundary', { field: '/name', op: 'prefix', value: 'tank/media' }, { name: 'tank/media/tv' }, true],
-    ['prefix equal', { field: '/name', op: 'prefix', value: 'tank/media' }, { name: 'tank/media' }, true],
-    [
-      'prefix mid-segment',
-      { field: '/name', op: 'prefix', value: 'tank/media' },
-      { name: 'tank/media-private' },
-      false,
-    ],
-    ['prefix miss', { field: '/name', op: 'prefix', value: 'tank/media/' }, { name: 'tank/other' }, false],
-    ['prefix on non-string', { field: '/name', op: 'prefix', value: 'tank/' }, { name: 5 }, false],
+    ['prefix hit', { field: '/name', op: 'prefix', value: 'vol/media/' }, { name: 'vol/media/tv' }, true],
+    ['prefix at a boundary', { field: '/name', op: 'prefix', value: 'vol/media' }, { name: 'vol/media/tv' }, true],
+    ['prefix equal', { field: '/name', op: 'prefix', value: 'vol/media' }, { name: 'vol/media' }, true],
+    ['prefix mid-segment', { field: '/name', op: 'prefix', value: 'vol/media' }, { name: 'vol/media-private' }, false],
+    ['prefix miss', { field: '/name', op: 'prefix', value: 'vol/media/' }, { name: 'vol/other' }, false],
+    ['prefix on non-string', { field: '/name', op: 'prefix', value: 'vol/' }, { name: 5 }, false],
     ['empty prefix never matches', { field: '/name', op: 'prefix', value: '' }, { name: 'x' }, false],
-    ['in scalar', { field: '/app_name', op: 'in', value: ['plex', 'sonarr'] }, { app_name: 'plex' }, true],
-    ['in scalar miss', { field: '/app_name', op: 'in', value: ['plex'] }, { app_name: 'nextcloud' }, false],
+    ['in scalar', { field: '/app_name', op: 'in', value: ['alpha', 'beta'] }, { app_name: 'alpha' }, true],
+    ['in scalar miss', { field: '/app_name', op: 'in', value: ['alpha'] }, { app_name: 'gamma' }, false],
     ['in array: every element', { field: '/apps', op: 'in', value: ['a', 'b'] }, { apps: ['a', 'b'] }, true],
     ['in array: one outside', { field: '/apps', op: 'in', value: ['a'] }, { apps: ['a', 'x'] }, false],
     ['in empty array', { field: '/apps', op: 'in', value: ['a'] }, { apps: [] }, false],
@@ -159,28 +154,28 @@ describe('matches', () => {
     ['range above', { field: '/t', op: 'range', value: { min: 65, max: 78 } }, { t: 79 }, false],
     ['range non-number', { field: '/t', op: 'range', value: { min: 65 } }, { t: '70' }, false],
     ['range without bounds', { field: '/t', op: 'range', value: {} }, { t: 70 }, false],
-    ['missing field', { field: '/name', op: 'prefix', value: 'tank/' }, {}, false],
+    ['missing field', { field: '/name', op: 'prefix', value: 'vol/' }, {}, false],
   ] as const)('%s', (_name, condition, params, expected) => {
     expect(matches([condition], call(params))).toBe(expected);
   });
 
   it('requires every resolved target to satisfy every target selector', () => {
-    const cond = { field: '$targets' as const, areas: ['living_room'], domains: ['light'] };
-    const inRoom = { id: 'light.lamp', scopes: { area: 'living_room', domain: 'light' } };
-    const elsewhere = { id: 'light.porch', scopes: { area: 'exterior', domain: 'light' } };
+    const cond = { field: '$targets' as const, areas: ['zone_a'], domains: ['widget'] };
+    const inRoom = { id: 'widget.one', scopes: { area: 'zone_a', domain: 'widget' } };
+    const elsewhere = { id: 'widget.porch', scopes: { area: 'exterior', domain: 'widget' } };
     expect(matches([cond], call({}, [inRoom]))).toBe(true);
     expect(matches([cond], call({}, [inRoom, elsewhere]))).toBe(false);
     expect(matches([cond], call({}, []))).toBe(false);
-    expect(matches([{ field: '$targets', entities: ['light.lamp'] }], call({}, [inRoom]))).toBe(true);
+    expect(matches([{ field: '$targets', entities: ['widget.one'] }], call({}, [inRoom]))).toBe(true);
   });
 
   it('ANDs conditions', () => {
     const rule = [
-      { field: '/name', op: 'prefix', value: 'tank/media/' },
+      { field: '/name', op: 'prefix', value: 'vol/media/' },
       { field: '/quota', op: 'range', value: { max: 100 } },
     ] as const;
-    expect(matches(rule, call({ name: 'tank/media/a', quota: 50 }))).toBe(true);
-    expect(matches(rule, call({ name: 'tank/media/a', quota: 500 }))).toBe(false);
+    expect(matches(rule, call({ name: 'vol/media/a', quota: 50 }))).toBe(true);
+    expect(matches(rule, call({ name: 'vol/media/a', quota: 500 }))).toBe(false);
   });
 
   it('validates rule shapes', () => {

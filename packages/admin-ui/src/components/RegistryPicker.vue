@@ -47,7 +47,7 @@ watch(entityQuery, (q) => {
     <div class="field">
       <label>Entities</label>
       <input v-model="entityQuery" class="search" placeholder="Search entities…" aria-label="Search entities" />
-      <ChipsInput v-model="model.entities" :suggestions="entityOptions" placeholder="light.kitchen" />
+      <ChipsInput v-model="model.entities" :suggestions="entityOptions" placeholder="widget.one" />
     </div>
     <div class="field">
       <label>Domains</label>

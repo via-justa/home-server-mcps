@@ -4,7 +4,7 @@ import { cleanStored, parseLeniently } from '../lenient.js';
 /** Per-instance runtime settings (design §8.2 "Instance Settings"), stored as JSON on `plugin_instances.settings`. */
 export const InstanceSettingsSchema = z
   .object({
-    /** Unanswered approvals are auto-denied after this long (TN §3.3). */
+    /** Unanswered approvals are auto-denied after this long. */
     approvalTimeoutMs: z
       .number()
       .int()
@@ -33,7 +33,7 @@ export const InstanceSettingsSchema = z
       })
       .prefault({}),
     extraRedactKeys: z.array(z.string().min(1)).default([]),
-    /** Re-sync the catalog on session start when the last sync is older than this (TN §5). */
+    /** Re-sync the catalog on session start when the last sync is older than this (design §10). */
     syncMaxAgeMs: z
       .number()
       .int()

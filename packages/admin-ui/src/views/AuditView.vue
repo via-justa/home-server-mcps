@@ -92,7 +92,7 @@ const DECISION_CLASS = (d: string | null) =>
       </div>
       <div class="field">
         <label for="a-op">Operation</label>
-        <input id="a-op" v-model="filters.operation" placeholder="pool.dataset.create" />
+        <input id="a-op" v-model="filters.operation" placeholder="widget.create" />
       </div>
       <div class="field">
         <label for="a-dec">Decision starts with</label>
@@ -104,7 +104,7 @@ const DECISION_CLASS = (d: string | null) =>
       </div>
       <div class="field">
         <label for="a-tgt">Target contains</label>
-        <input id="a-tgt" v-model="filters.target" placeholder="light.kitchen" />
+        <input id="a-tgt" v-model="filters.target" placeholder="widget.one" />
       </div>
       <div class="field">
         <label for="a-from">From</label>

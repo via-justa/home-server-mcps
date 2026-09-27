@@ -12,7 +12,7 @@ afterEach(() => {
 const instance = {
   id: 'i1',
   slug: 'nas',
-  displayName: 'TrueNAS',
+  displayName: 'Acme',
   enabled: true,
   authMode: null,
   status: 'ready',
@@ -23,8 +23,8 @@ const instance = {
   settings: {},
   plugin: {
     id: 'p1',
-    pluginId: 'truenas',
-    name: 'TrueNAS',
+    pluginId: 'acme',
+    name: 'Acme',
     enabled: true,
     status: 'ok',
     labels: { operation: 'Method', operations: 'Methods' },
@@ -71,8 +71,8 @@ describe('Access page', () => {
           counts: { read: 1, write: 3, locked: 1, pendingReview: 0, overridden: 1 },
         },
         {
-          key: 'pool',
-          label: 'Pools',
+          key: 'store',
+          label: 'Stores',
           level: 'none',
           stale: false,
           counts: { read: 1, write: 0, locked: 0, pendingReview: 0, overridden: 0 },
@@ -97,26 +97,26 @@ describe('Access page', () => {
           mode: null,
           reason: 'locked_not_opted_in',
         }),
-        op('pool.query', { group: 'pool', level: 'none', reachable: false, mode: null, reason: 'level_none' }),
+        op('store.query', { group: 'store', level: 'none', reachable: false, mode: null, reason: 'level_none' }),
       ],
       ...extra,
     });
   }
 
   it('offers None / Read / Ask / Write per group and sets Ask without a dialog', async () => {
-    const { calls } = api({ 'PATCH /api/instances/i1/groups/pool': {} });
+    const { calls } = api({ 'PATCH /api/instances/i1/groups/store': {} });
     const { wrapper } = await mountAt('/endpoints/nas/access');
-    const pool = wrapper.get('[data-group="pool"]');
-    expect(pool.findAll('[role="radio"]').map((b) => b.text())).toEqual(['None', 'Read', 'Ask', 'Write']);
+    const store = wrapper.get('[data-group="store"]');
+    expect(store.findAll('[role="radio"]').map((b) => b.text())).toEqual(['None', 'Read', 'Ask', 'Write']);
     expect(wrapper.get('[data-group="app"]').text()).toContain('1 with their own level');
-    await pool
+    await store
       .findAll('[role="radio"]')
       .find((b) => b.text() === 'Ask')!
       .trigger('click');
     await flushPromises();
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
     expect(calls.find((c) => c.method === 'PATCH')).toMatchObject({
-      path: '/api/instances/i1/groups/pool',
+      path: '/api/instances/i1/groups/store',
       body: { level: 'ask' },
     });
   });
@@ -346,7 +346,7 @@ describe('Pre-approval rules', () => {
       'GET /api/overview': overview,
       'GET /api/instances/i1/rules': [],
       'GET /api/instances/i1/operations': [
-        op('pool.dataset.create', { classification: 'write', matchProfile: 'ds', mode: 'approve' }),
+        op('store.volume.create', { classification: 'write', matchProfile: 'ds', mode: 'approve' }),
       ],
       'GET /api/plugins': [
         {
@@ -369,15 +369,15 @@ describe('Pre-approval rules', () => {
       .find((b) => b.text() === 'New rule')!
       .trigger('click');
     const dialog = wrapper.get('[role="dialog"]');
-    await dialog.get('select#r-op').setValue('op-pool.dataset.create');
+    await dialog.get('select#r-op').setValue('op-store.volume.create');
     await flushPromises();
-    await wrapper.get('[role="dialog"] input[placeholder="tank/media/"]').setValue('tank/media');
+    await wrapper.get('[role="dialog"] input[placeholder="vol/media/"]').setValue('vol/media');
     const compression = wrapper
       .get('[role="dialog"]')
       .findAll('.field')
       .find((f) => f.text().includes('Compression'))!;
     await compression.get('.any input').setValue(true);
-    await wrapper.get('#r-reason').setValue('media datasets');
+    await wrapper.get('#r-reason').setValue('media volumes');
     await wrapper
       .get('[role="dialog"]')
       .findAll('button')
@@ -386,7 +386,7 @@ describe('Pre-approval rules', () => {
     await flushPromises();
     expect(calls.find((c) => c.method === 'POST')?.body).toMatchObject({
       match: [
-        { field: '/name', op: 'prefix', value: 'tank/media' },
+        { field: '/name', op: 'prefix', value: 'vol/media' },
         { field: '/compression', op: 'any' },
       ],
     });

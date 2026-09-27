@@ -172,7 +172,7 @@ function catalogBindings(db: Db, instanceId: string, principal: AccessPrincipal)
 
 /**
  * `guides.get(key)`: fetches the plugin's current best-practice guide, records its version, and
- * hands out the attestation key `execute` must present from the same MCP session (HA §3.6). Revising
+ * hands out the attestation key `execute` must present from the same MCP session (design §5.1). Revising
  * a guide rotates the key. Every read is audited: the key attests that this session was shown it.
  */
 function guideBindings(deps: GateDeps, rt: InstanceRuntime, caller: CallerContext): Record<string, Binding> {
@@ -248,7 +248,7 @@ function searchBindings(
   if (rt.manifest.capabilities.registry) {
     bindings.registry = {
       find: async ([q]) =>
-        // Mirrored upstream attributes can hold tokens (HA camera `access_token`): redact at the source.
+        // Mirrored upstream attributes can hold tokens (an `access_token`, say): redact at the source.
         rt.redact(findRegistryEntries(deps.db, rt.instanceId, (q ?? {}) as Parameters<typeof findRegistryEntries>[2])),
     };
   }

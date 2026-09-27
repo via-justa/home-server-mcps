@@ -20,7 +20,7 @@ import { SDK_VERSION } from './version.js';
  */
 
 export interface ConformanceSample {
-  /** Binding function and arguments, as sandboxed code would call them: `truenas.call('pool.query', [])`. */
+  /** Binding function and arguments, as sandboxed code would call them: `acme.call('widget.list', [])`. */
   fn: string;
   args: unknown[];
   /** Catalog key `resolveOperation` must produce. */

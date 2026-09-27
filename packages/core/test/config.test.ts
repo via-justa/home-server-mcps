@@ -32,11 +32,11 @@ describe('loadConfig', () => {
 });
 
 describe('isValidSlug', () => {
-  it.each(['ha', 'ha-cabin', 'truenas', 'seerr2'])('accepts %s', (slug) => {
+  it.each(['acme', 'acme-cabin', 'widgets', 'acme2'])('accepts %s', (slug) => {
     expect(isValidSlug(slug)).toBe(true);
   });
 
-  it.each(['', 'HA', '-ha', 'ha_cabin', 'a/b', 'x'.repeat(64), ...RESERVED_SLUGS])('rejects %s', (slug) => {
+  it.each(['', 'ACME', '-acme', 'acme_cabin', 'a/b', 'x'.repeat(64), ...RESERVED_SLUGS])('rejects %s', (slug) => {
     expect(isValidSlug(slug)).toBe(false);
   });
 });

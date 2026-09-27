@@ -26,8 +26,8 @@ function setup() {
       op('app.upgrade'),
       op('app.stop'),
       op('app.delete', { locked: true }),
-      op('pool.query'),
-      op('pool.dataset.create'),
+      op('store.query'),
+      op('store.volume.create'),
     ),
   );
   const id = (key: string) => ctx.db.select().from(operations).where(eq(operations.key, key)).get()!.id;
@@ -89,11 +89,11 @@ describe('bulk levels', () => {
     const preview = previewBulkLevel(db, instanceId, 'write');
     expect(preview.groups.map((g) => [g.key, g.exposes.map((o) => o.key)])).toEqual([
       ['app', ['app.stop', 'app.upgrade']],
-      ['pool', []],
-      ['pool.dataset', ['pool.dataset.create']],
+      ['store', []],
+      ['store.volume', ['store.volume.create']],
     ]);
     expect(new Set(preview.acknowledge)).toEqual(
-      new Set([id('app.stop'), id('app.upgrade'), id('pool.dataset.create')]),
+      new Set([id('app.stop'), id('app.upgrade'), id('store.volume.create')]),
     );
   });
 
@@ -112,19 +112,19 @@ describe('bulk levels', () => {
         op('app.upgrade'),
         op('app.stop'),
         op('app.delete', { locked: true }),
-        op('pool.query'),
-        op('pool.dataset.create'),
-        op('pool.export'),
+        op('store.query'),
+        op('store.volume.create'),
+        op('store.export'),
       ),
     );
-    expect(() => applyBulkLevel(db, instanceId, 'write', { confirm: 'truenas', acknowledge })).toThrow(
+    expect(() => applyBulkLevel(db, instanceId, 'write', { confirm: 'acme', acknowledge })).toThrow(
       /changed; review it again/,
     );
 
     const fresh = previewBulkLevel(db, instanceId, 'write');
-    applyBulkLevel(db, instanceId, 'write', { confirm: 'truenas', acknowledge: fresh.acknowledge });
+    applyBulkLevel(db, instanceId, 'write', { confirm: 'acme', acknowledge: fresh.acknowledge });
     expect(listGroups(db, instanceId).every((g) => g.level === 'write')).toBe(true);
-    expect(resolveAccess(db, instanceId, 'pool.export')).toMatchObject({ reachable: true, mode: 'auto' });
+    expect(resolveAccess(db, instanceId, 'store.export')).toMatchObject({ reachable: true, mode: 'auto' });
     expect(resolveAccess(db, instanceId, 'app.delete')).toEqual({ reachable: false, reason: 'locked_not_opted_in' });
     const event = db
       .select()
@@ -192,8 +192,8 @@ describe('updateOperation', () => {
     updateOperation(db, instanceId, id('app.query'), { classification: 'write' });
     expect(resolveAccess(db, instanceId, 'app.query')).toMatchObject({ reachable: true, mode: 'auto' });
 
-    updateOperation(db, instanceId, id('pool.dataset.create'), { level: 'write' });
-    expect(resolveAccess(db, instanceId, 'pool.dataset.create')).toMatchObject({ mode: 'auto' });
+    updateOperation(db, instanceId, id('store.volume.create'), { level: 'write' });
+    expect(resolveAccess(db, instanceId, 'store.volume.create')).toMatchObject({ mode: 'auto' });
   });
 
   it('makes writes found by a later sync ask at Write until acknowledged', () => {
@@ -208,8 +208,8 @@ describe('updateOperation', () => {
         op('app.stop'),
         op('app.delete', { locked: true }),
         op('app.redeploy'),
-        op('pool.query'),
-        op('pool.dataset.create'),
+        op('store.query'),
+        op('store.volume.create'),
       ),
     );
     expect(resolveAccess(db, instanceId, 'app.redeploy')).toEqual({
@@ -232,15 +232,15 @@ describe('re-sync of changed operations (review M14)', () => {
       op('app.upgrade', { matchProfile: 'byName', paramsSchema: { type: 'object' }, ...extra }),
       op('app.stop'),
       op('app.delete', { locked: true }),
-      op('pool.query'),
-      ...(drop ? [] : [op('pool.dataset.create')]),
+      op('store.query'),
+      ...(drop ? [] : [op('store.volume.create')]),
     );
 
   it('asks again when an acknowledged write changes or returns from stale, not on a plain re-sync', () => {
     const { db, instanceId, id } = setup();
     applyCatalogSync(db, instanceId, all());
     setGroupLevel(db, instanceId, 'app', 'write', { acknowledge: [id('app.upgrade'), id('app.stop')] });
-    setGroupLevel(db, instanceId, 'pool.dataset', 'write', { acknowledge: [id('pool.dataset.create')] });
+    setGroupLevel(db, instanceId, 'store.volume', 'write', { acknowledge: [id('store.volume.create')] });
 
     expect(applyCatalogSync(db, instanceId, all()).pendingReview).toEqual([]);
     expect(resolveAccess(db, instanceId, 'app.upgrade')).toMatchObject({ mode: 'auto' });
@@ -255,8 +255,8 @@ describe('re-sync of changed operations (review M14)', () => {
 
     applyCatalogSync(db, instanceId, all({ kind: 'endpoint' }, true));
     const back = applyCatalogSync(db, instanceId, all({ kind: 'endpoint' }));
-    expect(back.pendingReview).toContain('pool.dataset.create');
-    expect(resolveAccess(db, instanceId, 'pool.dataset.create')).toMatchObject({
+    expect(back.pendingReview).toContain('store.volume.create');
+    expect(resolveAccess(db, instanceId, 'store.volume.create')).toMatchObject({
       mode: 'approve',
       pendingReview: true,
     });
@@ -336,21 +336,21 @@ describe('re-sync of changed operations (review M14)', () => {
 describe('regrouping', () => {
   it('merges into the lowest level, keeps aliases, and survives re-sync', () => {
     const { db, instanceId, id } = setup();
-    setGroupLevel(db, instanceId, 'pool', 'none');
-    setGroupLevel(db, instanceId, 'pool.dataset', 'write', { acknowledge: [id('pool.dataset.create')] });
+    setGroupLevel(db, instanceId, 'store', 'none');
+    setGroupLevel(db, instanceId, 'store.volume', 'write', { acknowledge: [id('store.volume.create')] });
 
-    const merged = mergeGroups(db, instanceId, { from: ['pool.dataset'], into: 'pool', label: 'Storage' });
-    expect(merged).toMatchObject({ key: 'pool', label: 'Storage', level: 'none' });
+    const merged = mergeGroups(db, instanceId, { from: ['store.volume'], into: 'store', label: 'Storage' });
+    expect(merged).toMatchObject({ key: 'store', label: 'Storage', level: 'none' });
     expect(db.select().from(operationGroupAliases).all()).toEqual([
-      { instanceId, pluginGroup: 'pool.dataset', groupKey: 'pool' },
+      { instanceId, pluginGroup: 'store.volume', groupKey: 'store' },
     ]);
-    expect(listGroups(db, instanceId).map((g) => g.key)).toEqual(['app', 'pool']);
+    expect(listGroups(db, instanceId).map((g) => g.key)).toEqual(['app', 'store']);
   });
 
   it('merges into a brand-new group and repoints existing aliases', () => {
     const { db, instanceId } = setup();
-    mergeGroups(db, instanceId, { from: ['pool.dataset'], into: 'pool' });
-    mergeGroups(db, instanceId, { from: ['pool'], into: 'storage' });
+    mergeGroups(db, instanceId, { from: ['store.volume'], into: 'store' });
+    mergeGroups(db, instanceId, { from: ['store'], into: 'storage' });
     expect(
       new Set(
         db
@@ -359,8 +359,8 @@ describe('regrouping', () => {
           .all()
           .map((a) => `${a.pluginGroup}->${a.groupKey}`),
       ),
-    ).toEqual(new Set(['pool.dataset->storage', 'pool->storage']));
-    applyCatalogSync(db, instanceId, catalog(op('pool.query'), op('pool.dataset.create'), op('app.query')));
+    ).toEqual(new Set(['store.volume->storage', 'store->storage']));
+    applyCatalogSync(db, instanceId, catalog(op('store.query'), op('store.volume.create'), op('app.query')));
     expect(listGroups(db, instanceId).map((g) => g.key)).toEqual(['app', 'storage']);
   });
 

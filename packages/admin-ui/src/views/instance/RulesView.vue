@@ -388,7 +388,7 @@ watch(draft, (d) => {
             v-else
             v-model="valueOf(f).text"
             :type="f.widget === 'number' ? 'number' : 'text'"
-            :placeholder="f.op === 'prefix' ? 'tank/media/' : ''"
+            :placeholder="f.op === 'prefix' ? 'vol/media/' : ''"
           />
         </div>
       </template>
@@ -424,7 +424,7 @@ watch(draft, (d) => {
       </div>
       <div class="field">
         <label for="r-reason">Reason (required, shown in the audit log)</label>
-        <input id="r-reason" v-model="draft.reason" placeholder="Nightly media dataset snapshots" />
+        <input id="r-reason" v-model="draft.reason" placeholder="Nightly media snapshots" />
       </div>
       <div class="field check">
         <label><input v-model="draft.enabled" type="checkbox" /> Enabled</label>

@@ -151,12 +151,12 @@ describe('MCP endpoint with bearer tokens', () => {
       mode: 'form',
       onElicit: (p) => {
         shown.push(p);
-        return { approve: true, confirm: 'tank/x' };
+        return { approve: true, confirm: 'vol/x' };
       },
     });
     for (const code of [
-      `await echo.call('echo.set', { name: 'tank/a' });`,
-      `await echo.call('echo.delete', { name: 'tank/x' });`,
+      `await echo.call('echo.set', { name: 'vol/a' });`,
+      `await echo.call('echo.delete', { name: 'vol/x' });`,
     ]) {
       const res = await client.callTool({ name: 'execute', arguments: { code } });
       expect(parse(res)).toMatchObject({
@@ -181,7 +181,7 @@ describe('MCP endpoint with bearer tokens', () => {
           () =>
             ctx.approvals.decide(p.elicitationId!, {
               approve: true,
-              confirm: p.message.includes('echo.delete') ? 'tank/x' : undefined,
+              confirm: p.message.includes('echo.delete') ? 'vol/x' : undefined,
               decidedBy: 'admin',
             }),
           20,
@@ -196,14 +196,14 @@ describe('MCP endpoint with bearer tokens', () => {
     const set = parse(
       await client.callTool({
         name: 'execute',
-        arguments: { code: `return (await echo.call('echo.set', { name: 'tank/a' })).key;` },
+        arguments: { code: `return (await echo.call('echo.set', { name: 'vol/a' })).key;` },
       }),
     );
     expect(set).toEqual({ result: 'echo.set' });
     const del = parse(
       await client.callTool({
         name: 'execute',
-        arguments: { code: `return (await echo.call('echo.delete', { name: 'tank/x' })).key;` },
+        arguments: { code: `return (await echo.call('echo.delete', { name: 'vol/x' })).key;` },
       }),
     );
     expect(del).toEqual({ result: 'echo.delete' });
@@ -237,7 +237,7 @@ describe('MCP endpoint with bearer tokens', () => {
     });
     const call = client.callTool({
       name: 'execute',
-      arguments: { code: `return (await echo.call('echo.set', { name: 'tank/b' })).key;` },
+      arguments: { code: `return (await echo.call('echo.set', { name: 'vol/b' })).key;` },
     });
     const approvalId = await shown;
     await ctx.instances.update(otherInstanceId, { enabled: false });

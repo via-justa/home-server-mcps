@@ -6,7 +6,7 @@ import { conditionsHold, coversAllParams, MatchSchema } from './match.js';
 
 export type PreApprovalOutcome =
   | { kind: 'auto_approved'; ruleId: string }
-  /** Rules matched but all were at their rate limit: the call falls back to a human (TN §3.5). */
+  /** Rules matched but all were at their rate limit: the call falls back to a human. */
   | { kind: 'rate_limited'; ruleIds: string[] }
   | { kind: 'no_match' };
 
