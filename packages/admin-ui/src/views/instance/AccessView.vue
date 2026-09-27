@@ -450,7 +450,7 @@ const kindLabel = (op: Operation) => (op.locked ? 'locked' : op.classification);
 .search {
   padding: 8px 11px;
   border: 1px solid var(--border-strong);
-  border-radius: 7px;
+  border-radius: var(--radius-md);
   font-size: 13px;
   min-width: 200px;
 }
@@ -476,15 +476,15 @@ const kindLabel = (op: Operation) => (op.locked ? 'locked' : op.classification);
   border: none;
   background: none;
   cursor: pointer;
-  color: var(--muted);
+  color: var(--ink-muted);
   width: 18px;
 }
 .ops {
   border-top: 1px solid var(--border);
-  background: var(--bg);
+  background: var(--surface-100);
 }
 .ops td {
-  background: var(--surface);
+  background: var(--surface-200);
 }
 .key {
   margin-left: 6px;
@@ -502,7 +502,7 @@ const kindLabel = (op: Operation) => (op.locked ? 'locked' : op.classification);
 .cls {
   padding: 4px 6px;
   border: 1px solid var(--border-strong);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   font-size: 12px;
 }
 .expose,
@@ -534,7 +534,7 @@ const kindLabel = (op: Operation) => (op.locked ? 'locked' : op.classification);
     align-items: center;
     gap: 6px 10px;
     padding: 10px 14px;
-    background: var(--surface);
+    background: var(--surface-200);
   }
   .ops tr + tr {
     border-top: 1px solid var(--border);

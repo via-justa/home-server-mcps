@@ -1,11 +1,11 @@
 {
-  "name": "@home-server-mcps/plugin-sdk",
+  "name": "@synoikia/plugin-sdk",
   "version": "1.0.0",
-  "description": "Manifest schema, RPC contract and child-side runtime for home-server-mcps plugins",
+  "description": "Manifest schema, RPC contract and child-side runtime for Synoikia plugins",
   "type": "module",
   "exports": {
     ".": {
-      "hsm-source": "./src/index.ts",
+      "synoikia-source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }

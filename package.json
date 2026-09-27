@@ -1,5 +1,5 @@
 {
-  "name": "home-server-mcps",
+  "name": "synoikia",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.33.0",

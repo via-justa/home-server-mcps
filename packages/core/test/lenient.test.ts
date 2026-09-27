@@ -30,7 +30,7 @@ describe('stored settings from an earlier release (review L22)', () => {
 
   it('normalizes stored JSON at startup without writing defaults in, and keeps endpoints serving', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const dataDir = mkdtempSync(path.join(tmpdir(), 'hsm-lenient-'));
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'synoikia-lenient-'));
     cleanup.push(() => rmSync(dataDir, { recursive: true, force: true }));
     const env = { DATA_DIR: dataDir, CORE_PLUGINS_DIR: PLUGINS, CORE_PLUGINS_AUTOENABLE: 'true' };
 

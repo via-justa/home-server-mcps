@@ -9,28 +9,57 @@ import type { HtmlEscapedString } from 'hono/utils/html';
 
 type Body = HtmlEscapedString | Promise<HtmlEscapedString>;
 
+// Synoikia tokens. The CSP allows no external fonts, so the brand faces apply only when installed
+// locally; the stacks fall back to the closest system faces.
 const STYLE = `
-:root { --bg:#f7f7f5; --surface:#fff; --text:#1c1e21; --muted:#6b6963; --border:#e5e3de; --accent:#2563eb; --danger:#dc2626; }
-@media (prefers-color-scheme: dark) { :root { --bg:#141517; --surface:#1f2124; --text:#ececea; --muted:#a3a19a; --border:#33353a; } }
+:root { color-scheme:light; --surface-100:#f7f1e8; --surface-200:#eee4d3; --surface-300:#e4d6bf; --border:#d9c9ab; --border-strong:#c2ac82;
+  --ink:#241b12; --ink-muted:#5c5044; --brand:#b5502f; --brand-strong:#8f3d22; --accent:#4f6b52; --on-brand:#fff;
+  --link:#8f3d22; --danger:#b23b3b; --danger-text:#9a2f2f; --danger-subtle:#f0dcda;
+  --font-display:"Fraunces", Georgia, "Times New Roman", serif; --font-sans:"IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --font-mono:"IBM Plex Mono", ui-monospace, "SF Mono", monospace; }
+@media (prefers-color-scheme: dark) { :root { color-scheme:dark; --surface-100:#14110e; --surface-200:#1d1914; --surface-300:#262019;
+  --border:#3a3026; --border-strong:#4d4030; --ink:#f2e9db; --ink-muted:#b8ab98; --brand:#d97250; --brand-strong:#e88a63; --accent:#8fae8a;
+  --on-brand:#14110e; --link:#d97250; --danger:#e8685f; --danger-text:#e8685f; --danger-subtle:#2e1c1b; } }
 * { box-sizing: border-box; }
-body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center; background:var(--bg); color:var(--text);
-  font:14px/1.45 -apple-system, "Segoe UI", system-ui, sans-serif; padding:16px; }
-main { width:100%; max-width:440px; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:24px; }
-h1 { font-size:18px; margin:0 0 4px; } p.sub { margin:0 0 18px; color:var(--muted); }
-label { display:block; font-size:12px; font-weight:600; color:var(--muted); margin:12px 0 5px; }
-input[type=text], input[type=password] { width:100%; padding:9px 11px; border:1px solid var(--border); border-radius:7px; font:inherit;
-  background:transparent; color:inherit; }
+body { margin:0; min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:20px;
+  background:var(--surface-100); color:var(--ink); font:15px/1.45 var(--font-sans); padding:16px; }
+.brand { display:flex; align-items:center; gap:10px; font-family:var(--font-display); font-weight:600; font-size:23px; line-height:1;
+  letter-spacing:-0.01em; } .brand .root { color:var(--brand); } .brand svg { display:block; }
+.brand .frame { stroke:var(--ink-muted); } .brand .paths { stroke:var(--brand-strong); } .brand .dwellings { fill:var(--accent); }
+.brand .hearth { fill:var(--brand); }
+main { width:100%; max-width:460px; background:var(--surface-200); border:1px solid var(--border); border-radius:14px; padding:24px;
+  box-shadow:0 1px 2px rgb(36 27 18 / 8%); }
+h1 { font-size:22px; line-height:28px; margin:0 0 4px; } p.sub { margin:0 0 18px; color:var(--ink-muted); }
+a { color:var(--link); }
+label { display:block; font-size:12px; line-height:16px; font-weight:600; color:var(--ink-muted); margin:14px 0 6px; }
+input[type=text], input[type=password] { width:100%; padding:8px 12px; border:1px solid var(--border-strong); border-radius:8px; font:inherit;
+  background:var(--surface-100); color:inherit; }
+input:focus { outline:2px solid var(--brand); outline-offset:-1px; border-color:var(--brand); }
+input[type=checkbox], input[type=radio] { accent-color:var(--brand); }
+:focus-visible { outline:2px solid var(--brand); outline-offset:2px; }
 .row { display:flex; gap:8px; margin-top:18px; } .row > * { flex:1; }
-button, a.btn { display:inline-block; text-align:center; padding:9px 14px; border-radius:7px; border:1px solid var(--border); background:var(--surface);
-  color:inherit; font:inherit; font-weight:600; cursor:pointer; text-decoration:none; }
-button.primary { background:var(--accent); border-color:var(--accent); color:#fff; } button.danger { color:var(--danger); }
-.error { color:var(--danger); margin:12px 0 0; } .muted { color:var(--muted); font-size:12px; }
+button, a.btn { display:inline-block; text-align:center; padding:8px 16px; border-radius:8px; border:1px solid var(--border-strong);
+  background:var(--surface-200); color:var(--ink); font:inherit; font-weight:600; cursor:pointer; text-decoration:none; }
+button:hover, a.btn:hover { background:var(--surface-300); }
+button.primary { background:var(--brand); border-color:var(--brand); color:var(--on-brand); }
+button.primary:hover { background:var(--brand-strong); border-color:var(--brand-strong); } button.danger { color:var(--danger-text); }
+.error { color:var(--danger-text); margin:12px 0 0; } .muted { color:var(--ink-muted); font-size:13px; }
 ul.endpoints { list-style:none; padding:0; margin:8px 0 0; } ul.endpoints li { padding:8px 0; border-top:1px solid var(--border); }
-code, pre { font-family: ui-monospace, monospace; font-size:12px; } pre { white-space:pre-wrap; word-break:break-word; background:var(--bg);
-  border:1px solid var(--border); border-radius:7px; padding:10px; max-height:260px; overflow:auto; }
-.badge { font-size:11px; font-weight:700; padding:2px 7px; border-radius:999px; background:#fee2e2; color:#991b1b; }
+code, pre { font-family:var(--font-mono); font-size:12px; } pre { white-space:pre-wrap; word-break:break-word; background:var(--surface-100);
+  border:1px solid var(--border); border-radius:8px; padding:12px; max-height:260px; overflow:auto; }
+.badge { font-size:12px; font-weight:600; padding:2px 10px; border-radius:999px; background:var(--danger-subtle); color:var(--danger-text);
+  vertical-align:middle; }
 hr { border:none; border-top:1px solid var(--border); margin:18px 0; }
 `;
+
+/** The Synoikia mark (design system assets/Logo/synoikia-mark.svg), themed through the classes above. */
+const BRAND = `<div class="brand"><svg viewBox="0 0 120 120" width="36" height="36" aria-hidden="true" focusable="false">
+<rect class="frame" x="4" y="4" width="112" height="112" rx="24" fill="none" stroke-width="3" opacity="0.32"/>
+<g class="paths" stroke-width="4" stroke-linecap="round" opacity="0.55"><line x1="60" y1="60" x2="60" y2="25"/>
+<line x1="60" y1="60" x2="95" y2="60"/><line x1="60" y1="60" x2="60" y2="95"/><line x1="60" y1="60" x2="25" y2="60"/></g>
+<g class="dwellings"><rect x="52" y="8" width="16" height="16" rx="4"/><rect x="96" y="52" width="16" height="16" rx="4"/>
+<rect x="52" y="96" width="16" height="16" rx="4"/><rect x="8" y="52" width="16" height="16" rx="4"/></g>
+<rect class="hearth" x="48" y="48" width="24" height="24" rx="6"/></svg><span>Syn<span class="root">oikia</span></span></div>`;
 
 export function page(c: Context, title: string, body: Body, status: 200 | 400 | 401 | 403 | 404 | 429 = 200) {
   c.header(
@@ -46,12 +75,13 @@ export function page(c: Context, title: string, body: Body, status: 200 | 400 | 
         <head>
           <meta charset="utf-8" />
           <meta name="viewport" content="width=device-width, initial-scale=1" />
-          <title>${title}</title>
+          <title>${title} · Synoikia</title>
           <style>
             ${raw(STYLE)}
           </style>
         </head>
         <body>
+          ${raw(BRAND)}
           <main>${body}</main>
         </body>
       </html>`,

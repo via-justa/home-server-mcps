@@ -92,7 +92,7 @@ async function copy(url: string) {
 
 <style scoped>
 .err {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .right {
   text-align: right;

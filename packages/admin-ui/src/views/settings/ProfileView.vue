@@ -134,7 +134,7 @@ async function enrolled() {
   width: 140px;
   padding: 9px 11px;
   border: 1px solid var(--border-strong);
-  border-radius: 7px;
+  border-radius: var(--radius-md);
 }
 .alert {
   margin-top: 12px;

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
-import type { Manifest } from '@home-server-mcps/plugin-sdk';
+import type { Manifest } from '@synoikia/plugin-sdk';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import type { Context } from 'hono';
@@ -170,9 +170,9 @@ export class McpEndpoints {
     const rt = () => this.ctx.instances.runtime(instanceId);
     const manifest = rt().manifest;
     const server = new McpServer(
-      { name: `home-server-mcps/${rt().slug}`, version: SERVER_VERSION },
+      { name: `synoikia/${rt().slug}`, version: SERVER_VERSION },
       {
-        instructions: `${manifest.name} via home-server-mcps. Use search to discover operations, then execute to call them.`,
+        instructions: `${manifest.name} via Synoikia. Use search to discover operations, then execute to call them.`,
       },
     );
 

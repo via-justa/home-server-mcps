@@ -22,7 +22,7 @@ afterEach(async () => {
 });
 
 async function setup(env: Record<string, string> = {}) {
-  const dataDir = mkdtempSync(path.join(tmpdir(), 'hsm-admin-'));
+  const dataDir = mkdtempSync(path.join(tmpdir(), 'synoikia-admin-'));
   cleanup.push(() => rmSync(dataDir, { recursive: true, force: true }));
   const ctx = await createAppContext(
     loadConfig({ DATA_DIR: dataDir, CORE_PLUGINS_DIR: PLUGINS, CORE_PLUGINS_AUTOENABLE: 'true', ...env }),
@@ -219,7 +219,7 @@ describe('instances and access', () => {
     const cookie = [...t.b.jar].map(([k, v]) => `${k}=${v}`).join('; ');
     const bad = await t.app.request(`/api/instances/${t.id}/connection/test`, {
       method: 'POST',
-      headers: { cookie, 'x-csrf-token': t.b.jar.get('hsm_csrf')!, 'content-type': 'application/json' },
+      headers: { cookie, 'x-csrf-token': t.b.jar.get('syn_csrf')!, 'content-type': 'application/json' },
       body: '{"config": ',
     });
     expect(bad.status).toBe(400);
@@ -358,7 +358,7 @@ describe('instances and access', () => {
       id: string;
       token: string;
     };
-    expect(created.token).toMatch(/^hsm_/);
+    expect(created.token).toMatch(/^syn_/);
     const listed = await (await t.b.get('/api/tokens')).text();
     expect(listed).not.toContain(created.token);
     expect(t.ctx.tokens.verify(created.token)?.id).toBe(created.id);

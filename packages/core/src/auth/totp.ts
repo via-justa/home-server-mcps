@@ -75,7 +75,7 @@ export function verifyTotp(
   return null;
 }
 
-export function otpauthUri(secret: string, account: string, issuer = 'MCP Admin'): string {
+export function otpauthUri(secret: string, account: string, issuer = 'Synoikia'): string {
   const label = encodeURIComponent(`${issuer}:${account}`);
   const params = new URLSearchParams({
     secret,

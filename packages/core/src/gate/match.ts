@@ -1,5 +1,5 @@
-import { MATCH_OPS } from '@home-server-mcps/plugin-sdk';
-import type { ResolvedTarget } from '@home-server-mcps/plugin-sdk';
+import { MATCH_OPS } from '@synoikia/plugin-sdk';
+import type { ResolvedTarget } from '@synoikia/plugin-sdk';
 import { z } from 'zod';
 import { canonicalJson } from './canonical.js';
 

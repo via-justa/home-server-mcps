@@ -1,4 +1,4 @@
-import { ErrorCodes, PluginError, runPlugin } from '@home-server-mcps/plugin-sdk';
+import { ErrorCodes, PluginError, runPlugin } from '@synoikia/plugin-sdk';
 
 // Skeleton only: behavior follows docs/reference/homeassistant-mcp-design.md §2.2–§2.4, §2.8, §3.6 (services + WS commands, registry, transforms, attestation),
 // mapped onto the plugin hooks in docs/design/unified-mcp-server.md §3.4.

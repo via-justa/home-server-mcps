@@ -45,7 +45,7 @@ describe('SecretBox', () => {
 describe('loadMasterKey', () => {
   const dirs: string[] = [];
   const tmp = () => {
-    const d = mkdtempSync(path.join(tmpdir(), 'hsm-key-'));
+    const d = mkdtempSync(path.join(tmpdir(), 'synoikia-key-'));
     dirs.push(d);
     return d;
   };

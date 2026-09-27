@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { isSdkCompatible, parseManifest } from '@home-server-mcps/plugin-sdk';
+import { isSdkCompatible, parseManifest } from '@synoikia/plugin-sdk';
 
 const raw: unknown = JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
 

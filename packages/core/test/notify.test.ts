@@ -26,7 +26,7 @@ afterEach(async () => {
 });
 
 async function setup(respond: (req: Sent) => number = () => 200) {
-  const dataDir = mkdtempSync(path.join(tmpdir(), 'hsm-notify-'));
+  const dataDir = mkdtempSync(path.join(tmpdir(), 'synoikia-notify-'));
   cleanup.push(() => rmSync(dataDir, { recursive: true, force: true }));
   const sent: Sent[] = [];
   const ctx = await createAppContext(
@@ -129,9 +129,9 @@ describe('notification channels', () => {
     expect(sent.every((s) => s.url.endsWith('/flaky'))).toBe(true);
     const last = sent[2]!;
     const expected = createHmac('sha256', 's3cret')
-      .update(`${last.headers['x-hsm-timestamp']}.${last.body}`)
+      .update(`${last.headers['x-synoikia-timestamp']}.${last.body}`)
       .digest('hex');
-    expect(last.headers['x-hsm-signature']).toBe(`sha256=${expected}`);
+    expect(last.headers['x-synoikia-signature']).toBe(`sha256=${expected}`);
     expect(last.headers['x-extra']).toBe('1');
     expect(JSON.parse(last.body)).toMatchObject({
       event: 'sync.failed',

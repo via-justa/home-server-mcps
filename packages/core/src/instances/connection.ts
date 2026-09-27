@@ -1,4 +1,4 @@
-import type { Manifest } from '@home-server-mcps/plugin-sdk';
+import type { Manifest } from '@synoikia/plugin-sdk';
 import { Ajv } from 'ajv';
 import type { ErrorObject, ValidateFunction } from 'ajv';
 import * as ajvFormats from 'ajv-formats';

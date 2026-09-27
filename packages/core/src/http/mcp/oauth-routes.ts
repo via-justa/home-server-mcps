@@ -26,13 +26,13 @@ import { consentPage, errorPage, loginPage, totpPage } from './pages.js';
  */
 export type UiPurpose = 'oauth' | 'approval';
 const UI_SESSIONS = {
-  oauth: { cookie: 'hsm_mcp_oauth', kind: 'oauth_ui', path: '/oauth' },
-  approval: { cookie: 'hsm_mcp_approve', kind: 'approval_ui', path: '/a' },
+  oauth: { cookie: 'syn_mcp_oauth', kind: 'oauth_ui', path: '/oauth' },
+  approval: { cookie: 'syn_mcp_approve', kind: 'approval_ui', path: '/a' },
 } as const;
 /** Which kind of session a sign-in continuing to `continueTo` creates. */
 export const purposeOf = (continueTo: string): UiPurpose => (continueTo.startsWith('/a/') ? 'approval' : 'oauth');
-const UI_CSRF_COOKIE = 'hsm_mcp_csrf';
-const OIDC_COOKIE = 'hsm_mcp_oidc';
+const UI_CSRF_COOKIE = 'syn_mcp_csrf';
+const OIDC_COOKIE = 'syn_mcp_oidc';
 export const UI_LIMITS: SessionLimits = { idleMs: 15 * 60_000, absoluteMs: 60 * 60_000 };
 const FORM_TTL_MS = 10 * 60_000;
 const NEEDS_TOTP =

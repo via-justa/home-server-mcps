@@ -60,7 +60,7 @@ export type SandboxResult =
   | { ok: true; value: unknown; truncated: boolean; logs: string[] }
   | { ok: false; error: { code: string; message: string }; logs: string[] };
 
-const RESERVED = new Set(['console', 'globalThis', '__hsm']);
+const RESERVED = new Set(['console', 'globalThis', '__syn']);
 const IDENT = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
 /** Wall-clock budget that can be paused; fires `onExpire` once when it runs out. */
@@ -108,11 +108,11 @@ class Budget implements BudgetControl {
 
 // Runs inside the isolate, as its own script before the user's. Everything it holds on to — the host
 // references, the wrapper — lives in the closure, so user code (a separate script) can never name it.
-// It installs `console` and one frozen object per binding namespace, and removes `__hsm` from the global.
+// It installs `console` and one frozen object per binding namespace, and removes `__syn` from the global.
 const prelude = (spec: Record<string, string[]>) => `(() => {
-  const call = globalThis.__hsm.call;
-  const log = globalThis.__hsm.log;
-  delete globalThis.__hsm;
+  const call = globalThis.__syn.call;
+  const log = globalThis.__syn.log;
+  delete globalThis.__syn;
   const stringify = JSON.stringify;
   const parse = JSON.parse;
   globalThis.console = Object.freeze({
@@ -182,10 +182,10 @@ export async function runInSandbox(run: SandboxRun): Promise<SandboxResult> {
       logBytes += text.length;
       logs.push(text);
     };
-    await jail.set('__hsm', new ivm.ExternalCopy({}).copyInto());
-    const hsm = (await jail.get('__hsm')) as ivm.Reference<Record<string, unknown>>;
-    await hsm.set('call', new ivm.Reference(hostCall));
-    await hsm.set('log', new ivm.Reference(hostLog));
+    await jail.set('__syn', new ivm.ExternalCopy({}).copyInto());
+    const syn = (await jail.get('__syn')) as ivm.Reference<Record<string, unknown>>;
+    await syn.set('call', new ivm.Reference(hostCall));
+    await syn.set('log', new ivm.Reference(hostLog));
 
     const spec = Object.fromEntries(
       Object.entries(run.bindings)

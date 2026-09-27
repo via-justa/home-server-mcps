@@ -12,8 +12,8 @@ import {
   SummarizeResultSchema,
   SyncCatalogResultSchema,
   TestConnectionResultSchema,
-} from '@home-server-mcps/plugin-sdk';
-import type { ErrorCode, PluginHandlers, RpcMethod, RpcNotification, RpcResponse } from '@home-server-mcps/plugin-sdk';
+} from '@synoikia/plugin-sdk';
+import type { ErrorCode, PluginHandlers, RpcMethod, RpcNotification, RpcResponse } from '@synoikia/plugin-sdk';
 import { z } from 'zod';
 
 /**

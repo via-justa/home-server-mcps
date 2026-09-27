@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ApiError } from '../api';
+import BrandLockup from '../components/BrandLockup.vue';
 import { useSessionStore } from '../stores/session';
 import type { LoginResult } from '../stores/session';
 
@@ -82,10 +83,8 @@ async function submit() {
 <template>
   <main class="login">
     <form class="card login-card" @submit.prevent="submit">
-      <div class="brand">
-        <div class="logo">M</div>
-        <h1>MCP Admin</h1>
-      </div>
+      <BrandLockup tag="h1" :size="40" class="brand" />
+      <p class="muted small tagline">Sign in to manage your self-hosted MCP servers.</p>
 
       <template v-if="step === 'password'">
         <template v-if="session.localLoginEnabled">
@@ -135,7 +134,7 @@ async function submit() {
   padding: 16px;
 }
 .login-card {
-  width: 340px;
+  width: 360px;
   max-width: 100%;
   display: flex;
   flex-direction: column;
@@ -145,26 +144,12 @@ async function submit() {
   margin: 0;
 }
 .brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
-}
-.brand h1 {
-  margin: 0;
-  font-size: 17px;
-}
-.logo {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  background: var(--accent);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
   justify-content: center;
+  margin-bottom: 0;
+}
+.tagline {
+  margin: 0 0 6px;
+  text-align: center;
 }
 .hint {
   margin: 0;
@@ -172,12 +157,20 @@ async function submit() {
 .error {
   margin: 0;
   font-size: 13px;
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .divider {
-  text-align: center;
-  font-size: 12px;
-  color: var(--subtle);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+.divider::before,
+.divider::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--border);
 }
 .oidc {
   text-align: center;

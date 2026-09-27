@@ -447,7 +447,7 @@ watch(draft, (d) => {
 
 <style scoped>
 .warn-text {
-  color: var(--warn);
+  color: var(--warning-text);
   margin-top: 4px;
 }
 .any {
@@ -468,7 +468,7 @@ watch(draft, (d) => {
   margin-bottom: 6px;
 }
 select[size] {
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
 }
 h2 {
   margin-top: 14px;

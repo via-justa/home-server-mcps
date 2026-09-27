@@ -352,7 +352,7 @@ async function createClient() {
 .access legend {
   font-size: 12px;
   font-weight: 600;
-  color: var(--muted);
+  color: var(--ink-muted);
   margin-bottom: 5px;
   padding: 0;
 }

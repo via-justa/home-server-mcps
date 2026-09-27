@@ -55,7 +55,7 @@ These decisions are not reopened. Each is now implemented once in core and appli
 | One SQLite DB per server                                                                   | **One SQLite DB** with instance-scoped tables                                                                                                                                                                               | One portal and one audit log. Cross-instance views (the audit log across endpoints) are simple queries.                                                                                                                                     |
 | Basic-auth via env vars (TN §10)                                                           | **Login page**: local users (argon2id) in the DB, optional TOTP, optional OIDC                                                                                                                                              | Requested explicitly. Basic-auth has no logout, no 2FA, and no SSO.                                                                                                                                                                         |
 | Portal on the same process/port or "as a module in the Vue frontend" (TN §8)               | **Admin listener on its own port (8081)**, MCP listener on 8080                                                                                                                                                             | Requested explicitly. The public reverse proxy only ever forwards 8080, so the admin surface is not internet-reachable by construction.                                                                                                     |
-| MCP transport auth = "bearer token if exposed" (TN §4)                                     | **Four auth modes**, a global default plus a per-endpoint override: `external`, `bearer`, `oauth`, `bearer+oauth` (§6.2)                                                                                                    | Remote clients such as claude.ai custom connectors need OAuth. CLI and automation clients want static tokens. Homelabs often already run Cloudflare Access or Authelia.                                                                     |
+| MCP transport auth = "bearer token if exposed" (TN §4)                                     | **Four auth modes**, a global default plus a per-endpoint override: `external`, `bearer`, `oauth`, `bearer+oauth` (§6.2)                                                                                                    | Remote clients such as claude.ai custom connectors need OAuth. CLI and automation clients want static tokens. Self-hosted setups often already run Cloudflare Access or Authelia.                                                           |
 | Notification channel deferred (TN §10)                                                     | **ntfy + generic webhook in v1**, informational only: endpoint down/recovered, plugin crashes, sync failures, new writes, sign-in lockouts (§9)                                                                             | Several endpoints in one server fail in more ways than one; operators want to hear about it. Approvals are not delivered this way (§5.3).                                                                                                   |
 | Per-operation Enabled toggle (TN §2.3, SR §2.3, HA §2.3)                                   | **Access levels** — `none` / `read` / `ask` / `write` — set per plugin-derived group (TrueNAS namespace, Seerr tag, HA domain) as a convenience, with an optional level per operation that wins over its group (§5.2.1)     | Hundreds to 1,000+ rows per instance made per-op toggles unmanageable. One control per resource ("TrueNAS apps: ask") works the same for every plugin and keeps auto-discovery; a per-operation level handles the exceptions.               |
 | Elicitation answers approve calls; portal inbox; approval links in notifications (TN §3.3) | **Approvals only on a page the server renders to a signed-in human with TOTP**, reached through a URL-mode elicitation prompt; form prompts can only approve plain writes where an endpoint opts in; no portal inbox (§5.3) | A form answer comes back through the MCP client that made the call, so a scripted or prompt-injected client can "approve" its own writes. Cloudflare's own MCP server never treats a client-relayed answer as consent either (§5.3).        |
@@ -122,7 +122,7 @@ The two listeners are two separate Hono apps bound to two ports. **A route that 
 
 `PUBLIC_MCP_URL` (for example `https://mcp.example.com`) is required for OAuth. It is the issuer and resource base in OAuth metadata and the base of the approval-page URLs sent to MCP clients. Until it is set, OAuth is off: the authorization-server routes and discovery documents answer 503, `WWW-Authenticate` carries no `resource_metadata`, OAuth access tokens are not accepted, and the Overview shows a warning. Bearer tokens keep working. The issuer is never taken from the request's `Host`, which a client controls; only the approval-page link, sent back to the same client, falls back to the request's origin. `PUBLIC_ADMIN_URL` is optional; it is used for OIDC redirect URIs and deep links in notifications.
 
-The MCP port serves a **small, fixed set of HTML pages**: OAuth login, OAuth consent, and approval-link login/decision. These pages reuse the same user accounts and OIDC configuration as the admin portal. They issue **separate cookies** by purpose: a consent sign-in gets `hsm_mcp_oauth` (`Path=/oauth`, session kind `oauth_ui`), an approval sign-in gets `hsm_mcp_approve` (`Path=/a`, kind `approval_ui`), both with a short lifetime; the purpose follows from where the sign-in continues to. That cookie is not accepted by the Admin API. Holding it grants only "complete this OAuth consent" or "decide this one approval".
+The MCP port serves a **small, fixed set of HTML pages**: OAuth login, OAuth consent, and approval-link login/decision. These pages reuse the same user accounts and OIDC configuration as the admin portal. They issue **separate cookies** by purpose: a consent sign-in gets `syn_mcp_oauth` (`Path=/oauth`, session kind `oauth_ui`), an approval sign-in gets `syn_mcp_approve` (`Path=/a`, kind `approval_ui`), both with a short lifetime; the purpose follows from where the sign-in continues to. That cookie is not accepted by the Admin API. Holding it grants only "complete this OAuth consent" or "decide this one approval".
 
 ### 2.2 Endpoint routing
 
@@ -161,7 +161,7 @@ The rule behind the split: **anything that decides whether a call may reach the 
 
 ### 3.2 Manifest (`manifest.json`)
 
-Validated by a zod schema in `@home-server-mcps/plugin-sdk`. Abridged example for Home Assistant:
+Validated by a zod schema in `@synoikia/plugin-sdk`. Abridged example for Home Assistant:
 
 ```jsonc
 {
@@ -230,7 +230,7 @@ Secret fields (`writeOnly: true`) are the only connection fields that are encryp
 
 ### 3.3 RPC contract (core ⇄ plugin child)
 
-Transport: the Node `child_process.fork` IPC channel, carrying JSON-RPC 2.0 messages. Each request has a timeout (default 30 s; `invoke` inherits the sandbox's remaining budget). The SDK's `runPlugin(handlers)` implements the child side, and the core `PluginHost` implements the parent side. All types are exported from `@home-server-mcps/plugin-sdk`.
+Transport: the Node `child_process.fork` IPC channel, carrying JSON-RPC 2.0 messages. Each request has a timeout (default 30 s; `invoke` inherits the sandbox's remaining budget). The SDK's `runPlugin(handlers)` implements the child side, and the core `PluginHost` implements the parent side. All types are exported from `@synoikia/plugin-sdk`.
 
 | Method                                                                                 | Required             | Purpose                                                                                                                                                                                                                                                                                                                                      |
 | -------------------------------------------------------------------------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -493,7 +493,7 @@ An approval must come from a person, never from the client that made the call. M
 - `code` is the **body of an async function**: it can `await` bindings and `return` a JSON-serializable result. Everything crosses the boundary as JSON. Errors thrown inside the isolate, including binding errors, come back as `{ code, message }`, and a binding error is a real `Error` with `err.code` inside the sandbox so the model's code can catch it.
 - Limits per call (instance-overridable): wall-clock 10 s _excluding time blocked on human approval_ (the binding pauses the budget while waiting; the approval timeout bounds the wait), memory 64 MB, result size 64 KB (larger results come back as `{ truncated, bytes, preview }`), logs 16 KB. The budget covers both synchronous loops (V8 timeout) and async loops (the isolate is disposed when it runs out).
 - Injected: the binding functions (`ivm.Reference` with promise results), `catalog`/`registry`/`guides` (search only), and `console.log` (captured and returned as a `logs` array, size-capped).
-- Not available: `require`, `import`, `process`, `fetch`, timers (`setTimeout` is not provided), and host objects. Binding namespaces are frozen. The host call/log references live only in the closure of a prelude script that runs before the user's code, which is compiled as a separate script and so can never name them; `__hsm` is deleted from the global object, and the host only dispatches to its own binding properties (`Object.hasOwn`). This follows from the isolate having no Node APIs. An optional static pre-scan (TN §3.2) rejects obvious escape attempts early as defense in depth.
+- Not available: `require`, `import`, `process`, `fetch`, timers (`setTimeout` is not provided), and host objects. Binding namespaces are frozen. The host call/log references live only in the closure of a prelude script that runs before the user's code, which is compiled as a separate script and so can never name them; `__syn` is deleted from the global object, and the host only dispatches to its own binding properties (`Object.hasOwn`). This follows from the isolate having no Node APIs. An optional static pre-scan (TN §3.2) rejects obvious escape attempts early as defense in depth.
 
 ### 5.5 Redaction
 
@@ -521,8 +521,8 @@ It is applied (a) to results returned to the model, (b) to everything written to
 - **OIDC (optional).** Configured in Settings → Authentication with: issuer URL (discovery), client ID/secret (secret encrypted), scopes, and an **allow policy** (allowed emails, allowed `sub`s, and/or a required group claim value). An email counts only when the ID token says `email_verified: true`; a missing claim is treated as unverified. Auth code flow + PKCE, with `state` and `nonce`.
   - `autoProvision` (default **off**): if off, an OIDC identity must be **linked** to an existing local user first (Profile → "Link OIDC identity"). If on, identities that pass the allow policy get a user created automatically.
   - **Break-glass.** Local password login always remains available unless `security.disableLocalLogin = true`. That setting can only be saved while OIDC is on and at least one enabled user is linked to it. While it is on, turning OIDC off, unlinking, or disabling the last enabled linked user is refused (409 `local_login_disabled`). It can be reverted with the env var `ADMIN_FORCE_LOCAL_LOGIN=true`.
-- **Sessions.** Stored server-side (`sessions` table, random 256-bit ID, stored hashed). Cookie: `__Host-hsm_admin` (`Secure` when behind TLS, `HttpOnly`, `SameSite=Strict`, `Path=/`). Idle timeout 30 min, absolute 12 h. Logout deletes the row. Changing a password revokes the user's other sessions.
-- **CSRF.** A double-submit token: a non-HttpOnly `hsm_csrf` cookie plus an `X-CSRF-Token` header on every state-changing `/api/*` request. `Origin` is also checked against `PUBLIC_ADMIN_URL` when that is set.
+- **Sessions.** Stored server-side (`sessions` table, random 256-bit ID, stored hashed). Cookie: `__Host-syn_admin` (`Secure` when behind TLS, `HttpOnly`, `SameSite=Strict`, `Path=/`). Idle timeout 30 min, absolute 12 h. Logout deletes the row. Changing a password revokes the user's other sessions.
+- **CSRF.** A double-submit token: a non-HttpOnly `syn_csrf` cookie plus an `X-CSRF-Token` header on every state-changing `/api/*` request. `Origin` is also checked against `PUBLIC_ADMIN_URL` when that is set.
 - **Brute-force protection.** 5 failed logins per username per 15 min triggers a 15 min lockout, counted **per surface**: failures on the internet-facing MCP-port sign-in lock the username there only, never out of the LAN admin portal. There is also a per-IP token bucket on `/auth/*` and `/api/instances/:id/connection/test` (the credential-testing-oracle concern from TN §4). Login failures are audited as `auth` events.
 
 ### 6.2 MCP endpoint authentication (port 8080)
@@ -532,7 +532,7 @@ The auth mode is a **global default** (Settings → MCP Access) with an optional
 | Mode           | Accepts                                                                                                                                                                                                                                                                                                                                                                | Client identity recorded                                                                                      |
 | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | `external`     | Anything that reaches the port. The reverse proxy is trusted to authenticate. Optional **Cloudflare Access JWT verification**: if `teamDomain` + `aud` are configured, the `Cf-Access-Jwt-Assertion` header must verify against the team's JWKS. Optional generic **trusted identity header** (e.g. `Remote-User` from Authelia/Authentik), used only for attribution. | JWT email / header value / `"external (anonymous, <client IP>)"`; anonymous callers are kept apart by address |
-| `bearer`       | `Authorization: Bearer hsm_…` tokens issued in the portal                                                                                                                                                                                                                                                                                                              | Token name                                                                                                    |
+| `bearer`       | `Authorization: Bearer syn_…` tokens issued in the portal                                                                                                                                                                                                                                                                                                              | Token name                                                                                                    |
 | `oauth`        | OAuth 2.1 access tokens issued by the built-in authorization server                                                                                                                                                                                                                                                                                                    | OAuth client name + the user who consented                                                                    |
 | `bearer+oauth` | Either of the above                                                                                                                                                                                                                                                                                                                                                    | as above                                                                                                      |
 
@@ -540,7 +540,7 @@ The UI shows a warning when `external` is chosen without JWT verification, becau
 
 **Bearer tokens** (Clients & Tokens page):
 
-- Format `hsm_<base62 32 bytes>`. Shown **once** at creation and stored as SHA-256.
+- Format `syn_<base62 32 bytes>`. Shown **once** at creation and stored as SHA-256.
 - Fields: name, **scope** (a list of instance IDs, or `*` for all), **access** (`read`, the default, or `write`), optional expiry, `last_used_at`, revoke.
 - A token presented to an endpoint outside its scope gets **403**, not 401.
 
@@ -560,7 +560,7 @@ The UI shows a warning when `external` is chosen without JWT verification, becau
 
 ## 7. Data Model
 
-A single SQLite file at `DATA_DIR/hsm.sqlite` (default `/data`), opened with **better-sqlite3** in WAL mode. Schema and migrations are managed with **Drizzle** (`packages/core/src/db/schema.ts`, `packages/core/drizzle/`). JSON is stored as `TEXT`, following the source docs.
+A single SQLite file at `DATA_DIR/synoikia.sqlite` (default `/data`), opened with **better-sqlite3** in WAL mode. Schema and migrations are managed with **Drizzle** (`packages/core/src/db/schema.ts`, `packages/core/drizzle/`). JSON is stored as `TEXT`, following the source docs.
 
 ### 7.1 Tables
 
@@ -667,13 +667,13 @@ Invariants, enforced in the service layer and tested:
 
 ## 8. Admin Portal UI
 
-Vue 3 + Vite + vue-router + Pinia, served as static assets by the admin listener. The visual language follows the mockups: a dark sidebar, light content area, pill badges for `read`/`write`/`locked`, and the toggle style from `Methods.dc.html`.
+Vue 3 + Vite + vue-router + Pinia, served as static assets by the admin listener. The layout follows the mockups (sidebar navigation, pill badges for `read`/`write`/`locked`, the toggle style from `Methods.dc.html`); the visual language is the Synoikia brand: warm plaster surfaces, terracotta for the one primary action per view, desaturated status colors, Fraunces for the wordmark, IBM Plex Sans and Mono for everything else, in light and dark themes.
 
 ### 8.1 Navigation
 
 ```
 ┌ Sidebar ───────────────────┐
-│ ▣ MCP Admin                │
+│ ▣ Synoikia                 │
 │                            │
 │ Overview                   │  Endpoints dashboard (§8.2)
 │ Audit Log                  │  global
@@ -771,10 +771,10 @@ Every mutating route writes a `config` audit event with a before/after diff (sec
 
 ### 9.1 Channels
 
-| Kind      | Config                                                                           | Delivery                                                                                                                                                                                                      |
-| --------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ntfy`    | server URL (default `https://ntfy.sh`), topic, optional access token (encrypted) | JSON publish to `POST {server}` (`topic`, `title`, `message`, `priority`, `tags`). JSON rather than headers so titles stay UTF-8 safe                                                                         |
-| `webhook` | URL, optional HMAC secret (encrypted), optional extra headers (encrypted)        | `POST` JSON `{event, at, instance, title, message, data}` with `X-HSM-Event`, `X-HSM-Timestamp` and `X-HSM-Signature: sha256=<HMAC-SHA256(secret, timestamp + "." + body)>`, so a receiver can reject replays |
+| Kind      | Config                                                                           | Delivery                                                                                                                                                                                                                     |
+| --------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ntfy`    | server URL (default `https://ntfy.sh`), topic, optional access token (encrypted) | JSON publish to `POST {server}` (`topic`, `title`, `message`, `priority`, `tags`). JSON rather than headers so titles stay UTF-8 safe                                                                                        |
+| `webhook` | URL, optional HMAC secret (encrypted), optional extra headers (encrypted)        | `POST` JSON `{event, at, instance, title, message, data}` with `X-Synoikia-Event`, `X-Synoikia-Timestamp` and `X-Synoikia-Signature: sha256=<HMAC-SHA256(secret, timestamp + "." + body)>`, so a receiver can reject replays |
 
 Each channel subscribes to a set of **events** and can filter by instance:
 
@@ -846,7 +846,7 @@ Residual risks, stated up front:
 
 ## 13. Development Phases (TDD)
 
-Same discipline as TN §7: tests first, phase gates, no loosening tests to pass. Coverage is tracked separately for the security-critical path: `pnpm --filter @home-server-mcps/core test:coverage` (V8 coverage) fails when `gate/`, `auth/`, `approvals/`, `sandbox/` or `crypto/` drop below their thresholds in `packages/core/vitest.config.ts`.
+Same discipline as TN §7: tests first, phase gates, no loosening tests to pass. Coverage is tracked separately for the security-critical path: `pnpm --filter @synoikia/core test:coverage` (V8 coverage) fails when `gate/`, `auth/`, `approvals/`, `sandbox/` or `crypto/` drop below their thresholds in `packages/core/vitest.config.ts`.
 
 | #   | Phase                                        | Tests first (highlights)                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | --- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

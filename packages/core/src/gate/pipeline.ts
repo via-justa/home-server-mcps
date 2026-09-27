@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { Manifest, ResolvedTarget } from '@home-server-mcps/plugin-sdk';
+import type { Manifest, ResolvedTarget } from '@synoikia/plugin-sdk';
 import { and, eq } from 'drizzle-orm';
 import type { ApprovalService, ClientPrompts, Decision } from '../approvals/service.js';
 import { writeAudit } from '../audit.js';

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { Manifest } from '@home-server-mcps/plugin-sdk';
-import { SyncCatalogResultSchema } from '@home-server-mcps/plugin-sdk';
+import type { Manifest } from '@synoikia/plugin-sdk';
+import { SyncCatalogResultSchema } from '@synoikia/plugin-sdk';
 import { and, eq, inArray } from 'drizzle-orm';
 import { writeAudit } from '../audit.js';
 import type { Db } from '../db/index.js';

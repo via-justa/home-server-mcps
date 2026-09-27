@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { isSdkCompatible } from '@home-server-mcps/plugin-sdk';
+import { isSdkCompatible } from '@synoikia/plugin-sdk';
 import { asc, eq } from 'drizzle-orm';
 import semver from 'semver';
 import * as tar from 'tar';

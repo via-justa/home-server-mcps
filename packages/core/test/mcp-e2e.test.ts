@@ -38,7 +38,7 @@ let instanceId: string;
 let otherInstanceId: string;
 
 beforeAll(async () => {
-  dataDir = mkdtempSync(path.join(tmpdir(), 'hsm-e2e-'));
+  dataDir = mkdtempSync(path.join(tmpdir(), 'synoikia-e2e-'));
   ctx = await createAppContext(
     loadConfig({
       DATA_DIR: dataDir,
@@ -303,7 +303,7 @@ describe('MCP endpoint with bearer tokens', () => {
     expect(none.headers.get('www-authenticate')).toBe(
       `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/echo"`,
     );
-    expect((await init('Bearer hsm_nope')).status).toBe(401);
+    expect((await init('Bearer syn_nope')).status).toBe(401);
     const other = ctx.tokens.create({ name: 'other', scope: [otherInstanceId] });
     expect((await init(`Bearer ${other.token}`)).status).toBe(403);
     ctx.tokens.revoke(other.id);
@@ -386,8 +386,8 @@ describe('MCP endpoint with bearer tokens', () => {
         expect({ slug, status: res.status }).toEqual({ slug, status: 401 });
         expect((await res.json()) as object).toMatchObject({ error: 'unauthorized' });
       }
-      expect((await post('echo-two', 'hsm_wrong')).status).toBe(401);
-      expect((await post('no-such-endpoint', 'hsm_wrong')).status).toBe(401);
+      expect((await post('echo-two', 'syn_wrong')).status).toBe(401);
+      expect((await post('no-such-endpoint', 'syn_wrong')).status).toBe(401);
       // Holders of a live credential learn what is wrong.
       expect((await post('echo-two', token)).status).toBe(503);
       expect((await post('no-such-endpoint', token)).status).toBe(404);
@@ -630,7 +630,7 @@ describe('OAuth 2.1 authorization server', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('cache-control')).toBe('no-store');
     const tokens = (await res.json()) as { access_token: string; refresh_token: string };
-    expect(tokens.access_token).toMatch(/^hsmo_/);
+    expect(tokens.access_token).toMatch(/^syno_/);
 
     const client = await connect('echo', tokens.access_token);
     expect(

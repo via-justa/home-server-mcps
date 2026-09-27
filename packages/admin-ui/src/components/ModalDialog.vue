@@ -28,7 +28,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
 .backdrop {
   position: fixed;
   inset: 0;
-  background: rgb(0 0 0 / 35%);
+  background: rgb(36 27 18 / 45%);
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -58,7 +58,7 @@ header h2 {
   font-size: 22px;
   line-height: 1;
   cursor: pointer;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 footer {
   justify-content: flex-end;
