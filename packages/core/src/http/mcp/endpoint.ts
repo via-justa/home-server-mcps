@@ -78,7 +78,7 @@ export function describeSearch(manifest: Manifest): string {
   ];
   if (manifest.capabilities.registry)
     apis.push(
-      'registry.find({ kind?, text?, parent?, domain?, limit? }) → matching upstream objects (areas, entities, …)',
+      'registry.find({ kind?, text?, parent?, scopes?, limit? }) → matching upstream objects, of the kinds this plugin mirrors',
     );
   if (manifest.capabilities.attestation) {
     apis.push(

@@ -217,7 +217,7 @@ export const registryEntries = sqliteTable(
     extId: text('ext_id').notNull(),
     name: text('name').notNull(),
     parentExtId: text('parent_ext_id'),
-    domain: text('domain'),
+    scopes: json('scopes'),
     attrs: json('attrs'),
     stale: flag('stale').notNull().default(false),
     lastSyncedAt: ts('last_synced_at').notNull(),

@@ -1,57 +1,85 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { http, qs } from '../api';
-import type { RegistryEntry } from '../types';
+import type { RegistryEntry, TargetFieldOptions, TargetsDecl } from '../types';
 import ChipsInput from './ChipsInput.vue';
 
 /**
- * `$targets` selector (design §8.3 `registry-picker`): areas and entities come from the instance's
- * synced registry, so rules name real things; domains are free text with suggestions.
+ * `$targets` selector (design §8.3 `registry-picker`), built from what the plugin declares: its
+ * targets and the scopes rules can select them by. Where the plugin names a registry kind for them,
+ * values are suggested from the instance's synced registry, so rules name real things; anything else
+ * is free text.
  */
-const props = defineProps<{ instanceId: string }>();
-const model = defineModel<{ areas: string[]; entities: string[]; domains: string[] }>({ required: true });
+const props = defineProps<{ instanceId: string; targets: TargetsDecl; options?: TargetFieldOptions }>();
+const model = defineModel<{ ids: string[]; scopes: Record<string, string[]> }>({ required: true });
 
-const areaOptions = ref<{ value: string; label: string }[]>([]);
-const entityOptions = ref<{ value: string; label: string }[]>([]);
-const entityQuery = ref('');
+const scopes = computed(() =>
+  props.targets.scopes.filter((s) => !props.options?.scopes || props.options.scopes.includes(s.key)),
+);
+const scopeOptions = ref<Record<string, { value: string; label: string }[]>>({});
+const idOptions = ref<{ value: string; label: string }[]>([]);
+const idQuery = ref('');
 
 const toOption = (e: RegistryEntry) => ({ value: e.id, label: e.name ? `${e.name} (${e.id})` : e.id });
+const registry = (params: Record<string, string | number | undefined>) =>
+  http.get<RegistryEntry[]>(`/api/instances/${props.instanceId}/registry${qs(params)}`).catch(() => []);
+const filter = computed(() =>
+  Object.fromEntries(Object.entries(props.options?.filter ?? {}).map(([k, v]) => [`scope.${k}`, v])),
+);
 
-async function loadAreas() {
-  const rows = await http
-    .get<RegistryEntry[]>(`/api/instances/${props.instanceId}/registry${qs({ kind: 'area', limit: 500 })}`)
-    .catch(() => []);
-  areaOptions.value = rows.map(toOption);
+async function loadScopes() {
+  for (const s of scopes.value) {
+    if (s.registryKind)
+      scopeOptions.value[s.key] = (await registry({ kind: s.registryKind, limit: 500 })).map(toOption);
+  }
 }
-async function searchEntities(text: string) {
-  const rows = await http
-    .get<RegistryEntry[]>(`/api/instances/${props.instanceId}/registry${qs({ kind: 'entity', text, limit: 50 })}`)
-    .catch(() => []);
-  entityOptions.value = rows.map(toOption);
+async function searchIds(text: string) {
+  if (!props.targets.registryKind) return;
+  idOptions.value = (await registry({ kind: props.targets.registryKind, text, limit: 50, ...filter.value })).map(
+    toOption,
+  );
 }
-void loadAreas();
-void searchEntities('');
+void loadScopes();
+void searchIds('');
 let t: ReturnType<typeof setTimeout> | undefined;
-watch(entityQuery, (q) => {
+watch(idQuery, (q) => {
   clearTimeout(t);
-  t = setTimeout(() => void searchEntities(q), 200);
+  t = setTimeout(() => void searchIds(q), 200);
 });
+
+function setScope(key: string, values: string[]) {
+  const next = { ...model.value.scopes };
+  if (values.length) next[key] = values;
+  else delete next[key];
+  model.value = { ...model.value, scopes: next };
+}
 </script>
 
 <template>
   <div class="picker">
-    <div class="field">
-      <label>Areas</label>
-      <ChipsInput v-model="model.areas" :suggestions="areaOptions" placeholder="Pick an area" />
+    <div v-for="s in scopes" :key="s.key" class="field">
+      <label>{{ s.label }}</label>
+      <ChipsInput
+        :model-value="model.scopes[s.key] ?? []"
+        :suggestions="scopeOptions[s.key]"
+        :placeholder="`Add a ${s.label.toLowerCase()}`"
+        @update:model-value="(values: string[]) => setScope(s.key, values)"
+      />
     </div>
     <div class="field">
-      <label>Entities</label>
-      <input v-model="entityQuery" class="search" placeholder="Search entities…" aria-label="Search entities" />
-      <ChipsInput v-model="model.entities" :suggestions="entityOptions" placeholder="widget.one" />
-    </div>
-    <div class="field">
-      <label>Domains</label>
-      <ChipsInput v-model="model.domains" placeholder="light, switch" />
+      <label>{{ targets.label }}</label>
+      <input
+        v-if="targets.registryKind"
+        v-model="idQuery"
+        class="search"
+        :placeholder="`Search ${targets.label.toLowerCase()}…`"
+        :aria-label="`Search ${targets.label.toLowerCase()}`"
+      />
+      <ChipsInput
+        v-model="model.ids"
+        :suggestions="targets.registryKind ? idOptions : undefined"
+        :placeholder="`Add a ${targets.label.toLowerCase()}`"
+      />
     </div>
     <p class="help">Every resolved target must fall inside all the filters you set.</p>
   </div>

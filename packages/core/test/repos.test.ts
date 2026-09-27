@@ -177,7 +177,7 @@ function indexFor(
         name: 'Echo',
         versions: versions.map((v) => ({
           version: v.version,
-          sdk: '^0.1.0',
+          sdk: '^0.2.0',
           url: `echo-${v.version}.tgz`, // relative to the index URL
           sha256: v.sha256 ?? sha(v.tarball),
           ...(v.signature !== null && key ? { signature: v.signature ?? key.sign(v.tarball) } : {}),

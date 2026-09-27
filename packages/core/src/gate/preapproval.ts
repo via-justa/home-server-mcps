@@ -17,7 +17,18 @@ export type PreApprovalOutcome =
  */
 export function evaluatePreApproval(
   db: Db,
-  input: { instanceId: string; operationId: string; params: unknown; targets: readonly ResolvedTarget[] },
+  input: {
+    instanceId: string;
+    operationId: string;
+    params: unknown;
+    targets: readonly ResolvedTarget[];
+    /**
+     * The params subtrees a `$targets` condition stands for (the profile field's `covers`). A rule with
+     * a `$targets` condition already checks every resolved target, so under strict matching those
+     * subtrees count as covered. Nothing is stored on the rule.
+     */
+    targetCovers?: readonly string[];
+  },
   now = new Date(),
 ): PreApprovalOutcome {
   return db.transaction((tx) => {
@@ -39,7 +50,8 @@ export function evaluatePreApproval(
       if (rule.expiresAt && rule.expiresAt.getTime() <= now.getTime()) continue;
       const match = MatchSchema.safeParse(rule.match);
       if (!match.success || !conditionsHold(match.data, { params: input.params, targets: input.targets })) continue;
-      if (!coversAllParams(match.data, input.params)) {
+      const alsoCovered = match.data.some((c) => c.field === '$targets') ? (input.targetCovers ?? []) : [];
+      if (!coversAllParams(match.data, input.params, alsoCovered)) {
         // It would have matched before strict matching: remember it so the rule list can say why.
         tx.update(preApprovalRules).set({ strictMissAt: now }).where(eq(preApprovalRules.id, rule.id)).run();
         continue;

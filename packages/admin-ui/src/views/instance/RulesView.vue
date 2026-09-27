@@ -5,7 +5,16 @@ import ChipsInput from '../../components/ChipsInput.vue';
 import ModalDialog from '../../components/ModalDialog.vue';
 import RegistryPicker from '../../components/RegistryPicker.vue';
 import { REASON_LABELS, ago, formatDate } from '../../format';
-import type { Instance, MatchCondition, MatchField, Operation, PluginRow, Rule } from '../../types';
+import type {
+  Instance,
+  MatchCondition,
+  MatchField,
+  Operation,
+  PluginRow,
+  Rule,
+  TargetFieldOptions,
+  TargetsDecl,
+} from '../../types';
 
 /**
  * Pre-approval rules (design §5.2): an operation picked from the catalog (never locked), a structured
@@ -18,6 +27,7 @@ const base = computed(() => `/api/instances/${props.instance.id}`);
 const rules = ref<Rule[]>([]);
 const ops = ref<Operation[]>([]);
 const profiles = ref<Record<string, MatchField[]>>({});
+const targets = ref<TargetsDecl>();
 const error = ref<string>();
 
 async function load() {
@@ -29,7 +39,9 @@ async function load() {
     ]);
     rules.value = r;
     ops.value = o;
-    profiles.value = plugins.find((p) => p.id === props.instance.plugin.id)?.manifest.matchProfiles ?? {};
+    const manifest = plugins.find((p) => p.id === props.instance.plugin.id)?.manifest;
+    profiles.value = manifest?.matchProfiles ?? {};
+    targets.value = manifest?.targets;
   } catch (err) {
     error.value = errorText(err);
   }
@@ -48,7 +60,7 @@ interface FieldValue {
   bool: boolean | null;
   /** Accept any value for this parameter (or its absence) instead of constraining it. */
   any: boolean;
-  targets: { areas: string[]; entities: string[]; domains: string[] };
+  targets: { ids: string[]; scopes: Record<string, string[]> };
 }
 interface Draft {
   id?: string;
@@ -75,7 +87,7 @@ const emptyValue = (): FieldValue => ({
   max: '',
   bool: null,
   any: false,
-  targets: { areas: [], entities: [], domains: [] },
+  targets: { ids: [], scopes: {} },
 });
 const draftOp = computed(() => ops.value.find((o) => o.id === draft.value?.operationId));
 const fields = computed<MatchField[]>(() =>
@@ -113,8 +125,8 @@ function edit(rule?: Rule) {
     }
     const v = emptyValue();
     if (c.field === '$targets') {
-      const t = c as { areas?: string[]; entities?: string[]; domains?: string[] };
-      v.targets = { areas: t.areas ?? [], entities: t.entities ?? [], domains: t.domains ?? [] };
+      const t = c as { ids?: string[]; scopes?: Record<string, string[]> };
+      v.targets = { ids: t.ids ?? [], scopes: { ...t.scopes } };
     } else {
       const pc = c as { op: string; value: unknown };
       if (pc.op === 'in') v.list = (pc.value as unknown[]).map(String);
@@ -140,6 +152,7 @@ function edit(rule?: Rule) {
     enabled: rule?.enabled ?? true,
   };
 }
+const targetOptions = (f: MatchField) => f.options as TargetFieldOptions | undefined;
 const valueOf = (f: MatchField) => {
   const d = draft.value!;
   if (!d.values[f.field]) d.values[f.field] = emptyValue();
@@ -153,12 +166,12 @@ function buildMatch(): MatchCondition[] {
     if (!v) continue;
     if (f.field === '$targets') {
       const t = v.targets;
-      if (t.areas.length || t.entities.length || t.domains.length) {
+      const scopes = Object.fromEntries(Object.entries(t.scopes).filter(([, values]) => values.length));
+      if (t.ids.length || Object.keys(scopes).length) {
         out.push({
           field: '$targets',
-          ...(t.areas.length ? { areas: t.areas } : {}),
-          ...(t.entities.length ? { entities: t.entities } : {}),
-          ...(t.domains.length ? { domains: t.domains } : {}),
+          ...(t.ids.length ? { ids: t.ids } : {}),
+          ...(Object.keys(scopes).length ? { scopes } : {}),
         });
       }
       continue;
@@ -230,11 +243,11 @@ function describe(c: MatchCondition, rule: Rule): string {
   const profile = rule.operation.matchProfile ? (profiles.value[rule.operation.matchProfile] ?? []) : [];
   const label = (field: string) => profile.find((f) => f.field === field)?.label ?? field;
   if (c.field === '$targets') {
-    const t = c as { areas?: string[]; entities?: string[]; domains?: string[] };
+    const t = c as { ids?: string[]; scopes?: Record<string, string[]> };
+    const scopeLabel = (key: string) => targets.value?.scopes.find((s) => s.key === key)?.label ?? key;
     return [
-      t.areas?.length ? `area ∈ {${t.areas.join(', ')}}` : '',
-      t.entities?.length ? `entity ∈ {${t.entities.join(', ')}}` : '',
-      t.domains?.length ? `domain ∈ {${t.domains.join(', ')}}` : '',
+      ...Object.entries(t.scopes ?? {}).map(([key, values]) => `${scopeLabel(key)} ∈ {${values.join(', ')}}`),
+      t.ids?.length ? `${targets.value?.label ?? 'target'} ∈ {${t.ids.join(', ')}}` : '',
     ]
       .filter(Boolean)
       .join(' and ');
@@ -354,7 +367,13 @@ watch(draft, (d) => {
           <label v-if="f.field !== '$targets'" class="row small any"
             ><input v-model="valueOf(f).any" type="checkbox" /> any value</label
           >
-          <RegistryPicker v-if="f.field === '$targets'" v-model="valueOf(f).targets" :instance-id="instance.id" />
+          <RegistryPicker
+            v-if="f.field === '$targets' && targets"
+            v-model="valueOf(f).targets"
+            :instance-id="instance.id"
+            :targets="targets"
+            :options="targetOptions(f)"
+          />
           <template v-else-if="valueOf(f).any" />
           <ChipsInput
             v-else-if="f.op === 'in'"

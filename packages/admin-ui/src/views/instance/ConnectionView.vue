@@ -110,6 +110,9 @@ const sync = () =>
           Last sync {{ ago(instance.lastSyncedAt) }}
           <span v-if="instance.lastSyncStatus === 'error'" class="pill danger">failed</span>
         </p>
+        <p v-if="instance.sourceRef" class="small">
+          Source <code>{{ instance.sourceRef }}</code>
+        </p>
         <p class="small muted">
           The operation catalog is re-read from the upstream on session start when stale, daily, and when the upstream
           version changes.
