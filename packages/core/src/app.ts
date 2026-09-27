@@ -126,15 +126,7 @@ export async function createAppContext(config: Config, opts: AppOptions = {}): P
     now,
   });
   const unsubscribeNotifier = notifier.subscribe(events);
-  const discover = () =>
-    syncPluginRegistry(
-      db,
-      discoverPlugins([
-        { dir: config.CORE_PLUGINS_DIR, source: 'core' },
-        { dir: path.join(config.DATA_DIR, 'plugins'), source: 'repo' },
-      ]),
-      { autoEnableCore: config.CORE_PLUGINS_AUTOENABLE },
-    );
+  const discover = () => syncPluginRegistry(db, discoverPlugins(path.join(config.DATA_DIR, 'plugins')));
   const registered = discover();
   const repos = new PluginRepoService({
     db,

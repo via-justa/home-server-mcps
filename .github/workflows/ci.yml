@@ -22,7 +22,7 @@ jobs:
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm typecheck
-      # Build first: core's type declarations and the plugin bundles (plugin tests also rebuild their own).
+      # Build first: core's type declarations.
       - run: pnpm build
       - run: pnpm test
 

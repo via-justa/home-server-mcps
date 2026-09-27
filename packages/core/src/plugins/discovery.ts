@@ -9,15 +9,12 @@ import { writeAudit } from '../audit.js';
 import type { Db } from '../db/index.js';
 import { plugins } from '../db/schema.js';
 
-/** Plugin discovery (design §4.1): core plugins from the image, installed ones from `DATA_DIR/plugins`. */
-
-export type PluginSource = 'core' | 'repo';
+/** Plugin discovery (design §4.1): the plugins installed in `DATA_DIR/plugins`. */
 
 export type DiscoveredPlugin =
-  | { status: 'ok'; source: PluginSource; dir: string; manifest: Manifest }
+  | { status: 'ok'; dir: string; manifest: Manifest }
   | {
       status: 'invalid' | 'incompatible';
-      source: PluginSource;
       dir: string;
       manifest?: Manifest;
       pluginId: string;
@@ -29,19 +26,18 @@ function explain(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export function inspectPluginDir(dir: string, source: PluginSource): DiscoveredPlugin {
+export function inspectPluginDir(dir: string): DiscoveredPlugin {
   const fallbackId = path.basename(dir);
   let manifest: Manifest;
   try {
     manifest = parseManifest(JSON.parse(readFileSync(path.join(dir, 'manifest.json'), 'utf8')));
   } catch (err) {
-    return { status: 'invalid', source, dir, pluginId: fallbackId, error: `manifest.json: ${explain(err)}` };
+    return { status: 'invalid', dir, pluginId: fallbackId, error: `manifest.json: ${explain(err)}` };
   }
   const entry = path.join(dir, manifest.entry);
   if (!existsSync(entry)) {
     return {
       status: 'invalid',
-      source,
       dir,
       manifest,
       pluginId: manifest.id,
@@ -53,7 +49,6 @@ export function inspectPluginDir(dir: string, source: PluginSource): DiscoveredP
   if (!realpathSync(entry).startsWith(realDir + path.sep)) {
     return {
       status: 'invalid',
-      source,
       dir,
       manifest,
       pluginId: manifest.id,
@@ -63,47 +58,39 @@ export function inspectPluginDir(dir: string, source: PluginSource): DiscoveredP
   if (!isSdkCompatible(manifest)) {
     return {
       status: 'incompatible',
-      source,
       dir,
       manifest,
       pluginId: manifest.id,
       error: `requires plugin SDK ${manifest.sdk}; core implements ${SDK_VERSION}`,
     };
   }
-  return { status: 'ok', source, dir, manifest };
+  return { status: 'ok', dir, manifest };
 }
 
-/** Scans each root's immediate subdirectories that contain a manifest.json. */
-export function discoverPlugins(roots: { dir: string; source: PluginSource }[]): DiscoveredPlugin[] {
-  const found: DiscoveredPlugin[] = [];
-  for (const root of roots) {
-    if (!existsSync(root.dir)) continue;
-    for (const name of readdirSync(root.dir).sort()) {
-      const dir = path.join(root.dir, name);
-      if (statSync(dir).isDirectory() && existsSync(path.join(dir, 'manifest.json'))) {
-        found.push(inspectPluginDir(dir, root.source));
-      }
-    }
-  }
-  return found;
+/** Scans the plugins directory's immediate subdirectories that contain a manifest.json. */
+export function discoverPlugins(root: string): DiscoveredPlugin[] {
+  if (!existsSync(root)) return [];
+  return readdirSync(root)
+    .sort()
+    .map((name) => path.join(root, name))
+    .filter((dir) => statSync(dir).isDirectory() && existsSync(path.join(dir, 'manifest.json')))
+    .map((dir) => inspectPluginDir(dir));
 }
 
-export const pluginIdOf = (p: DiscoveredPlugin) => (p.status === 'ok' ? p.manifest.id : p.pluginId);
+const pluginIdOf = (p: DiscoveredPlugin) => (p.status === 'ok' ? p.manifest.id : p.pluginId);
 
 /**
- * Upserts discovery results into `plugins`. New core plugins start disabled unless `autoEnableCore`.
- * A repository plugin may not shadow a core plugin id; a core plugin that arrives later with a repo
- * plugin's id doesn't take its row over either (that row is marked invalid until an admin resolves it). Plugins no longer on disk are marked invalid,
- * never deleted, so their instances and history remain.
+ * Upserts discovery results into `plugins`. New plugins start disabled: enabling one is the admin's
+ * review of what it may do (design §4.2). Two directories declaring the same id keep only the first.
+ * Plugins no longer on disk are marked invalid, never deleted, so their instances and history remain.
  */
 export function syncPluginRegistry(
   db: Db,
   discovered: DiscoveredPlugin[],
-  opts: { autoEnableCore: boolean; now?: Date },
+  opts: { now?: Date } = {},
 ): { added: string[]; updated: string[]; missing: string[]; rejected: string[] } {
   const now = opts.now ?? new Date();
   const out = { added: [] as string[], updated: [] as string[], missing: [] as string[], rejected: [] as string[] };
-  const coreIds = new Set(discovered.filter((p) => p.source === 'core').map(pluginIdOf));
 
   db.transaction((tx) => {
     const existing = new Map(
@@ -116,10 +103,6 @@ export function syncPluginRegistry(
     const seen = new Set<string>();
     for (const p of discovered) {
       const pluginId = pluginIdOf(p);
-      if (p.source === 'repo' && coreIds.has(pluginId)) {
-        out.rejected.push(pluginId);
-        continue;
-      }
       if (seen.has(pluginId)) {
         out.rejected.push(pluginId);
         continue;
@@ -127,37 +110,15 @@ export function syncPluginRegistry(
       seen.add(pluginId);
       const fields = {
         version: p.manifest?.version ?? '0.0.0',
-        source: p.source,
         path: p.dir,
         manifest: p.manifest ?? {},
         status: p.status,
         statusError: p.status === 'ok' ? null : p.error,
       };
       const prev = existing.get(pluginId);
-      if (prev?.source === 'repo' && p.source === 'core') {
-        // A core release now ships this id. Its instances must not silently switch to different code
-        // with the same secrets: the repo row stays as it was, unusable, until an admin resolves it.
-        const statusError = `A core plugin now uses the id "${pluginId}". Uninstall this repository plugin (after moving its endpoints) to use the core one.`;
-        if (prev.status !== 'invalid' || prev.statusError !== statusError) {
-          tx.update(plugins).set({ status: 'invalid', statusError }).where(eq(plugins.id, prev.id)).run();
-          writeAudit(
-            tx,
-            {
-              kind: 'plugin',
-              decision: 'plugin_id_conflict',
-              actorKind: 'system',
-              detail: { pluginId, repoVersion: prev.version, coreVersion: fields.version },
-            },
-            now,
-          );
-        }
-        out.rejected.push(pluginId);
-        continue;
-      }
       if (!prev) {
-        const enabled = p.status === 'ok' && p.source === 'core' && opts.autoEnableCore;
         tx.insert(plugins)
-          .values({ id: randomUUID(), pluginId, ...fields, enabled, installedAt: now })
+          .values({ id: randomUUID(), pluginId, ...fields, enabled: false, installedAt: now })
           .run();
         out.added.push(pluginId);
         writeAudit(
@@ -166,7 +127,7 @@ export function syncPluginRegistry(
             kind: 'plugin',
             decision: 'plugin_discovered',
             actorKind: 'system',
-            detail: { pluginId, ...fields, manifest: undefined, enabled },
+            detail: { pluginId, ...fields, manifest: undefined, enabled: false },
           },
           now,
         );

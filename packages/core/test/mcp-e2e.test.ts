@@ -2,16 +2,13 @@ import { createHash, randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { ElicitationCompleteNotificationSchema, ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createAppContext } from '../src/app.js';
 import type { AppContext } from '../src/app.js';
 import { setGroupLevel, updateOperation } from '../src/catalog/groups.js';
-import { loadConfig } from '../src/config/env.js';
 import { auditLog, operations } from '../src/db/schema.js';
 import { hostAllowed, MAX_SESSIONS_PER_PRINCIPAL } from '../src/http/mcp/endpoint.js';
 import { createAdminApp } from '../src/http/admin-app.js';
@@ -20,6 +17,7 @@ import { startServers } from '../src/server.js';
 import type { RunningServers } from '../src/server.js';
 import { updateSettings } from '../src/settings.js';
 import { browser } from './admin-client.js';
+import { createTestApp } from './helpers.js';
 
 /**
  * End to end over real HTTP: the MCP SDK client ↔ `/{slug}` ↔ gate ↔ sandboxed plugin child, with
@@ -27,7 +25,6 @@ import { browser } from './admin-client.js';
  * elicitation for approvals.
  */
 
-const PLUGINS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/plugins');
 const PASSWORD = 'correct horse battery';
 
 let ctx: AppContext;
@@ -39,16 +36,14 @@ let otherInstanceId: string;
 
 beforeAll(async () => {
   dataDir = mkdtempSync(path.join(tmpdir(), 'synoikia-e2e-'));
-  ctx = await createAppContext(
-    loadConfig({
+  ctx = await createTestApp(
+    {
       DATA_DIR: dataDir,
-      CORE_PLUGINS_DIR: PLUGINS,
-      CORE_PLUGINS_AUTOENABLE: 'true',
       MCP_HOST: '127.0.0.1',
       MCP_PORT: '0',
       ADMIN_HOST: '127.0.0.1',
       ADMIN_PORT: '0',
-    }),
+    },
     { memoryDb: true },
   );
   await ctx.users.create({ username: 'admin', password: PASSWORD });

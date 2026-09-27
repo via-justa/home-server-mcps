@@ -1,16 +1,13 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { eq } from 'drizzle-orm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createAppContext } from '../src/app.js';
-import { loadConfig } from '../src/config/env.js';
 import { openDatabase } from '../src/db/index.js';
 import { pluginInstances, settings } from '../src/db/schema.js';
 import { getSettings } from '../src/settings.js';
+import { createTestApp } from './helpers.js';
 
-const PLUGINS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/plugins');
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => {
   for (const fn of cleanup.splice(0).reverse()) await fn();
@@ -32,9 +29,9 @@ describe('stored settings from an earlier release (review L22)', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const dataDir = mkdtempSync(path.join(tmpdir(), 'synoikia-lenient-'));
     cleanup.push(() => rmSync(dataDir, { recursive: true, force: true }));
-    const env = { DATA_DIR: dataDir, CORE_PLUGINS_DIR: PLUGINS, CORE_PLUGINS_AUTOENABLE: 'true' };
+    const env = { DATA_DIR: dataDir };
 
-    const first = await createAppContext(loadConfig(env));
+    const first = await createTestApp(env);
     const inst = await first.instances.create({ pluginId: 'echo', slug: 'echo', connection: {} });
     // As if an older release had stored values the current schemas reject.
     first.db
@@ -49,7 +46,7 @@ describe('stored settings from an earlier release (review L22)', () => {
       .run();
     await first.stop();
 
-    const ctx = await createAppContext(loadConfig(env));
+    const ctx = await createTestApp(env);
     cleanup.push(() => ctx.stop());
     const stored = ctx.db.select().from(pluginInstances).where(eq(pluginInstances.id, inst.id)).get()!.settings;
     expect(stored).toEqual({ sandbox: { memoryMb: 32 }, writesPerMinute: 7 });

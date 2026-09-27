@@ -41,7 +41,7 @@ function readLock(dataDir: string): LockInfo | null {
  * container on the same volume) can't be checked from here, so it counts as held: only its pid on
  * this host can be proven dead.
  */
-export function lockHolder(dataDir: string): LockInfo | null {
+function lockHolder(dataDir: string): LockInfo | null {
   const info = readLock(dataDir);
   if (!info || info.pid === process.pid) return null;
   if (info.host !== hostname()) return info;

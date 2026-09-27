@@ -16,7 +16,7 @@ export interface SandboxLimits {
   maxLogBytes: number;
 }
 
-export const DEFAULT_LIMITS: SandboxLimits = {
+const DEFAULT_LIMITS: SandboxLimits = {
   timeoutMs: 10_000,
   memoryMb: 64,
   maxResultBytes: 64 * 1024,

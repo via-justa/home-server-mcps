@@ -64,6 +64,13 @@
       "when": 1790508628574,
       "tag": "0008_drop_registry_domain",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1790515212837,
+      "tag": "0009_drop_plugin_source",
+      "breakpoints": true
     }
   ]
 }

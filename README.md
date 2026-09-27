@@ -46,7 +46,7 @@ Synoikia uses the [**Code Mode**][code-mode] pattern instead: each endpoint expo
 | Home Assistant | 65 curated tools, growing with each domain | ~45–60K+ tokens | ~1–3K, every service        |
 | Seerr          | 6 tools covering ~10% of the API           | ~1K tokens      | ~1–2K, 100% of the API      |
 
-A naive one-tool-per-method wrapper of the TrueNAS API alone would cost over 100K tokens. _Estimates from the original per-server designs in [`docs/reference/`](docs/reference/)._
+A naive one-tool-per-method wrapper of the TrueNAS API alone would cost over 100K tokens. _Estimates from the original per-server designs, now kept with each plugin in [synoikia-core-plugins][core-plugins]._
 
 ### 2. Every MCP server has its own idea of safety
 
@@ -56,7 +56,7 @@ Synoikia implements the security-critical parts **once, in core**, and applies t
 
 ## Core features
 
-**🔌 One server, many plugins.** [TrueNAS][truenas], [Seerr][seerr] and [Home Assistant][ha] ship as core plugins; more can be installed from plugin repositories you add, with optional [minisign][minisign] signatures. Run several instances of the same plugin, each on its own endpoint.
+**🔌 One server, many plugins.** Plugins are installed from plugin repositories, verified with [minisign][minisign] signatures. The [Synoikia plugins repository][core-plugins] ([TrueNAS][truenas], [Seerr][seerr], [Home Assistant][ha]) comes pre-configured, and you can add your own. Run several instances of the same plugin, each on its own endpoint.
 
 **🧰 Two tools per endpoint.** Every endpoint exposes just `search(code)` and `execute(code)`. The model discovers operations and calls them with code that runs inside an [`isolated-vm`][isolated-vm] sandbox with no Node APIs, network or timers.
 
@@ -99,7 +99,7 @@ The mark draws the same idea: four identical dwellings, joined by paths to one s
 
 The core is complete (design §13, phases 0–16): encryption, catalog sync with access levels, the permission-confined plugin host, the [`isolated-vm`][isolated-vm] sandbox, the permission gate with pre-approval rules and human approval, admin auth (local + TOTP + OIDC), MCP auth (external, bearer, OAuth 2.1), the Admin API and portal, ntfy/webhook notifications, plugin repositories with minisign signing, and maintenance jobs.
 
-Not yet: the TrueNAS, Seerr and Home Assistant plugin logic (phases 17–19). See the progress table in design §13. The full design is in [`docs/design/unified-mcp-server.md`](docs/design/unified-mcp-server.md); the original per-server designs and UI mockups it builds on are in [`docs/reference/`](docs/reference/).
+The TrueNAS, Seerr and Home Assistant plugins live in [synoikia-core-plugins][core-plugins] and are released there as a signed plugin repository. The full design is in [`docs/design/unified-mcp-server.md`](docs/design/unified-mcp-server.md), and the admin portal mockups it builds on are in [`docs/mockups/admin-portal`](docs/mockups/admin-portal/).
 
 ## Layout
 
@@ -108,7 +108,6 @@ Not yet: the TrueNAS, Seerr and Home Assistant plugin logic (phases 17–19). Se
 | `packages/plugin-sdk` | Plugin manifest schema, core ⇄ plugin RPC contract, `runPlugin()` child runtime                                                                                 |
 | `packages/core`       | Core process ([Hono][hono], [SQLite][better-sqlite3]): MCP listener (:8080), admin listener (:8081), plugin host, sandbox, permission gate, auth, notifications |
 | `packages/admin-ui`   | [Vue 3][vue] admin portal (served by core on :8081)                                                                                                             |
-| `plugins/*`           | Core plugins: `truenas`, `seerr`, `homeassistant`                                                                                                               |
 
 ## Development
 
@@ -135,8 +134,6 @@ It publishes through npm trusted publishing, so no token is stored: each package
 
 Prerelease versions (`0.3.0-rc.0`) are never published by a merge. Publish them by hand with **Actions → Release → Run workflow**; they go to the `next` dist-tag, so `latest` stays on the last release. A prerelease run is also the way to check trusted publishing after changing its settings: npm's verbose log (on for every release run) says why a publish was refused.
 
-[core-plugins]: https://github.com/via-justa/synoikia-core-plugins
-
 ## Deployment
 
 ```sh
@@ -146,7 +143,16 @@ docker compose -f docker-compose.example.yml up -d --build
 
 Deploys with [Docker Compose][compose]. Put `:8080` behind your reverse proxy (such as [Caddy][caddy], [Traefik][traefik] or a [Cloudflare Tunnel][cf-tunnel]) as the public MCP hostname and set `PUBLIC_MCP_URL` to it. Keep `:8081` reachable from the LAN or VPN only. See design §11.
 
-On first start, open the admin portal and create the first account (or set `ADMIN_BOOTSTRAP_USERNAME`/`ADMIN_BOOTSTRAP_PASSWORD` once). Then enable plugins, create an endpoint, raise the access groups you want above Read, and connect your MCP client to `PUBLIC_MCP_URL/<slug>`.
+On first start, open the admin portal and create the first account (or set `ADMIN_BOOTSTRAP_USERNAME`/`ADMIN_BOOTSTRAP_PASSWORD` once). Then install and enable plugins, create an endpoint, raise the access groups you want above Read, and connect your MCP client to `PUBLIC_MCP_URL/<slug>`.
+
+### Plugin repositories
+
+On first start Synoikia adds the [Synoikia plugins repository][core-plugins] with its signing key pinned:
+
+- index: `https://github.com/via-justa/synoikia-core-plugins/releases/download/index/index.json`
+- public key: `RWSDbQe7ylyyieEU0Yh/bxR53m+N/0VrVMru5WCzv1/Yvt5td92t/21e`
+
+Install plugins from it on the Plugins page; every download is checked against that key. Removing the repository is permanent: it isn't added again on the next start. To add it back, add it as a signed repository with the URL and key above. Other repositories are added the same way, signed with their publisher's key or unsigned.
 
 ### Rotating the master key
 
@@ -170,6 +176,7 @@ Every session is signed out afterwards.
 
 <!-- External links -->
 
+[core-plugins]: https://github.com/via-justa/synoikia-core-plugins
 [mcp]: https://modelcontextprotocol.io/
 [mcp-tools]: https://modelcontextprotocol.io/specification/2025-11-25/server/tools
 [elicitation]: https://modelcontextprotocol.io/specification/2025-11-25/client/elicitation

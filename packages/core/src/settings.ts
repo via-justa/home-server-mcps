@@ -8,7 +8,7 @@ import { cleanStored, parseLeniently } from './lenient.js';
 
 /** Global settings (design §8.2 "Settings"), one JSON document per section in the `settings` table. */
 
-export const SETTINGS_SCHEMAS = {
+const SETTINGS_SCHEMAS = {
   security: z
     .object({
       /** Force every user to enroll TOTP at next login. */

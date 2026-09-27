@@ -9,7 +9,7 @@ import { checkUiCsrf, recordTotpProof, renderLogin, sinceTotpProof, uiCsrf, uiSe
 import { approvalPage, errorPage } from './pages.js';
 
 /** A locked operation needs a TOTP code proved this recently (design §5.3). */
-export const LOCKED_TOTP_MAX_AGE_MS = 5 * 60_000;
+const LOCKED_TOTP_MAX_AGE_MS = 5 * 60_000;
 
 /**
  * The approval page (design §5.3). The MCP client is asked to open it (URL-mode elicitation); the

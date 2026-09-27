@@ -2,16 +2,13 @@ import { createHmac } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { eq } from 'drizzle-orm';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createAppContext } from '../src/app.js';
-import { loadConfig } from '../src/config/env.js';
 import { auditLog, notifierChannels } from '../src/db/schema.js';
 import { createAdminApp } from '../src/http/admin-app.js';
 import { browser } from './admin-client.js';
+import { createTestApp } from './helpers.js';
 
-const PLUGINS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/plugins');
 const PASSWORD = 'correct horse battery';
 
 interface Sent {
@@ -29,13 +26,11 @@ async function setup(respond: (req: Sent) => number = () => 200) {
   const dataDir = mkdtempSync(path.join(tmpdir(), 'synoikia-notify-'));
   cleanup.push(() => rmSync(dataDir, { recursive: true, force: true }));
   const sent: Sent[] = [];
-  const ctx = await createAppContext(
-    loadConfig({
+  const ctx = await createTestApp(
+    {
       DATA_DIR: dataDir,
-      CORE_PLUGINS_DIR: PLUGINS,
-      CORE_PLUGINS_AUTOENABLE: 'true',
       PUBLIC_MCP_URL: 'https://mcp.example.com/',
-    }),
+    },
     {
       memoryDb: true,
       notifyRetryDelaysMs: [1, 1],

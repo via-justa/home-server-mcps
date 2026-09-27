@@ -15,7 +15,7 @@ export function ago(value: string | Date | null | undefined, now = Date.now()): 
   return `${Math.floor(s / 86400)} d ago`;
 }
 
-export function until(value: string | Date, now = Date.now()): string {
+function until(value: string | Date, now = Date.now()): string {
   const d = typeof value === 'string' ? new Date(value) : value;
   const s = Math.max(0, Math.round((d.getTime() - now) / 1000));
   if (s < 60) return `${s}s`;

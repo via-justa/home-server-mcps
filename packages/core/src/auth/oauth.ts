@@ -5,7 +5,7 @@ import type { AccessCeiling } from '../gate/access.js';
 import { writeAudit } from '../audit.js';
 import type { Db } from '../db/index.js';
 import { oauthClients, oauthCodes, oauthGrants, oauthTokens, users } from '../db/schema.js';
-import { NotFoundError, ServiceError, ValidationError } from '../errors.js';
+import { NotFoundError, ServiceError } from '../errors.js';
 import { randomToken, safeEqual, sha256 } from './tokens.js';
 
 /**
@@ -16,7 +16,7 @@ import { randomToken, safeEqual, sha256 } from './tokens.js';
  */
 
 export const ACCESS_PREFIX = 'syno_';
-export const REFRESH_PREFIX = 'synr_';
+const REFRESH_PREFIX = 'synr_';
 const CODE_TTL_MS = 60_000;
 
 /** OAuth protocol errors carry RFC 6749 codes (`invalid_grant`, …) and map to 400/401. */
@@ -31,7 +31,7 @@ export class OAuthError extends ServiceError {
 }
 
 /** https, loopback http (native apps, RFC 8252) and private-use schemes; never javascript:/data:/file:. */
-export function isAcceptableRedirectUri(raw: string): boolean {
+function isAcceptableRedirectUri(raw: string): boolean {
   let url: URL;
   try {
     url = new URL(raw);
@@ -45,7 +45,7 @@ export function isAcceptableRedirectUri(raw: string): boolean {
   return /^[a-z][a-z0-9+.-]*\.[a-z0-9+.-]+:$/.test(url.protocol) || /^[a-z][a-z0-9+.-]{2,}:$/.test(url.protocol);
 }
 
-export const RegistrationSchema = z.object({
+const RegistrationSchema = z.object({
   redirect_uris: z.array(z.string()).min(1).max(10),
   client_name: z.string().trim().min(1).max(100).optional(),
   token_endpoint_auth_method: z.enum(['none', 'client_secret_post', 'client_secret_basic']).default('none'),
@@ -53,7 +53,7 @@ export const RegistrationSchema = z.object({
   response_types: z.array(z.string()).optional(),
 });
 
-export function verifyPkceS256(verifier: string, challenge: string): boolean {
+function verifyPkceS256(verifier: string, challenge: string): boolean {
   if (!/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) return false;
   return safeEqual(createHash('sha256').update(verifier).digest('base64url'), challenge);
 }
@@ -503,11 +503,4 @@ export class OAuthService {
       .run().changes;
     return a + b;
   }
-}
-
-export function assertResourceList(raw: string[], allowed: Set<string>): string[] {
-  const out = [...new Set(raw.map(canonicalResource))];
-  const unknown = out.filter((r) => !allowed.has(r));
-  if (unknown.length) throw new ValidationError('invalid_target', `Unknown resource(s): ${unknown.join(', ')}`);
-  return out;
 }

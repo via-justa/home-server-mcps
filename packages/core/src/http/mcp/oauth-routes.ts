@@ -30,16 +30,16 @@ const UI_SESSIONS = {
   approval: { cookie: 'syn_mcp_approve', kind: 'approval_ui', path: '/a' },
 } as const;
 /** Which kind of session a sign-in continuing to `continueTo` creates. */
-export const purposeOf = (continueTo: string): UiPurpose => (continueTo.startsWith('/a/') ? 'approval' : 'oauth');
+const purposeOf = (continueTo: string): UiPurpose => (continueTo.startsWith('/a/') ? 'approval' : 'oauth');
 const UI_CSRF_COOKIE = 'syn_mcp_csrf';
 const OIDC_COOKIE = 'syn_mcp_oidc';
-export const UI_LIMITS: SessionLimits = { idleMs: 15 * 60_000, absoluteMs: 60 * 60_000 };
+const UI_LIMITS: SessionLimits = { idleMs: 15 * 60_000, absoluteMs: 60 * 60_000 };
 const FORM_TTL_MS = 10 * 60_000;
 const NEEDS_TOTP =
   'This server requires two-factor authentication. Set up your authenticator app in the admin portal (Profile) first.';
 
 /** Where a sign-in may continue to: only our own consent and approval pages. */
-export const safeContinue = (v: unknown) =>
+const safeContinue = (v: unknown) =>
   typeof v === 'string' && (v.startsWith('/oauth/authorize?') || /^\/a\/[A-Za-z0-9_-]+$/.test(v))
     ? v
     : '/oauth/authorize';

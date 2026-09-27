@@ -102,20 +102,18 @@ export async function startPluginHarness(opts: PluginHarnessOptions): Promise<Pl
   const work = mkdtempSync(path.join(tmpdir(), `synoikia-harness-${manifest.id}-`));
   let ctx: AppContext | undefined;
   try {
-    const pluginsDir = path.join(work, 'plugins');
-    stagePlugin(opts.pluginDir, manifest, pluginsDir);
-    ctx = await createAppContext(
-      loadConfig({
-        DATA_DIR: path.join(work, 'data'),
-        CORE_PLUGINS_DIR: pluginsDir,
-        CORE_PLUGINS_AUTOENABLE: 'true',
-      }),
-      { memoryDb: true, supervisor: opts.supervisor ?? { initTimeoutMs: 5000, rpcTimeoutMs: 10_000 } },
-    );
+    // Staged where an install puts it, then enabled as an admin would.
+    const dataDir = path.join(work, 'data');
+    stagePlugin(opts.pluginDir, manifest, path.join(dataDir, 'plugins'));
+    ctx = await createAppContext(loadConfig({ DATA_DIR: dataDir }), {
+      memoryDb: true,
+      supervisor: opts.supervisor ?? { initTimeoutMs: 5000, rpcTimeoutMs: 10_000 },
+    });
     const row = ctx.db.select().from(plugins).where(eq(plugins.pluginId, manifest.id)).get();
     if (row?.status !== 'ok') {
       throw new Error(`${manifest.id} was not loaded: ${row ? `${row.status}: ${row.statusError}` : 'not discovered'}`);
     }
+    await ctx.instances.setPluginEnabled(row.id, true);
     const instanceId = (
       await ctx.instances.create({ pluginId: manifest.id, slug: opts.slug ?? manifest.id, connection: opts.connection })
     ).id;
@@ -241,3 +239,6 @@ function splitConnection(manifest: Manifest, connection: Record<string, unknown>
   }
   return { config, secrets };
 }
+
+export { verifyPluginRepository } from './repository.js';
+export type { VerifiedPlugin, VerifyRepositoryOptions } from './repository.js';

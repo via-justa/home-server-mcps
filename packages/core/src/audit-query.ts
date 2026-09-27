@@ -6,7 +6,7 @@ import { auditLog } from './db/schema.js';
 
 /** Audit log reads for the portal (design §8.2): filterable, paginated, exportable. Never writes. */
 
-export const AuditQuerySchema = z.object({
+const AuditQuerySchema = z.object({
   instance: z.string().optional(),
   kind: z.enum(['call', 'search', 'config', 'auth', 'plugin']).optional(),
   /** Prefix match, e.g. `auto-approved` or `rejected:`. */

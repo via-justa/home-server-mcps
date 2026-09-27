@@ -1,5 +1,12 @@
 import { randomUUID } from 'node:crypto';
+import { cpSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { OperationDescriptor } from '@synoikia/plugin-sdk';
+import { eq } from 'drizzle-orm';
+import { createAppContext } from '../src/app.js';
+import type { AppOptions } from '../src/app.js';
+import { loadConfig } from '../src/config/env.js';
 import { openDatabase } from '../src/db/index.js';
 import type { Db } from '../src/db/index.js';
 import { pluginInstances, plugins } from '../src/db/schema.js';
@@ -11,7 +18,6 @@ export function seedInstance(db: Db = openDatabase(':memory:'), slug = 'acme') {
       id: pluginRowId,
       pluginId: `p-${slug}`,
       version: '0.1.0',
-      source: 'core',
       path: '/tmp',
       manifest: {},
       status: 'ok',
@@ -36,3 +42,16 @@ export const op = (key: string, extra: Partial<OperationDescriptor> = {}): Opera
 };
 
 export const catalog = (...operations: OperationDescriptor[]) => ({ upstreamVersion: '25.10.7', operations });
+
+const FIXTURE_PLUGINS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/plugins');
+
+/**
+ * An app with the fixture plugins (echo) installed where installs go and enabled, as an admin would
+ * have done. `env.DATA_DIR` is required.
+ */
+export async function createTestApp(env: Record<string, string | undefined>, opts?: AppOptions) {
+  cpSync(FIXTURE_PLUGINS, path.join(env.DATA_DIR!, 'plugins'), { recursive: true });
+  const ctx = await createAppContext(loadConfig(env), opts);
+  ctx.db.update(plugins).set({ enabled: true }).where(eq(plugins.status, 'ok')).run();
+  return ctx;
+}

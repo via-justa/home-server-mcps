@@ -69,7 +69,7 @@ function toolText(result: SandboxResult) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(body, null, 2) }] };
 }
 
-export function describeSearch(manifest: Manifest): string {
+function describeSearch(manifest: Manifest): string {
   const ops = manifest.labels.operations.toLowerCase();
   const apis = [
     `catalog.find({ text?, group?, kind?, classification?: 'read'|'write'|'locked', includeDisabled?, limit? }) → ${ops} you can call (with includeDisabled, also the unavailable ones and why)`,
@@ -93,7 +93,7 @@ export function describeSearch(manifest: Manifest): string {
   ].join('\n');
 }
 
-export function describeExecute(manifest: Manifest): string {
+function describeExecute(manifest: Manifest): string {
   const ns = manifest.binding.namespace;
   const fns = manifest.binding.functions.map((f) => `${ns}.${f}(…)`).join(', ');
   return [
@@ -122,7 +122,7 @@ export function hostAllowed(config: Config, hostHeader: string | undefined): boo
   return config.MCP_ALLOWED_HOSTS.includes(host);
 }
 
-export function originAllowed(config: Config, origin: string | undefined): boolean {
+function originAllowed(config: Config, origin: string | undefined): boolean {
   if (!origin) return true; // not a browser request
   try {
     return hostAllowed(config, new URL(origin).host);

@@ -134,15 +134,14 @@ async function confirmKey() {
 }
 
 const BLOCKED: Record<string, string> = {
-  core_plugin_id: 'Same id as a core plugin',
-  installed_from_elsewhere: 'Installed from another source',
+  installed_from_elsewhere: 'Installed from another repository',
   key_changed: 'Repository key changed',
 };
 </script>
 
 <template>
   <div class="page">
-    <PageHeader title="Plugins" subtitle="Core plugins ship with the server; others come from repositories you add">
+    <PageHeader title="Plugins" subtitle="Plugins are installed from signed or unsigned repositories">
       <button class="btn" type="button" @click="rescan">Rescan</button>
     </PageHeader>
 
@@ -167,7 +166,7 @@ const BLOCKED: Record<string, string> = {
           <tr>
             <th>Plugin</th>
             <th>Version</th>
-            <th>Source</th>
+            <th>Signature</th>
             <th>Status</th>
             <th>Endpoints</th>
             <th />
@@ -185,12 +184,8 @@ const BLOCKED: Record<string, string> = {
             </td>
             <td class="mono">{{ p.version }}</td>
             <td>
-              <span v-if="p.source === 'core'" class="pill info">core</span>
-              <template v-else>
-                <span class="pill">repository</span>
-                <span v-if="p.signatureVerified" class="pill ok">signed</span>
-                <span v-else class="pill warn">unsigned</span>
-              </template>
+              <span v-if="p.signatureVerified" class="pill ok">signed</span>
+              <span v-else class="pill warn">unsigned</span>
             </td>
             <td>
               <span class="pill" :class="{ ok: p.status === 'ok', danger: p.status !== 'ok' }">{{ p.status }}</span>
@@ -201,13 +196,7 @@ const BLOCKED: Record<string, string> = {
               <button class="btn btn-sm" type="button" :disabled="p.status !== 'ok' && !p.enabled" @click="toggle(p)">
                 {{ p.enabled ? 'Disable' : 'Enable' }}
               </button>
-              <button
-                v-if="p.source === 'repo'"
-                class="btn btn-sm btn-danger"
-                type="button"
-                :disabled="p.instances > 0"
-                @click="uninstall(p)"
-              >
+              <button class="btn btn-sm btn-danger" type="button" :disabled="p.instances > 0" @click="uninstall(p)">
                 Uninstall
               </button>
             </td>
@@ -245,7 +234,15 @@ const BLOCKED: Record<string, string> = {
             <td class="right">
               <span v-if="a.blocked" class="pill warn">{{ BLOCKED[a.blocked] ?? a.blocked }}</span>
               <button v-else class="btn btn-sm btn-primary" type="button" :disabled="!a.latest" @click="openInstall(a)">
-                {{ a.installed ? (a.updateAvailable ? 'Update…' : 'Reinstall…') : 'Install…' }}
+                {{
+                  !a.installed
+                    ? 'Install…'
+                    : !a.installed.managed
+                      ? 'Replace…'
+                      : a.updateAvailable
+                        ? 'Update…'
+                        : 'Reinstall…'
+                }}
               </button>
             </td>
           </tr>
@@ -316,7 +313,7 @@ const BLOCKED: Record<string, string> = {
             </tr>
           </tbody>
         </table>
-        <div v-if="!repos.length" class="empty">No repositories. Core plugins are always available.</div>
+        <div v-if="!repos.length" class="empty">No repositories. Add one to install plugins.</div>
       </div>
     </div>
 
@@ -331,6 +328,10 @@ const BLOCKED: Record<string, string> = {
       </div>
       <p class="small muted">
         Plugins run in their own process and can only read their own files, but they can reach the network.
+      </p>
+      <p v-if="installing.item.installed && !installing.item.installed.managed" class="alert warn">
+        {{ installing.item.pluginId }} {{ installing.item.installed.version }} wasn't installed from a repository. This
+        replaces its files and keeps its endpoints, but leaves the plugin disabled until you review and enable it.
       </p>
       <template v-if="installRepo?.signingMode === 'unsigned'">
         <p class="alert warn">

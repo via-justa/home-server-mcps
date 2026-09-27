@@ -87,7 +87,6 @@ export const plugins = sqliteTable('plugins', {
   id: id(),
   pluginId: text('plugin_id').notNull().unique(),
   version: text('version').notNull(),
-  source: text('source', { enum: ['core', 'repo'] }).notNull(),
   repoId: text('repo_id').references(() => pluginRepos.id),
   path: text('path').notNull(),
   sha256: text('sha256'),

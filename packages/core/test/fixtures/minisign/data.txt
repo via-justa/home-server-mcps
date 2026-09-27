@@ -1,1 +1,1 @@
-home-server-mcps minisign fixture
+Synoikia minisign fixture

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { plugins } from '../src/db/schema.js';
 import { startPluginHarness } from '../src/testing/index.js';
 import type { PluginHarness } from '../src/testing/index.js';
 
@@ -31,7 +32,10 @@ describe('startPluginHarness', () => {
     expect(h.operation('echo.delete')).toMatchObject({ locked: true });
     expect(() => h.operation('echo.nope')).toThrow(/No operation echo.nope/);
     // The child runs from the staged copy under the permission model: it reads its own manifest only.
-    expect(h.ctx.config.CORE_PLUGINS_DIR).not.toBe(path.dirname(ECHO));
+    expect(h.ctx.db.select().from(plugins).get()).toMatchObject({
+      path: path.join(h.ctx.config.DATA_DIR, 'plugins', 'echo'),
+      enabled: true,
+    });
   });
 
   it('runs reads, redacts results and refuses writes at Read', async () => {
@@ -138,8 +142,8 @@ describe('startPluginHarness failures', () => {
 
   it('removes its working directory on stop', async () => {
     const t = await startPluginHarness({ pluginDir: ECHO, connection: {}, sync: false });
-    const staged = t.ctx.config.CORE_PLUGINS_DIR;
-    expect(existsSync(path.join(staged, 'echo', 'index.mjs'))).toBe(true);
+    const staged = t.ctx.config.DATA_DIR;
+    expect(existsSync(path.join(staged, 'plugins', 'echo', 'index.mjs'))).toBe(true);
     expect(t.operations()).toEqual([]);
     await t.stop();
     expect(existsSync(staged)).toBe(false);

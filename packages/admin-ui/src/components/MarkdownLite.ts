@@ -30,7 +30,7 @@ export function parseBlocks(source: string): Block[] {
 
 const INLINE = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\s][^*]*\*)/g;
 
-export function renderInline(text: string): (string | VNode)[] {
+function renderInline(text: string): (string | VNode)[] {
   return text
     .split(INLINE)
     .filter((part) => part !== '')
