@@ -131,7 +131,9 @@ DB schema changes: edit `packages/core/src/db/schema.ts`, then `pnpm --filter @s
 
 Plugin repos, [synoikia-core-plugins][core-plugins] included, build against two npm packages: `@synoikia/plugin-sdk`, and `@synoikia/core` for its plugin test harness. To release either one, bump its `version` and merge to `main`. The Release workflow (`.github/workflows/release.yml`) publishes every package whose version isn't on npm yet, SDK first. It adds provenance only while this repo is public, because npm rejects provenance from private repositories.
 
-It publishes through npm trusted publishing, so it stores no token. npm can only trust a publisher for a package that already exists, so the first release of each package needs an `NPM_TOKEN` repository secret: a granular token with publish rights on the `@synoikia` scope. After that release, set `via-justa/home-server-mcps` and `release.yml` as each package's trusted publisher on npmjs.com, then delete the secret.
+It publishes through npm trusted publishing, so it stores no token. npm can only trust a publisher for a package that already exists, so the first release of each package needs an `NPM_TOKEN` repository secret: a granular token with publish rights on the `@synoikia` scope. After that release, set `via-justa/synoikia-core` and `release.yml` as each package's trusted publisher on npmjs.com, then delete the secret.
+
+Prerelease versions (`0.3.0-rc.0`) are never published by a merge. Publish them by hand with **Actions → Release → Run workflow**; they go to the `next` dist-tag, so `latest` stays on the last release. The `auth: oidc` option runs without `NPM_TOKEN`, which proves trusted publishing works before you delete the secret (or after a repository rename, which trusted publishing doesn't follow).
 
 [core-plugins]: https://github.com/via-justa/synoikia-core-plugins
 

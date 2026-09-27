@@ -2,12 +2,19 @@ name: Release
 
 # Publishes the packages plugin repos build and test against: the plugin SDK, and core (for its
 # plugin harness, `@synoikia/core/testing`). A package is published when its package.json version
-# isn't on npm yet, so a release is a version bump merged to main.
+# isn't on npm yet, so a release is a version bump merged to main. Prereleases (`0.3.0-rc.0`) are
+# published by hand only, under the `next` dist-tag, so `latest` never moves to one.
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      auth:
+        description: 'npm auth: "oidc" publishes through trusted publishing alone, with no token'
+        type: choice
+        options: [token, oidc]
+        default: token
 
 permissions:
   contents: read
@@ -36,9 +43,10 @@ jobs:
         env:
           # Only for a package's first publish: npm can't trust a publisher for a package that doesn't
           # exist yet. Once each package trusts this workflow, delete the secret.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ inputs.auth != 'oidc' && secrets.NPM_TOKEN || '' }}
           # npm only accepts provenance from public source repositories.
           PROVENANCE: ${{ github.event.repository.private && 'false' || 'true' }}
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/pack"
@@ -50,7 +58,15 @@ jobs:
               echo "$name@$version is already published"
               continue
             fi
+            tag=latest
+            if [[ "$version" == *-* ]]; then
+              if [[ "$MANUAL" != true ]]; then
+                echo "$name@$version is a prerelease: publish it by hand (Run workflow)"
+                continue
+              fi
+              tag=next
+            fi
             # pnpm pack rewrites workspace: ranges to real versions.
             tarball=$(cd "$dir" && pnpm pack --pack-destination "$RUNNER_TEMP/pack" | tail -n 1)
-            npm publish "$tarball" --access public --provenance="$PROVENANCE"
+            npm publish "$tarball" --access public --tag "$tag" --provenance="$PROVENANCE"
           done
