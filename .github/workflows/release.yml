@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # npm trusted publishing and provenance
+      id-token: write # npm trusted publishing, and provenance once the repo is public
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -37,6 +37,8 @@ jobs:
           # Only for a package's first publish: npm can't trust a publisher for a package that doesn't
           # exist yet. Once each package trusts this workflow, delete the secret.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # npm only accepts provenance from public source repositories.
+          PROVENANCE: ${{ github.event.repository.private && 'false' || 'true' }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/pack"
@@ -48,7 +50,7 @@ jobs:
               echo "$name@$version is already published"
               continue
             fi
-            # pnpm pack rewrites workspace: ranges to real versions; npm publishes with provenance.
+            # pnpm pack rewrites workspace: ranges to real versions.
             tarball=$(cd "$dir" && pnpm pack --pack-destination "$RUNNER_TEMP/pack" | tail -n 1)
-            npm publish "$tarball" --access public --provenance
+            npm publish "$tarball" --access public --provenance="$PROVENANCE"
           done
