@@ -11,6 +11,7 @@
 </p>
 
 <p align="center">
+  <a href="#why-synoikia">Why</a> ·
   <a href="#core-features">Core features</a> ·
   <a href="#the-name">The name</a> ·
   <a href="#deployment">Deployment</a> ·
@@ -28,6 +29,30 @@ https://mcp.example.com/seerr     → Seerr plugin
 https://mcp.example.com/ha        → Home Assistant plugin
 http://admin.lan:8081             → Admin portal (separate port, login required)
 ```
+
+## Why Synoikia
+
+Synoikia grew out of running several MCP servers next to each other (TrueNAS, Seerr, Home Assistant) and hitting the same two problems with every one of them.
+
+### 1. Tool definitions eat the context window
+
+A typical MCP server exposes one tool per operation, and every tool's name, description and schema is loaded into the model's context at the start of every session, whether it is used or not. The more of the API a server covers, the more it costs, so servers end up hand-curating a small subset and still paying tens of thousands of tokens for it.
+
+Synoikia uses the **Code Mode** pattern instead: each endpoint exposes exactly two tools. The model calls `search(code)` to find only the operations and schemas it needs for the task, then `execute(code)` to call them. The full catalog never enters the context, so the cost stays flat however large the upstream API is:
+
+| Integration    | Before                                     | Tool definitions | With Synoikia               |
+| -------------- | ------------------------------------------ | ---------------- | --------------------------- |
+| TrueNAS        | 52 hand-picked tools                       | ~15–20K tokens   | ~1–3K, all ~650–700 methods |
+| Home Assistant | 65 curated tools, growing with each domain | ~45–60K+ tokens  | ~1–3K, every service        |
+| Seerr          | 6 tools covering ~10% of the API           | ~1K tokens       | ~1–2K, 100% of the API      |
+
+A naive one-tool-per-method wrapper of the TrueNAS API alone would cost over 100K tokens. _Estimates from the original per-server designs in [`docs/reference/`](docs/reference/)._
+
+### 2. Every MCP server has its own idea of safety
+
+Each server makes its own security decisions, and they rarely agree: some run every write immediately, some ask for approval through a prompt the calling client can answer itself, and some ship a raw "send any command" escape hatch. Authentication, secret handling and logging differ from server to server, and a destructive call such as wiping a disk or deleting a dataset is only as safe as the least careful implementation. Running them side by side also means separate processes, portals, databases and logins to keep secure.
+
+Synoikia implements the security-critical parts **once, in core**, and applies them to every plugin: the sandbox, access levels, human approvals that the calling client can't give itself, redaction, the audit log and authentication. A plugin only describes its upstream API; it never decides what is allowed.
 
 ## Core features
 
