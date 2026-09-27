@@ -41,13 +41,19 @@ export function configHash(config: unknown): string {
 
 const invalid = (message: string) => new PluginError(ErrorCodes.InvalidParams, message);
 
+/** Tokens that would reach an object's prototype instead of its own data. */
+const FORBIDDEN_TOKENS = new Set(['__proto__', 'constructor', 'prototype']);
+
 function parsePointer(path: string): string[] {
   if (path === '') return [];
   if (!path.startsWith('/')) throw invalid(`Patch path "${path}" must be a JSON pointer starting with /`);
-  return path
+  const tokens = path
     .slice(1)
     .split('/')
     .map((s) => s.replace(/~1/g, '/').replace(/~0/g, '~'));
+  const bad = tokens.find((t) => FORBIDDEN_TOKENS.has(t));
+  if (bad) throw invalid(`Patch path "${path}" may not contain "${bad}"`);
+  return tokens;
 }
 
 const isContainer = (v: unknown): v is Record<string, unknown> | unknown[] => !!v && typeof v === 'object';
@@ -93,7 +99,9 @@ export function applyPatch<T>(doc: T, patch: PatchOp[]): T {
     let parent: unknown = root.v;
     for (const t of tokens.slice(0, -1)) {
       if (!isContainer(parent)) throw invalid(`patch[${i}] path ${p.path} does not exist`);
-      parent = Array.isArray(parent) ? parent[index(parent, t, false)] : (parent as Record<string, unknown>)[t];
+      if (Array.isArray(parent)) parent = parent[index(parent, t, false)];
+      else if (Object.hasOwn(parent, t)) parent = (parent as Record<string, unknown>)[t];
+      else throw invalid(`patch[${i}] path ${p.path} does not exist`);
     }
     if (!isContainer(parent)) throw invalid(`patch[${i}] path ${p.path} does not exist`);
     const last = tokens.at(-1)!;
@@ -104,7 +112,7 @@ export function applyPatch<T>(doc: T, patch: PatchOp[]): T {
       else if (p.op === 'replace') parent[at] = structuredClone(p.value);
       else if (canonical(parent[at]) !== canonical(p.value)) throw invalid(`patch[${i}] test failed at ${p.path}`);
     } else {
-      const has = Object.prototype.hasOwnProperty.call(parent, last);
+      const has = Object.hasOwn(parent, last);
       if (p.op !== 'add' && !has) throw invalid(`patch[${i}] path ${p.path} does not exist`);
       if (p.op === 'remove') delete parent[last];
       else if (p.op === 'test') {

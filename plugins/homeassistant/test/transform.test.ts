@@ -76,4 +76,28 @@ describe('config transforms (HA §2.8, §7 phase 6)', () => {
   ])('refuses to apply %s', (_name, patch) => {
     expect(() => applyPatch(automation, validatePatch(patch))).toThrow();
   });
+
+  it.each([
+    ['/__proto__/target', 'add'],
+    ['/constructor/prototype/x', 'add'],
+    ['/actions/0/__proto__/entity_id', 'add'],
+    ['/__proto__', 'replace'],
+  ])('refuses a path that reaches a prototype: %s', (path, op) => {
+    expect(() => validatePatch([{ op, path, value: 1 }])).toThrow(/may not contain/);
+    // Even applied directly, it can't write through to Object.prototype.
+    expect(() => applyPatch(automation, [{ op: op as 'add', path, value: 1 }])).toThrow();
+    expect(({} as Record<string, unknown>).target).toBeUndefined();
+    expect(({} as Record<string, unknown>).entity_id).toBeUndefined();
+    expect(({} as Record<string, unknown>).x).toBeUndefined();
+  });
+
+  it('treats inherited properties as missing', () => {
+    expect(() => applyPatch(automation, validatePatch([{ op: 'remove', path: '/toString' }]))).toThrow(
+      /does not exist/,
+    );
+    expect(() =>
+      applyPatch(automation, validatePatch([{ op: 'replace', path: '/hasOwnProperty/x', value: 1 }])),
+    ).toThrow(/does not exist/);
+    expect(typeof {}.toString).toBe('function');
+  });
 });
