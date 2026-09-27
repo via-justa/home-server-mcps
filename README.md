@@ -162,11 +162,11 @@ docker compose -f docker-compose.example.yml run --rm -e NEW_MASTER_KEY="$NEW_KE
 
 Every session is signed out afterwards.
 
-<!-- External links -->
-
 ## License
 
 [MIT](LICENSE)
+
+<!-- External links -->
 
 [mcp]: https://modelcontextprotocol.io/
 [mcp-tools]: https://modelcontextprotocol.io/specification/2025-11-25/server/tools
