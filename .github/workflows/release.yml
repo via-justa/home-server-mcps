@@ -2,7 +2,8 @@ name: Release
 
 # Publishes the packages plugin repos build and test against: the plugin SDK, and core (for its
 # plugin harness, `@synoikia/core/testing`). A package is published when its package.json version
-# isn't on npm yet, so a release is a version bump merged to main.
+# isn't on npm yet, so a release is a version bump merged to main. Prereleases (`0.3.0-rc.0`) are
+# published by hand only, under the `next` dist-tag, so `latest` never moves to one.
 
 on:
   push:
@@ -19,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # npm trusted publishing, and provenance once the repo is public
+      id-token: write # npm trusted publishing, and provenance
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -34,11 +35,15 @@ jobs:
       - run: pnpm --filter @synoikia/plugin-sdk --filter @synoikia/core build
       - name: Publish new versions
         env:
-          # Only for a package's first publish: npm can't trust a publisher for a package that doesn't
-          # exist yet. Once each package trusts this workflow, delete the secret.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # No token: npm authenticates through trusted publishing (this repo and release.yml, with
+          # direct publishing allowed, on each package's npmjs.com settings). Empty, not unset, so the
+          # placeholder setup-node writes into .npmrc can't stand in for a token.
+          NODE_AUTH_TOKEN: ''
           # npm only accepts provenance from public source repositories.
           PROVENANCE: ${{ github.event.repository.private && 'false' || 'true' }}
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+          # A refused trusted publish only says ENEEDAUTH or E403; the reason is logged at verbose.
+          NPM_CONFIG_LOGLEVEL: verbose
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/pack"
@@ -50,7 +55,15 @@ jobs:
               echo "$name@$version is already published"
               continue
             fi
+            tag=latest
+            if [[ "$version" == *-* ]]; then
+              if [[ "$MANUAL" != true ]]; then
+                echo "$name@$version is a prerelease: publish it by hand (Run workflow)"
+                continue
+              fi
+              tag=next
+            fi
             # pnpm pack rewrites workspace: ranges to real versions.
             tarball=$(cd "$dir" && pnpm pack --pack-destination "$RUNNER_TEMP/pack" | tail -n 1)
-            npm publish "$tarball" --access public --provenance="$PROVENANCE"
+            npm publish "$tarball" --access public --tag "$tag" --provenance="$PROVENANCE"
           done

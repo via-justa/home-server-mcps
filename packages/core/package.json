@@ -5,7 +5,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/via-justa/home-server-mcps.git",
+    "url": "git+https://github.com/via-justa/synoikia-core.git",
     "directory": "packages/core"
   },
   "type": "module",
