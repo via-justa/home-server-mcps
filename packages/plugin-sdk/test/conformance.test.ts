@@ -6,7 +6,7 @@ const manifest = {
   id: 'fake',
   name: 'Fake',
   version: '1.0.0',
-  sdk: '^1.0.0',
+  sdk: '^0.1.0',
   entry: 'dist/index.js',
   binding: { namespace: 'fake', functions: ['call'] },
   connection: { schema: { type: 'object', properties: { baseUrl: { type: 'string' } } } },

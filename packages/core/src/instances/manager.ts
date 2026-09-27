@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { parseManifest } from '@synoikia/plugin-sdk';
+import { parseManifest, SDK_VERSION } from '@synoikia/plugin-sdk';
 import type { Manifest } from '@synoikia/plugin-sdk';
 import { asc, eq } from 'drizzle-orm';
 import { writeAudit } from '../audit.js';
@@ -442,7 +442,7 @@ export class InstanceManager {
         instanceId: id,
         config: validated.config,
         secrets: validated.secrets,
-        sdkVersion: '1.0.0',
+        sdkVersion: SDK_VERSION,
       });
       return await proc.call('testConnection');
     } catch (err) {

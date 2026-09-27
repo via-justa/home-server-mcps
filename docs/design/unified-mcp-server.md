@@ -168,7 +168,7 @@ Validated by a zod schema in `@synoikia/plugin-sdk`. Abridged example for Home A
   "id": "homeassistant", // globally unique, [a-z0-9-]
   "name": "Home Assistant",
   "version": "1.0.0", // semver
-  "sdk": "^1.0.0", // plugin-SDK range this plugin was built for
+  "sdk": "^0.1.0", // plugin-SDK range this plugin was built for
   "description": "Search/execute over HA services and config flows.",
   "entry": "dist/index.js", // child-process entry, relative to the package root
   "binding": {
@@ -326,7 +326,7 @@ The admin adds a repository by URL on the Plugins → Repositories page. The URL
       "versions": [
         {
           "version": "0.3.1",
-          "sdk": "^1.0.0",
+          "sdk": "^0.1.0",
           "minCoreVersion": "1.0.0",
           "url": "https://github.com/example/mcp-plugins/releases/download/unifi-0.3.1/unifi-0.3.1.tgz",
           "sha256": "9f2c…",

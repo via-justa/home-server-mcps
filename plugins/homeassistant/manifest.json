@@ -2,7 +2,7 @@
   "id": "homeassistant",
   "name": "Home Assistant",
   "version": "0.1.0",
-  "sdk": "^1.0.0",
+  "sdk": "^0.1.0",
   "description": "Search/execute over Home Assistant services and config-entry-flow commands.",
   "entry": "dist/index.js",
   "binding": { "namespace": "ha", "functions": ["call"], "searchApis": ["registry", "guides"] },
