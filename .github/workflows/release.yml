@@ -47,6 +47,8 @@ jobs:
           # npm only accepts provenance from public source repositories.
           PROVENANCE: ${{ github.event.repository.private && 'false' || 'true' }}
           MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+          # An OIDC-only run is a trusted-publishing check: log npm's token exchange, which says why it fails.
+          NPM_CONFIG_LOGLEVEL: ${{ inputs.auth == 'oidc' && 'verbose' || 'notice' }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/pack"
