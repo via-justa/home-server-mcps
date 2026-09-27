@@ -61,7 +61,8 @@ export const RegistryEntrySchema = z.object({
   id: z.string().min(1),
   name: z.string(),
   parentId: z.string().optional(),
-  domain: z.string().optional(),
+  /** Scope values of this entry (see the manifest's `targets.scopes`), used to filter pickers and `registry.find`. */
+  scopes: z.record(z.string(), z.string()).optional(),
   attrs: z.record(z.string(), z.unknown()).optional(),
 });
 export type RegistryEntry = z.infer<typeof RegistryEntrySchema>;
@@ -70,7 +71,7 @@ export const ResolvedTargetSchema = z.object({
   kind: z.string().min(1),
   id: z.string().min(1),
   name: z.string(),
-  /** Ancestors used by `$targets` selectors, e.g. `{ area: 'living_room', domain: 'light' }`. */
+  /** The target's value for each scope declared in the manifest's `targets.scopes`, e.g. `{ zone: 'zone-a' }`. */
   scopes: z.record(z.string(), z.string()).default({}),
 });
 export type ResolvedTarget = z.input<typeof ResolvedTargetSchema>;

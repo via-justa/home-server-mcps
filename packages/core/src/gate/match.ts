@@ -24,17 +24,19 @@ export const ParamConditionSchema = z
   })
   .refine((c) => c.op === 'any' || c.field !== '', 'only "any" can apply to all parameters');
 
+/**
+ * Selects resolved targets by id and by the scope values the plugin declares (design §3.4). Every
+ * target must match: its id is in `ids` (when given) and, for each key in `scopes`, its value for that
+ * scope is one of the listed values.
+ */
 export const TargetConditionSchema = z
   .object({
     field: z.literal('$targets'),
-    areas: z.array(z.string()).optional(),
-    entities: z.array(z.string()).optional(),
-    domains: z.array(z.string()).optional(),
+    ids: z.array(z.string().min(1)).min(1).optional(),
+    scopes: z.record(z.string().min(1), z.array(z.string().min(1)).min(1)).optional(),
   })
-  .refine(
-    (c) => c.areas?.length || c.entities?.length || c.domains?.length,
-    'select at least one area, entity or domain',
-  );
+  .strict()
+  .refine((c) => c.ids || Object.keys(c.scopes ?? {}).length > 0, 'select at least one target id or scope value');
 
 export const MatchSchema = z.array(z.union([TargetConditionSchema, ParamConditionSchema]));
 export type MatchCondition = z.infer<typeof MatchSchema>[number];
@@ -90,9 +92,11 @@ function paramMatches(actual: unknown, op: string, expected: unknown): boolean {
 }
 
 function targetMatches(target: ResolvedTarget, c: z.infer<typeof TargetConditionSchema>): boolean {
-  if (c.areas?.length && !c.areas.includes(target.scopes?.area ?? '')) return false;
-  if (c.entities?.length && !c.entities.includes(target.id)) return false;
-  if (c.domains?.length && !c.domains.includes(target.scopes?.domain ?? '')) return false;
+  if (c.ids && !c.ids.includes(target.id)) return false;
+  for (const [key, values] of Object.entries(c.scopes ?? {})) {
+    const value = target.scopes?.[key];
+    if (value === undefined || !values.includes(value)) return false;
+  }
   return true;
 }
 
@@ -104,8 +108,13 @@ const escapePointer = (key: string) => key.replace(/~/g, '~0').replace(/\//g, '~
  * turn. Nothing (or `{}` / `[]`) is covered. Arrays matter for positional APIs such as TrueNAS, whose
  * params are `[{ name, … }]`.
  */
-export function coversAllParams(match: readonly MatchCondition[], params: unknown): boolean {
-  const pointers = match.filter((c) => c.field !== '$targets').map((c) => c.field);
+export function coversAllParams(
+  match: readonly MatchCondition[],
+  params: unknown,
+  /** Extra covered pointers, e.g. the raw target a `$targets` condition stands for (design §3.4). */
+  alsoCovered: readonly string[] = [],
+): boolean {
+  const pointers = [...match.filter((c) => c.field !== '$targets').map((c) => c.field), ...alsoCovered];
   const covered = (value: unknown, path: string): boolean => {
     if (pointers.includes(path)) return true;
     if (value === undefined || value === null) return path === '';

@@ -46,6 +46,8 @@ export interface Instance {
   status: 'starting' | 'ready' | 'error' | 'stopped';
   statusError: string | null;
   upstreamVersion: string | null;
+  /** Where the last catalog came from, as the plugin reports it (e.g. a version or git ref). */
+  sourceRef?: string | null;
   lastSyncedAt: string | null;
   lastSyncStatus: string | null;
   settings: InstanceSettings;
@@ -114,6 +116,19 @@ export interface MatchField {
   optionsSource?: string;
 }
 
+/** What a plugin's targets are and which scopes rules can select them by (the manifest's `targets`). */
+export interface TargetsDecl {
+  label: string;
+  registryKind?: string;
+  scopes: { key: string; label: string; registryKind?: string }[];
+}
+
+/** `options` of a `$targets` match field. */
+export interface TargetFieldOptions {
+  scopes?: string[];
+  filter?: Record<string, string>;
+}
+
 export interface PluginRow {
   id: string;
   pluginId: string;
@@ -130,6 +145,7 @@ export interface PluginRow {
     name?: string;
     description?: string;
     matchProfiles?: Record<string, MatchField[]>;
+    targets?: TargetsDecl;
     network?: { hosts: string[] };
     connection?: { schema: ConnectionSchema; ui?: Record<string, UiHint>; help?: string };
     labels?: { operation: string; operations: string };
@@ -179,7 +195,7 @@ export interface Operation {
 
 export type MatchCondition =
   | { field: string; op: 'eq' | 'in' | 'prefix' | 'range' | 'bool' | 'any'; value?: unknown }
-  | { field: '$targets'; areas?: string[]; entities?: string[]; domains?: string[] };
+  | { field: '$targets'; ids?: string[]; scopes?: Record<string, string[]> };
 
 export interface Rule {
   id: string;
@@ -202,7 +218,7 @@ export interface RegistryEntry {
   id: string;
   name: string | null;
   parentId: string | null;
-  domain: string | null;
+  scopes: Record<string, string> | null;
 }
 
 export interface AuditRow {

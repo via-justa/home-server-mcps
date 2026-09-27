@@ -124,3 +124,25 @@ describe('grant instance binding backfill', () => {
     expect(oauth.backfillInstanceIds([{ id: instanceId, slug: 'nas' }])).toBe(0); // only once
   });
 });
+
+describe('registry scopes migration', () => {
+  it("moves each entry's domain into its scopes", () => {
+    const { dir, sqlite } = databaseAt('0006_attestation_waived');
+    const now = Date.now();
+    sqlite.exec(`
+      INSERT INTO plugins (id, plugin_id, version, source, path, manifest, status)
+        VALUES ('p1', 'echo', '1.0.0', 'core', '/x', '{}', 'ok');
+      INSERT INTO plugin_instances (id, plugin_id, slug, display_name) VALUES ('i1', 'p1', 'acme', 'Acme');
+      INSERT INTO registry_entries (id, instance_id, kind, ext_id, name, domain, last_synced_at) VALUES
+        ('r1', 'i1', 'item', 'widget.one', 'Widget One', 'widget', ${now}),
+        ('r2', 'i1', 'zone', 'zone_a', 'Zone A', NULL, ${now});
+    `);
+    sqlite.close();
+
+    const db = openDatabase({ dataDir: dir });
+    const scopes = (id: string) =>
+      db.select().from(schema.registryEntries).where(eq(schema.registryEntries.id, id)).get()?.scopes;
+    expect(scopes('r1')).toEqual({ domain: 'widget' });
+    expect(scopes('r2')).toBeNull();
+  });
+});

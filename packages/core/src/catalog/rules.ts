@@ -47,7 +47,7 @@ function loadOperation(db: Db, instanceId: string, operationId: string): Operati
 
 /** Why a rule's match doesn't fit the operation's declared fields (design §8.3), or null if it does. */
 export function matchMisfit(
-  manifest: Pick<Manifest, 'matchProfiles'>,
+  manifest: Pick<Manifest, 'matchProfiles' | 'targets'>,
   op: Pick<OperationRow, 'key' | 'matchProfile'>,
   match: RuleInput['match'],
 ): ValidationError | null {
@@ -61,6 +61,14 @@ export function matchMisfit(
     if (!field) return new ValidationError('unknown_match_field', `${c.field} is not a matchable field of ${op.key}`);
     if (c.field !== '$targets' && 'op' in c && field.op !== c.op) {
       return new ValidationError('wrong_match_op', `${c.field} must use the "${field.op}" operator`);
+    }
+    if (c.field === '$targets' && 'scopes' in c && c.scopes) {
+      const offered =
+        (field.options?.scopes as string[] | undefined) ?? manifest.targets?.scopes.map((s) => s.key) ?? [];
+      const unknown = Object.keys(c.scopes).find((key) => !offered.includes(key));
+      if (unknown !== undefined) {
+        return new ValidationError('unknown_target_scope', `${op.key} can't select targets by "${unknown}"`);
+      }
     }
   }
   return null;

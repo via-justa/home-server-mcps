@@ -1,0 +1,1 @@
+ALTER TABLE `registry_entries` DROP COLUMN `domain`;
