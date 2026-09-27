@@ -50,7 +50,8 @@ export const LOCKED_SERVICES = new Set([
  * false negative is a physical-security miss.
  * - `#garage`: opening a cover that is a garage door or gate.
  * - `#protected`: the generic homeassistant.turn_on/turn_off/toggle on a lock, an alarm panel or a
- *   garage door or gate (turn_on opens a cover, turn_off unlocks a lock).
+ *   garage door or gate (turn_on opens a cover, turn_off unlocks a lock); scene.apply setting one of
+ *   those, and scene.turn_on on a scene that includes one (an unknown entity counts as protected).
  */
 export const SPLITS: Record<string, '#garage' | '#protected'> = {
   'cover.open_cover': '#garage',
@@ -59,6 +60,9 @@ export const SPLITS: Record<string, '#garage' | '#protected'> = {
   'homeassistant.turn_on': '#protected',
   'homeassistant.turn_off': '#protected',
   'homeassistant.toggle': '#protected',
+  // Scenes set entity states directly (a lock to unlocked, a garage door to open).
+  'scene.apply': '#protected',
+  'scene.turn_on': '#protected',
 };
 const SPLIT_DESCRIPTIONS = {
   '#garage': 'on a garage door or gate: locked.',

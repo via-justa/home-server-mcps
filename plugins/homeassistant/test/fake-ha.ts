@@ -66,6 +66,10 @@ export const SERVICES: Json = {
     toggle: { name: 'Generic toggle', target: { entity: {} }, fields: {} },
   },
   automation: { trigger: { name: 'Trigger', target: { entity: { domain: 'automation' } }, fields: {} } },
+  scene: {
+    apply: { name: 'Apply', fields: { entities: { required: true, selector: { object: {} } }, transition: {} } },
+    turn_on: { name: 'Activate', target: { entity: { domain: 'scene' } }, fields: {} },
+  },
   sonos: {
     snapshot: {
       name: 'Snapshot',
@@ -129,6 +133,8 @@ const STATES = [
   ['weather.home', 'sunny', { friendly_name: 'Home' }],
   ['media_player.sonos_living', 'idle', { friendly_name: 'Living Room Sonos' }],
   ['media_player.tv', 'off', { friendly_name: 'TV' }],
+  ['scene.movie', 'scening', { friendly_name: 'Movie night', entity_id: ['light.ceiling', 'media_player.tv'] }],
+  ['scene.leaving', 'scening', { friendly_name: 'Leaving', entity_id: ['light.kitchen', 'lock.front_door'] }],
   [
     'camera.driveway',
     'idle',

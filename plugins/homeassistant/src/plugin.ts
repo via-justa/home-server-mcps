@@ -142,8 +142,44 @@ export function createHomeAssistantPlugin(): PluginHandlers {
 
   const namesOf = (targets: readonly ResolvedTarget[]) => targets.map((t) => t.name || t.id);
 
+  /** Entity ids a scene.apply call sets. */
+  const sceneEntities = (params: Record<string, unknown>): string[] => {
+    const entities = params.entities;
+    if (!isObject(entities)) throw new PluginError(ErrorCodes.InvalidParams, 'scene.apply needs an entities object');
+    return Object.keys(entities);
+  };
+
+  /** Ids that make a split service take its locked twin; unknown entities count (fail closed). */
+  const sensitiveIds = (v: RegistryView, split: '#garage' | '#protected', ids: string[]) =>
+    ids.filter((id) => {
+      const e = v.entities.get(id);
+      return !e || isSensitiveTarget(split, e);
+    });
+
+  /** Whether a split service touches something sensitive (design §3.4 target-conditional keys). */
+  const sensitive = async (key: string, split: '#garage' | '#protected', params: Record<string, unknown>) => {
+    const v = await loadView();
+    if (key === 'scene.apply') return sensitiveIds(v, split, sceneEntities(params)).length > 0;
+    if (!params.target) return false;
+    const targets = resolveTarget(v, params.target as Target, entityFilter(catalog?.services.get(key)));
+    if (key === 'scene.turn_on') {
+      // A scene sets its members' states: look through it. A scene with no member list counts.
+      return targets.some((t) => {
+        const members = v.entities.get(t.id)?.members;
+        return !members || sensitiveIds(v, split, members).length > 0;
+      });
+    }
+    return targets.some((t) => isSensitiveTarget(split, v.entities.get(t.id) ?? { domain: '' }));
+  };
+
   /** The literal an approver must type for a locked operation: the thing it affects (HA §3.4). */
   const confirmLiteral = async (key: string, params: Record<string, unknown>, targets: readonly ResolvedTarget[]) => {
+    if (key === 'scene.apply#protected') {
+      const v = await loadView();
+      return sensitiveIds(v, '#protected', sceneEntities(params))
+        .map((id) => v.entities.get(id)?.name ?? id)
+        .join(', ');
+    }
     if (targets.length) return namesOf(targets).join(', ');
     const cfg = configCommand(key);
     if (cfg?.[2] === 'delete') {
@@ -221,12 +257,7 @@ export function createHomeAssistantPlugin(): PluginHandlers {
           throw new PluginError(ErrorCodes.UnknownOperation, `${key} is not a service on this Home Assistant`);
         const params = normalizeServiceParams(raw);
         const split = SPLITS[key];
-        if (split && params.target) {
-          const v = await loadView();
-          const targets = resolveTarget(v, params.target as Target, entityFilter(catalog?.services.get(key)));
-          if (targets.some((t) => isSensitiveTarget(split, v.entities.get(t.id) ?? { domain: '' })))
-            return { key: `${key}${split}`, params };
-        }
+        if (split && (await sensitive(key, split, params))) return { key: `${key}${split}`, params };
         return { key, params };
       }
       if (!FIXED_COMMANDS[key])

@@ -43,6 +43,8 @@ export interface EntityView {
   device?: string;
   deviceClass?: string;
   labels: string[];
+  /** Scenes: the entities the scene sets (its state's `entity_id` attribute). */
+  members?: string[];
 }
 
 export interface RegistryView {
@@ -87,6 +89,9 @@ export function buildView(raw: RawRegistry): RegistryView {
       device,
       deviceClass: orUndef(reg?.device_class) ?? attrClass ?? orUndef(reg?.original_device_class),
       labels: reg?.labels ?? [],
+      ...(Array.isArray(attrs.entity_id) && id.startsWith('scene.')
+        ? { members: attrs.entity_id.filter((m): m is string => typeof m === 'string') }
+        : {}),
     });
   };
   const registered = new Map((raw.entities ?? []).map((e) => [e.entity_id, e]));

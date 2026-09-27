@@ -53,6 +53,12 @@ describe('classification (HA §2.3, §7 phase 1)', () => {
     }
   });
 
+  it('adds locked #protected twins for scenes', () => {
+    expect(op('scene.apply#protected')).toMatchObject({ locked: true });
+    expect(op('scene.turn_on#protected')).toMatchObject({ locked: true });
+    expect(op('scene.apply')).toMatchObject({ locked: false });
+  });
+
   it('seeds the fixed commands: reads, config writes, locked deletes, attestation', () => {
     expect(op('get_states')).toMatchObject({ classification: 'read', group: 'states' });
     expect(op('history/history_during_period')).toMatchObject({ classification: 'read', group: 'history' });

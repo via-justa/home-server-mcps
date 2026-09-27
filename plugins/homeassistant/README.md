@@ -40,8 +40,9 @@ The only other operations are the fixed commands in `src/catalog.ts`. There is n
   - `homeassistant.restart`/`stop`, and `hassio.host_reboot`/`host_shutdown`/`restore_*`: type the location name;
   - opening a **garage door or gate** (`cover.open_cover`, `toggle` or `set_cover_position` → `#garage`). This is decided by device class, not name;
   - the generic `homeassistant.turn_on`, `turn_off` and `toggle` on a lock, alarm panel, garage door or gate (`#protected`). These would otherwise open or unlock through an unlocked service;
+  - `scene.apply` setting a lock, alarm panel, garage door or gate, or an entity the registry doesn't know (type their names), and `scene.turn_on` on a stored scene that includes one (type the scene's name). Both are `#protected` twins;
   - every config delete: automations, scripts and scenes (type the alias), and registry entries (type the name).
-- **Not covered:** a script or automation that itself unlocks a door. Running it (`script.turn_on`, `automation.trigger`) is an ordinary write in its own domain, so keep those domains at Ask.
+- **Not covered:** a script or automation that itself unlocks a door (scenes are covered, above). Running it (`script.turn_on`, `automation.trigger`) is an ordinary write in its own domain, so keep those domains at Ask.
 
 ## Targets and rules
 

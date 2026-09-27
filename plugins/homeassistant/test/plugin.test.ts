@@ -166,6 +166,37 @@ describe('Home Assistant plugin', () => {
     ]);
   });
 
+  it('locks scenes that would unlock, disarm or open something, or set an unknown entity', async () => {
+    const { plugin } = await setup();
+    const key = async (op: string, params: unknown) => (await resolve(plugin, op, params)).key;
+    expect(await key('scene.apply', { entities: { 'lock.front_door': 'unlocked', 'light.kitchen': 'on' } })).toBe(
+      'scene.apply#protected',
+    );
+    expect(await key('scene.apply', { entities: { 'cover.garage_door': { state: 'open' } } })).toBe(
+      'scene.apply#protected',
+    );
+    expect(await key('scene.apply', { entities: { 'lock.made_up': 'unlocked' } })).toBe('scene.apply#protected');
+    expect(await key('scene.apply', { entities: { 'light.kitchen': 'on', 'cover.blinds': 'open' } })).toBe(
+      'scene.apply',
+    );
+    await expect(key('scene.apply', { entities: ['lock.front_door'] })).rejects.toMatchObject({
+      code: ErrorCodes.InvalidParams,
+    });
+    // A stored scene is looked through: Leaving includes the front door lock, Movie night doesn't.
+    expect(await key('scene.turn_on', { entity_id: 'scene.leaving' })).toBe('scene.turn_on#protected');
+    expect(await key('scene.turn_on', { entity_id: 'scene.movie' })).toBe('scene.turn_on');
+    expect(
+      (
+        await gate(plugin, 'scene.apply', {
+          entities: { 'lock.front_door': 'unlocked', 'light.kitchen': 'on', 'lock.made_up': 'x' },
+        })
+      ).summary.confirmLiteral,
+    ).toBe('Front Door, lock.made_up');
+    expect((await gate(plugin, 'scene.turn_on', { entity_id: 'scene.leaving' })).summary.confirmLiteral).toBe(
+      'Leaving',
+    );
+  });
+
   it('asks for the name of what a locked operation affects', async () => {
     const { plugin } = await setup();
     expect((await gate(plugin, 'lock.unlock', { entity_id: 'lock.front_door' })).summary).toEqual({
