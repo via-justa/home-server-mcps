@@ -164,6 +164,10 @@ Every session is signed out afterwards.
 
 <!-- External links -->
 
+## License
+
+[MIT](LICENSE)
+
 [mcp]: https://modelcontextprotocol.io/
 [mcp-tools]: https://modelcontextprotocol.io/specification/2025-11-25/server/tools
 [elicitation]: https://modelcontextprotocol.io/specification/2025-11-25/client/elicitation

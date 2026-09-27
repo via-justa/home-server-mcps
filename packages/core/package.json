@@ -2,6 +2,7 @@
   "name": "@synoikia/core",
   "version": "0.1.0",
   "description": "Core process: MCP endpoints, Admin API, plugin host, permission gate",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/via-justa/home-server-mcps.git",

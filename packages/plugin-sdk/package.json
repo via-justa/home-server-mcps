@@ -2,6 +2,7 @@
   "name": "@synoikia/plugin-sdk",
   "version": "1.0.0",
   "description": "Manifest schema, RPC contract and child-side runtime for Synoikia plugins",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/via-justa/home-server-mcps.git",
