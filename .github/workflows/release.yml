@@ -9,12 +9,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      auth:
-        description: 'npm auth: "oidc" publishes through trusted publishing alone, with no token'
-        type: choice
-        options: [token, oidc]
-        default: token
 
 permissions:
   contents: read
@@ -26,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # npm trusted publishing, and provenance once the repo is public
+      id-token: write # npm trusted publishing, and provenance
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -41,14 +35,15 @@ jobs:
       - run: pnpm --filter @synoikia/plugin-sdk --filter @synoikia/core build
       - name: Publish new versions
         env:
-          # Only for a package's first publish: npm can't trust a publisher for a package that doesn't
-          # exist yet. Once each package trusts this workflow, delete the secret.
-          NODE_AUTH_TOKEN: ${{ inputs.auth != 'oidc' && secrets.NPM_TOKEN || '' }}
+          # No token: npm authenticates through trusted publishing (this repo and release.yml, with
+          # direct publishing allowed, on each package's npmjs.com settings). Empty, not unset, so the
+          # placeholder setup-node writes into .npmrc can't stand in for a token.
+          NODE_AUTH_TOKEN: ''
           # npm only accepts provenance from public source repositories.
           PROVENANCE: ${{ github.event.repository.private && 'false' || 'true' }}
           MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
-          # An OIDC-only run is a trusted-publishing check: log npm's token exchange, which says why it fails.
-          NPM_CONFIG_LOGLEVEL: ${{ inputs.auth == 'oidc' && 'verbose' || 'notice' }}
+          # A refused trusted publish only says ENEEDAUTH or E403; the reason is logged at verbose.
+          NPM_CONFIG_LOGLEVEL: verbose
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/pack"
