@@ -1,11 +1,26 @@
-<h1>
+<p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/synoikia-lockup-dark.svg" />
-    <img src="docs/assets/synoikia-lockup-light.svg" alt="Synoikia" height="64" />
+    <img src="docs/assets/synoikia-lockup-light.svg" alt="Synoikia" height="72" />
   </picture>
-</h1>
+</p>
 
-**Synoikia** is one control plane for your self-hosted MCPs: a single MCP server, extended by plugins, with one admin portal and one permission gate in front of every upstream service. Each plugin instance gets its own MCP endpoint:
+<p align="center">
+  <strong>Many households, one roof.</strong><br />
+  One control plane for your self-hosted MCPs: every service behind a single MCP server, one admin portal and one permission gate.
+</p>
+
+<p align="center">
+  <a href="#core-features">Core features</a> ·
+  <a href="#the-name">The name</a> ·
+  <a href="#deployment">Deployment</a> ·
+  <a href="#development">Development</a> ·
+  <a href="docs/design/unified-mcp-server.md">Design</a>
+</p>
+
+---
+
+Synoikia replaces a handful of separately deployed MCP servers with one, extended by plugins. Each plugin instance gets its own MCP endpoint, and every call from a model passes through the same sandbox, access levels and human approvals:
 
 ```
 https://mcp.example.com/truenas   → TrueNAS plugin
@@ -14,18 +29,52 @@ https://mcp.example.com/ha        → Home Assistant plugin
 http://admin.lan:8081             → Admin portal (separate port, login required)
 ```
 
-Each endpoint exposes two MCP tools, `search(code)` and `execute(code)`. Model-authored code runs inside an `isolated-vm` sandbox, and every upstream call passes through a permission gate:
+## Core features
 
-- Each operation has an access level, set per group with per-operation exceptions: **None**, **Read** (reads only), **Ask** (writes need a human approval, unless a narrow pre-approval rule matches) or **Write** (writes run without asking once acknowledged).
-- Approvals are given on an approval page that the MCP client asks you to open (URL-mode elicitation), signed in with your authenticator app. The client that made the call can't approve it.
-- Destructive operations are `locked`: they are off until you set them to Ask, always need a human, a typed confirmation and a fresh authenticator code, and can never be pre-approved or set to Write.
-- Each connected client gets an access ceiling when you connect it (OAuth consent) or create its token: read only by default.
+**🔌 One server, many plugins.** TrueNAS, Seerr and Home Assistant ship as core plugins; more can be installed from plugin repositories you add, with optional [minisign](https://jedisct1.github.io/minisign/) signatures. Run several instances of the same plugin, each on its own endpoint.
 
-**Design:** [`docs/design/unified-mcp-server.md`](docs/design/unified-mcp-server.md). The original per-server designs and UI mockups it builds on are in [`docs/reference/`](docs/reference/).
+**🧰 Two tools per endpoint.** Every endpoint exposes just `search(code)` and `execute(code)`. The model discovers operations and calls them with code that runs inside an `isolated-vm` sandbox with no Node APIs, network or timers.
 
-> **Status:** the core is complete (design §13, phases 0–16): encryption, catalog sync with access levels, the permission-confined plugin host, the `isolated-vm` sandbox, the permission gate with pre-approval rules and human approval, admin auth (local + TOTP + OIDC), MCP auth (external, bearer, OAuth 2.1), the Admin API and portal, ntfy/webhook notifications, plugin repositories with minisign signing, and maintenance jobs. Not yet: the TrueNAS, Seerr and Home Assistant plugin logic (phases 17–19). See the progress table in design §13.
+**🛂 A permission gate on every call.** Each operation has an access level, set per group with per-operation exceptions:
 
-The name is the ancient Greek _synoikia_ (συνοικία): separate households joined under one roof. The mark is the same idea, four dwellings drawn into a shared hearth.
+| Level     | Behaviour                                                                   |
+| --------- | --------------------------------------------------------------------------- |
+| **None**  | Hidden from the model                                                       |
+| **Read**  | Reads only                                                                  |
+| **Ask**   | Writes wait for a human approval, unless a narrow pre-approval rule matches |
+| **Write** | Writes run without asking, once acknowledged                                |
+
+**✋ Human approvals the model can't fake.** The MCP client asks you to open an approval page, where you sign in and decide with your authenticator app. The client that made the call can't approve it. Destructive operations are `locked`: off until you set them to Ask, and then they always need a human, a typed confirmation and a fresh authenticator code, and can never be pre-approved or set to Write.
+
+**🔐 Per-client ceilings.** Each connected client gets an access ceiling when you connect it (OAuth consent) or create its token: read only by default. MCP clients authenticate with OAuth 2.1, bearer tokens or your existing reverse-proxy auth (such as Cloudflare Access).
+
+**🧱 Isolated plugins.** Every plugin instance runs in its own child process under the Node permission model, with a scrubbed environment and a memory cap. Secrets are encrypted at rest and handed only to the instance that owns them.
+
+**🙈 Secrets stay out of the transcript.** Passwords, tokens and keys are redacted from results, logs, approvals and the audit trail, including each instance's actual secret values wherever they appear in text.
+
+**📜 Audit log and notifications.** Every call, decision and admin change is audited and exportable. ntfy and signed webhooks tell you when something needs you.
+
+**🖥️ An admin portal on your LAN.** A separate, login-protected port with local accounts, TOTP and OIDC single sign-on, for endpoints, access levels, pre-approval rules, clients, plugins and settings.
+
+**🔄 Self-maintaining catalogs.** Each instance re-syncs its operation catalog when the upstream version changes and on a daily schedule, and keeps serving the last good catalog if the upstream is briefly unreachable.
+
+## The name
+
+_Synoikia_ (Greek συνοικία) comes from _syn_ (σύν, "together") and _oikos_ (οἶκος, "house"): households living together. It shares its root with _synoikismos_, or [synoecism](https://en.wikipedia.org/wiki/Synoecism), the ancient Greek practice of joining separate villages into a single city. Athens traced its own founding to one, and marked it every year with a festival called the Synoikia.
+
+That is what this project does for your MCP servers: services that used to run scattered, each with its own deployment and its own rules, now live under one roof and answer to one household.
+
+<p align="center">
+  <img src="docs/assets/synoikia-mark.svg" alt="" width="72" />
+</p>
+
+The mark draws the same idea: four identical dwellings, joined by paths to one shared hearth at the centre, inside the wall of the city.
+
+## Status
+
+The core is complete (design §13, phases 0–16): encryption, catalog sync with access levels, the permission-confined plugin host, the `isolated-vm` sandbox, the permission gate with pre-approval rules and human approval, admin auth (local + TOTP + OIDC), MCP auth (external, bearer, OAuth 2.1), the Admin API and portal, ntfy/webhook notifications, plugin repositories with minisign signing, and maintenance jobs.
+
+Not yet: the TrueNAS, Seerr and Home Assistant plugin logic (phases 17–19). See the progress table in design §13. The full design is in [`docs/design/unified-mcp-server.md`](docs/design/unified-mcp-server.md); the original per-server designs and UI mockups it builds on are in [`docs/reference/`](docs/reference/).
 
 ## Layout
 
