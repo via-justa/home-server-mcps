@@ -34,7 +34,7 @@ async function startEcho(config: Record<string, unknown> = {}, secrets: Record<s
   const proc = new PluginProcess({ dir: FIXTURE, entry: 'index.mjs', instanceId: 'inst-1', defaultTimeoutMs: 2000 });
   proc.start();
   cleanup.push(() => proc.stop(500));
-  await proc.call('init', { instanceId: 'inst-1', config, secrets, sdkVersion: '1.0.0' });
+  await proc.call('init', { instanceId: 'inst-1', config, secrets, sdkVersion: '0.1.0' });
   return proc;
 }
 

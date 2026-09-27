@@ -5,7 +5,7 @@ const minimal = {
   id: 'example',
   name: 'Example',
   version: '1.0.0',
-  sdk: '^1.0.0',
+  sdk: '^0.1.0',
   entry: 'dist/index.js',
   binding: { namespace: 'example', functions: ['call'] },
   connection: { schema: { type: 'object' } },

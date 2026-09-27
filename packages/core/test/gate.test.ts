@@ -36,7 +36,7 @@ async function setup(settings: Partial<InstanceSettings> = {}) {
   const proc = new PluginProcess({ dir: FIXTURE, entry: manifest.entry, instanceId, defaultTimeoutMs: 5000 });
   proc.start();
   cleanup.push(() => proc.stop(500));
-  await proc.call('init', { instanceId, config: {}, secrets: {}, sdkVersion: '1.0.0' });
+  await proc.call('init', { instanceId, config: {}, secrets: {}, sdkVersion: '0.1.0' });
   applyCatalogSync(db, instanceId, await proc.call('syncCatalog'));
 
   const approvals = new ApprovalService(db, new ApprovalLinkService(db));

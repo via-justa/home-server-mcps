@@ -1,0 +1,54 @@
+name: Release
+
+# Publishes the packages plugin repos build and test against: the plugin SDK, and core (for its
+# plugin harness, `@synoikia/core/testing`). A package is published when its package.json version
+# isn't on npm yet, so a release is a version bump merged to main.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency: release
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing and provenance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing (OIDC) needs npm >= 11.5.1; Node 22 ships npm 10.
+      - run: npm install -g npm@^11.5.1
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @synoikia/plugin-sdk --filter @synoikia/core build
+      - name: Publish new versions
+        env:
+          # Only for a package's first publish: npm can't trust a publisher for a package that doesn't
+          # exist yet. Once each package trusts this workflow, delete the secret.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pack"
+          # SDK first: core's published dependency on it must resolve.
+          for dir in packages/plugin-sdk packages/core; do
+            name=$(node -p "require('./$dir/package.json').name")
+            version=$(node -p "require('./$dir/package.json').version")
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "$name@$version is already published"
+              continue
+            fi
+            # pnpm pack rewrites workspace: ranges to real versions; npm publishes with provenance.
+            tarball=$(cd "$dir" && pnpm pack --pack-destination "$RUNNER_TEMP/pack" | tail -n 1)
+            npm publish "$tarball" --access public --provenance
+          done
