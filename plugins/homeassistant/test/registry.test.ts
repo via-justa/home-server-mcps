@@ -1,6 +1,7 @@
 import { ErrorCodes, RegistryEntrySchema } from '@home-server-mcps/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 import { buildView, normalizeServiceParams, resolveTarget, toRegistryEntries } from '../src/registry.js';
+import type { EntityFilter } from '../src/registry.js';
 import type { RawRegistry } from '../src/registry.js';
 
 const raw: RawRegistry = {
@@ -35,8 +36,10 @@ const raw: RawRegistry = {
   ],
 };
 const view = buildView(raw);
-const ids = (target: Parameters<typeof resolveTarget>[1], domain = 'light') =>
-  resolveTarget(view, target, domain).map((t) => t.id);
+const only = (...domain: string[]): EntityFilter => [{ domain }];
+const ANY: EntityFilter = [];
+const ids = (target: Parameters<typeof resolveTarget>[1], filter: EntityFilter = only('light')) =>
+  resolveTarget(view, target, filter).map((t) => t.id);
 
 describe('the registry view (HA §2.4)', () => {
   it('joins areas through devices, names entities, and keeps state-only entities', () => {
@@ -79,22 +82,43 @@ describe('target resolution (HA §7 phase 4)', () => {
       'light.reading_lamp',
     ]);
     // A label covers entities labelled directly, and those in a labelled area or device.
-    expect(ids({ label_id: ['outdoor'] }, 'homeassistant')).toEqual(['cover.garage_door', 'switch.porch']);
+    expect(ids({ label_id: ['outdoor'] }, ANY)).toEqual(['cover.garage_door', 'switch.porch']);
+  });
+
+  it('follows an integration filter, so integration services find their entities in a room', () => {
+    const withPlayers = buildView({
+      ...raw,
+      entities: [
+        ...raw.entities,
+        { entity_id: 'media_player.sonos', platform: 'sonos', area_id: 'living_room' },
+        { entity_id: 'media_player.tv', platform: 'cast', area_id: 'living_room' },
+      ],
+    });
+    const sonos: EntityFilter = [{ integration: 'sonos', domain: ['media_player'] }];
+    expect(resolveTarget(withPlayers, { area_id: ['living_room'] }, sonos).map((t) => t.id)).toEqual([
+      'media_player.sonos',
+    ]);
+    // Alternatives are OR'd.
+    expect(
+      resolveTarget(withPlayers, { area_id: ['living_room'] }, [{ integration: 'sonos' }, { domain: ['light'] }]).map(
+        (t) => t.id,
+      ),
+    ).toEqual(['light.ceiling', 'light.reading_lamp', 'media_player.sonos']);
   });
 
   it("only reaches the service's domain through areas, devices, floors and labels", () => {
-    expect(ids({ area_id: ['garage'] }, 'light')).toEqual([]);
-    expect(ids({ area_id: ['garage'] }, 'cover')).toEqual(['cover.garage_door']);
-    expect(ids({ label_id: ['outdoor'] }, 'switch')).toEqual(['switch.porch']);
+    expect(ids({ area_id: ['garage'] }, only('light'))).toEqual([]);
+    expect(ids({ area_id: ['garage'] }, only('cover'))).toEqual(['cover.garage_door']);
+    expect(ids({ label_id: ['outdoor'] }, only('switch'))).toEqual(['switch.porch']);
     // homeassistant.turn_on and friends act on any domain.
-    expect(ids({ area_id: ['living_room'] }, 'homeassistant')).toEqual(['light.ceiling', 'light.reading_lamp']);
+    expect(ids({ area_id: ['living_room'] }, ANY)).toEqual(['light.ceiling', 'light.reading_lamp']);
     // Entities named directly are kept as given.
-    expect(ids({ entity_id: ['cover.garage_door'] }, 'light')).toEqual(['cover.garage_door']);
+    expect(ids({ entity_id: ['cover.garage_door'] }, only('light'))).toEqual(['cover.garage_door']);
   });
 
   it('dedupes a mix of direct entities and an area, and names and scopes each target', () => {
     expect(
-      resolveTarget(view, { entity_id: ['light.ceiling', 'light.kitchen'], area_id: ['living_room'] }, 'light'),
+      resolveTarget(view, { entity_id: ['light.ceiling', 'light.kitchen'], area_id: ['living_room'] }, only('light')),
     ).toEqual([
       {
         kind: 'entity',
@@ -113,7 +137,7 @@ describe('target resolution (HA §7 phase 4)', () => {
   });
 
   it('treats entity_id "all" as every entity of the service domain', () => {
-    expect(ids({ entity_id: ['all'] }, 'light')).toEqual([
+    expect(ids({ entity_id: ['all'] }, only('light'))).toEqual([
       'light.ceiling',
       'light.kitchen',
       'light.moved',
@@ -128,16 +152,16 @@ describe('target resolution (HA §7 phase 4)', () => {
     [{ floor_id: ['roof'] }, /Unknown floor/],
     [{ label_id: ['secret'] }, /Unknown label/],
   ])('fails closed on %j', (target, message) => {
-    expect(() => resolveTarget(view, target, 'light')).toThrow(message);
+    expect(() => resolveTarget(view, target, only('light'))).toThrow(message);
     try {
-      resolveTarget(view, target, 'light');
+      resolveTarget(view, target, only('light'));
     } catch (err) {
       expect((err as { code?: string }).code).toBe(ErrorCodes.TargetResolutionFailed);
     }
   });
 
   it('resolves no target to no entities', () => {
-    expect(resolveTarget(view, undefined, 'light')).toEqual([]);
+    expect(resolveTarget(view, undefined, only('light'))).toEqual([]);
   });
 });
 

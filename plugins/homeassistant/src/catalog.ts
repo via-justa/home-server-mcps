@@ -1,4 +1,5 @@
 import type { OperationDescriptor } from '@home-server-mcps/plugin-sdk';
+import type { EntityFilter } from './registry.js';
 
 /**
  * The Home Assistant catalog (HA §2.2–§2.3): every `domain.service` from `get_services`, plus a fixed
@@ -265,6 +266,29 @@ export const FIXED_COMMANDS = fixedCommands();
 export const REGISTRY_ID_FIELD: Record<string, string> = Object.fromEntries(
   Object.entries(REGISTRIES).map(([name, reg]) => [name, reg.id]),
 );
+
+const asList = (v: unknown): string[] =>
+  typeof v === 'string' ? [v] : Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+
+/**
+ * The entities a service acts on, from its target selector (`target.entity`: one filter or a list of
+ * alternatives, each with an optional `domain` and `integration`). No filter, or any alternative
+ * without one, means every entity.
+ */
+export function entityFilter(info: ServiceInfo | undefined): EntityFilter {
+  const target = info?.target;
+  if (!target || typeof target !== 'object') return [];
+  const raw = (target as { entity?: unknown }).entity;
+  const entries = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? [raw] : [];
+  const filter = entries.map((e) => {
+    const f = (e ?? {}) as { domain?: unknown; integration?: unknown };
+    return {
+      ...(asList(f.domain).length ? { domain: asList(f.domain) } : {}),
+      ...(typeof f.integration === 'string' && f.integration ? { integration: f.integration } : {}),
+    };
+  });
+  return filter.some((f) => !f.domain && !f.integration) ? [] : filter;
+}
 
 const MATCH_PROFILES: Record<string, string> = { 'climate.set_temperature': 'climate.set_temperature' };
 

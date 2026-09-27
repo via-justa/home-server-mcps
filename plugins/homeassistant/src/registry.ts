@@ -20,6 +20,7 @@ export interface RawRegistry {
   }[];
   entities: {
     entity_id: string;
+    platform?: string | null;
     device_id?: string | null;
     area_id?: string | null;
     name?: string | null;
@@ -36,6 +37,8 @@ export interface EntityView {
   id: string;
   name: string;
   domain: string;
+  /** The integration that provides it (entity registry `platform`). */
+  platform?: string;
   area?: string;
   device?: string;
   deviceClass?: string;
@@ -78,6 +81,7 @@ export function buildView(raw: RawRegistry): RegistryView {
       id,
       name: friendly || reg?.name || reg?.original_name || id,
       domain: id.split('.')[0]!,
+      platform: orUndef(reg?.platform),
       // An entity's own area wins; otherwise it inherits its device's.
       area: orUndef(reg?.area_id) ?? (device ? devices.get(device)?.area : undefined),
       device,
@@ -169,11 +173,26 @@ const unresolved = (what: string, ids: string[]) =>
   new PluginError(ErrorCodes.TargetResolutionFailed, `Unknown ${what}: ${ids.join(', ')}`);
 
 /**
- * Expands a normalized `target` into the concrete entities it covers (HA §3.1 step 5), deduplicated
- * and sorted. `entity_id: all` means every entity of the service's domain. Entities named directly
- * are kept as given (HA rejects a wrong domain itself).
+ * Which entities a service acts on, from its `get_services` target selector: a list of alternatives,
+ * each narrowing by domain and/or integration. An empty list means any entity, as HA treats a
+ * selector without filters.
  */
-export function resolveTarget(view: RegistryView, target: Target | undefined, serviceDomain: string): ResolvedTarget[] {
+export type EntityFilter = { domain?: string[]; integration?: string }[];
+
+const passes = (e: EntityView, filter: EntityFilter) =>
+  filter.length === 0 ||
+  filter.some(
+    (f) => (!f.domain?.length || f.domain.includes(e.domain)) && (!f.integration || f.integration === e.platform),
+  );
+
+/**
+ * Expands a normalized `target` into the concrete entities it covers (HA §3.1 step 5), deduplicated
+ * and sorted. Areas, devices, floors, labels and `entity_id: all` only reach entities the service
+ * acts on, per its target selector: `light.turn_on` on a room doesn't touch the thermostat, and
+ * `sonos.snapshot` finds the room's Sonos media players. Entities named directly are kept as given
+ * (HA rejects a wrong one itself).
+ */
+export function resolveTarget(view: RegistryView, target: Target | undefined, filter: EntityFilter): ResolvedTarget[] {
   if (!target) return [];
   const ids = new Set<string>();
   const check = (what: string, list: string[] | undefined, has: (id: string) => boolean) => {
@@ -183,7 +202,7 @@ export function resolveTarget(view: RegistryView, target: Target | undefined, se
   };
   const entityList = target.entity_id ?? [];
   if (entityList.includes('all')) {
-    for (const e of view.entities.values()) if (e.domain === serviceDomain) ids.add(e.id);
+    for (const e of view.entities.values()) if (passes(e, filter)) ids.add(e.id);
   }
   for (const id of check(
     'entity',
@@ -201,11 +220,8 @@ export function resolveTarget(view: RegistryView, target: Target | undefined, se
     for (const a of view.areas.values()) if (a.labels.some((l) => labels.has(l))) areas.add(a.id);
     for (const d of view.devices.values()) if (d.labels.some((l) => labels.has(l))) devices.add(d.id);
   }
-  // Like HA itself, an area, device, floor or label only reaches entities of the service's domain
-  // (light.turn_on on a room doesn't touch its thermostat); homeassistant.* services span domains.
-  const anyDomain = serviceDomain === 'homeassistant';
   for (const e of view.entities.values()) {
-    if (!anyDomain && e.domain !== serviceDomain) continue;
+    if (!passes(e, filter)) continue;
     if ((e.area && areas.has(e.area)) || (e.device && devices.has(e.device)) || e.labels.some((l) => labels.has(l)))
       ids.add(e.id);
   }

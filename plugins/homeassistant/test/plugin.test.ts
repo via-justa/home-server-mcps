@@ -150,6 +150,22 @@ describe('Home Assistant plugin', () => {
     });
   });
 
+  it("finds an integration service's entities in a room, by its target selector", async () => {
+    const { plugin } = await setup();
+    expect((await gate(plugin, 'sonos.snapshot', { area_id: 'living_room' })).targets.map((t) => t.id)).toEqual([
+      'media_player.sonos_living',
+    ]);
+    // A service with no filter (homeassistant.turn_on) covers every domain in the room.
+    expect((await gate(plugin, 'homeassistant.turn_on', { area_id: 'living_room' })).targets.map((t) => t.id)).toEqual([
+      'climate.thermostat',
+      'cover.blinds',
+      'light.ceiling',
+      'light.reading_lamp',
+      'media_player.sonos_living',
+      'media_player.tv',
+    ]);
+  });
+
   it('asks for the name of what a locked operation affects', async () => {
     const { plugin } = await setup();
     expect((await gate(plugin, 'lock.unlock', { entity_id: 'lock.front_door' })).summary).toEqual({

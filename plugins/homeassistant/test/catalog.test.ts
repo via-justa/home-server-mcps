@@ -1,6 +1,6 @@
 import { OperationDescriptorSchema } from '@home-server-mcps/plugin-sdk';
 import { describe, expect, it } from 'vitest';
-import { buildCatalog, FIXED_COMMANDS, isServiceKey, LOCKED_SERVICES } from '../src/catalog.js';
+import { buildCatalog, entityFilter, FIXED_COMMANDS, isServiceKey, LOCKED_SERVICES } from '../src/catalog.js';
 import type { Services } from '../src/catalog.js';
 import { SERVICES } from './fake-ha.js';
 
@@ -97,5 +97,17 @@ describe('classification (HA §2.3, §7 phase 1)', () => {
     expect(isServiceKey('cover.open_cover#garage')).toBe(true);
     expect(isServiceKey('get_states')).toBe(false);
     expect(isServiceKey('config/automation/config/get')).toBe(false);
+  });
+
+  it("reads a service's target selector as an entity filter, in either shape", () => {
+    expect(entityFilter({ target: { entity: { domain: 'light' } } })).toEqual([{ domain: ['light'] }]);
+    expect(entityFilter({ target: { entity: [{ integration: 'sonos', domain: ['media_player'] }] } })).toEqual([
+      { integration: 'sonos', domain: ['media_player'] },
+    ]);
+    // No filter, or an alternative without one, means every entity.
+    expect(entityFilter({ target: { entity: {} } })).toEqual([]);
+    expect(entityFilter({ target: { entity: [{ domain: 'light' }, {}] } })).toEqual([]);
+    expect(entityFilter({ target: {} })).toEqual([]);
+    expect(entityFilter(undefined)).toEqual([]);
   });
 });

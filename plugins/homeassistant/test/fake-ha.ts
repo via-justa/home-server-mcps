@@ -66,6 +66,13 @@ export const SERVICES: Json = {
     toggle: { name: 'Generic toggle', target: { entity: {} }, fields: {} },
   },
   automation: { trigger: { name: 'Trigger', target: { entity: { domain: 'automation' } }, fields: {} } },
+  sonos: {
+    snapshot: {
+      name: 'Snapshot',
+      target: { entity: [{ integration: 'sonos', domain: ['media_player'] }] },
+      fields: {},
+    },
+  },
   weather: {
     get_forecasts: {
       name: 'Get forecasts',
@@ -107,6 +114,8 @@ const ENTITIES = [
   { entity_id: 'climate.thermostat', device_id: null, area_id: 'living_room', labels: [] },
   { entity_id: 'switch.porch', device_id: null, area_id: null, labels: ['outdoor'] },
   { entity_id: 'weather.home', device_id: null, area_id: null, labels: [] },
+  { entity_id: 'media_player.sonos_living', platform: 'sonos', device_id: null, area_id: 'living_room', labels: [] },
+  { entity_id: 'media_player.tv', platform: 'cast', device_id: null, area_id: 'living_room', labels: [] },
 ];
 const STATES = [
   ['light.reading_lamp', 'on', { friendly_name: 'Reading Lamp' }],
@@ -118,6 +127,8 @@ const STATES = [
   ['climate.thermostat', 'heat', { friendly_name: 'Thermostat', temperature: 20 }],
   ['switch.porch', 'off', { friendly_name: 'Porch Light' }],
   ['weather.home', 'sunny', { friendly_name: 'Home' }],
+  ['media_player.sonos_living', 'idle', { friendly_name: 'Living Room Sonos' }],
+  ['media_player.tv', 'off', { friendly_name: 'TV' }],
   [
     'camera.driveway',
     'idle',

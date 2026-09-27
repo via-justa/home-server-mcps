@@ -2,6 +2,7 @@ import { ErrorCodes, notify, PluginError } from '@home-server-mcps/plugin-sdk';
 import type { InitParams, PluginHandlers, ResolvedTarget } from '@home-server-mcps/plugin-sdk';
 import {
   buildCatalog,
+  entityFilter,
   FIXED_COMMANDS,
   isSensitiveTarget,
   isServiceKey,
@@ -222,7 +223,7 @@ export function createHomeAssistantPlugin(): PluginHandlers {
         const split = SPLITS[key];
         if (split && params.target) {
           const v = await loadView();
-          const targets = resolveTarget(v, params.target as Target, key.split('.')[0]!);
+          const targets = resolveTarget(v, params.target as Target, entityFilter(catalog?.services.get(key)));
           if (targets.some((t) => isSensitiveTarget(split, v.entities.get(t.id) ?? { domain: '' })))
             return { key: `${key}${split}`, params };
         }
@@ -237,7 +238,8 @@ export function createHomeAssistantPlugin(): PluginHandlers {
 
     async resolveTargets({ key, params }) {
       if (!isServiceKey(key) || !isObject(params) || !params.target) return [];
-      return resolveTarget(await loadView(), params.target as Target, key.split('.')[0]!);
+      const info = (await currentCatalog()).services.get(baseKey(key));
+      return resolveTarget(await loadView(), params.target as Target, entityFilter(info));
     },
 
     async prepareWrite({ key, params }) {
