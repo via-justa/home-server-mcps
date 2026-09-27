@@ -57,9 +57,10 @@ Besides core's global list (passwords, tokens, secrets, …), results are redact
 ## Development
 
 ```sh
-pnpm --filter @home-server-mcps/plugin-truenas test    # unit tests + SDK conformance against a fake TrueNAS
+pnpm --filter @home-server-mcps/plugin-truenas test    # builds, then unit tests, SDK conformance and end to end
 pnpm --filter @home-server-mcps/plugin-truenas build   # dist/index.js (self-contained bundle)
-pnpm --filter @home-server-mcps/core test truenas      # core + built plugin + fake TrueNAS, end to end
 ```
+
+The end-to-end suite (`test/e2e.test.ts`) runs the real core on the built bundle through core's plugin harness (`@home-server-mcps/core/testing`).
 
 The fake server (`test/fake-truenas.ts`) speaks the same JSON-RPC over WebSocket with a slice of a real `core.get_methods`. The live checklist for a real system is in [`docs/runbook-truenas.md`](../../docs/runbook-truenas.md).

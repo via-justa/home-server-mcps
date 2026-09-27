@@ -17,8 +17,6 @@ import { PluginSupervisor } from '../src/plugins/supervisor.js';
 import type { InstanceStatus } from '../src/plugins/supervisor.js';
 
 const FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/plugins/echo');
-const REPO_PLUGINS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../plugins');
-
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => {
   for (const fn of cleanup.splice(0).reverse()) await fn();
@@ -301,37 +299,4 @@ describe('discovery', () => {
     expect(db.select().from(plugins).all()).toHaveLength(1);
     expect(db.select().from(plugins).get()).toMatchObject({ source: 'repo', status: 'invalid' });
   });
-
-  it.skipIf(!existsSync(path.join(REPO_PLUGINS, 'truenas', 'dist', 'index.js')))(
-    'discovers the built core plugins and runs their bundles under the permission model',
-    async () => {
-      const found = discoverPlugins([{ dir: REPO_PLUGINS, source: 'core' }]);
-      expect(found.map((p) => [p.status, p.status === 'ok' ? p.manifest.id : p.pluginId])).toEqual([
-        ['ok', 'homeassistant'],
-        ['ok', 'seerr'],
-        ['ok', 'truenas'],
-      ]);
-      for (const p of found) {
-        if (p.status !== 'ok') continue;
-        const proc = new PluginProcess({
-          dir: p.dir,
-          entry: p.manifest.entry,
-          instanceId: 'i',
-          defaultTimeoutMs: 5000,
-        });
-        proc.start();
-        cleanup.push(() => proc.stop(500));
-        // Every core plugin is real now: each loads its bundle (WebSocket client, YAML parser, fetch)
-        // with no access outside its own directory, takes its config, and reports an unreachable
-        // upstream cleanly.
-        const init: Record<string, { config: Record<string, unknown>; secrets: Record<string, string> }> = {
-          truenas: { config: { baseUrl: 'http://127.0.0.1:1' }, secrets: { apiKey: 'k' } },
-          seerr: { config: { baseUrl: 'http://127.0.0.1:1', authMethod: 'apiKey' }, secrets: { apiKey: 'k' } },
-          homeassistant: { config: { baseUrl: 'http://127.0.0.1:1' }, secrets: { token: 't' } },
-        };
-        await proc.call('init', { instanceId: 'i', ...init[p.manifest.id]!, sdkVersion: '1.0.0' });
-        await expect(proc.call('testConnection')).resolves.toMatchObject({ ok: false });
-      }
-    },
-  );
 });

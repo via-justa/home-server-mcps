@@ -67,9 +67,10 @@ Settings reads return credentials, so results are redacted under core's global l
 ## Development
 
 ```sh
-pnpm --filter @home-server-mcps/plugin-seerr test    # unit tests + SDK conformance against a fake Seerr
+pnpm --filter @home-server-mcps/plugin-seerr test    # builds, then unit tests, SDK conformance and end to end
 pnpm --filter @home-server-mcps/plugin-seerr build   # dist/index.js (self-contained bundle)
-pnpm --filter @home-server-mcps/core test seerr      # core + built plugin + fake Seerr, end to end
 ```
+
+The end-to-end suite (`test/e2e.test.ts`) runs the real core on the built bundle through core's plugin harness (`@home-server-mcps/core/testing`).
 
 The fake server (`test/fake-seerr.ts`) serves `/api/v1` and the spec. The spec fixture, `test/fixtures/seerr-api.yml`, is Seerr's own (MIT) from tag `v3.4.1`; update it to pick up a newer release in the tests. The live checklist for a real instance is in [`docs/runbook-seerr.md`](../../docs/runbook-seerr.md).
