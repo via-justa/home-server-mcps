@@ -88,7 +88,7 @@ importers:
         specifier: ^2.2.1
         version: 2.2.1
       '@synoikia/plugin-sdk':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../plugin-sdk
       ajv:
         specifier: ^8.20.0
