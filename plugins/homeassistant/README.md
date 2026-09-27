@@ -86,9 +86,10 @@ Besides core's global list: `access_token`, `token`, `webhook_id`, `entity_pictu
 ## Development
 
 ```sh
-pnpm --filter @home-server-mcps/plugin-homeassistant test    # unit tests + SDK conformance against a fake HA
+pnpm --filter @home-server-mcps/plugin-homeassistant test    # builds, then unit tests, SDK conformance and end to end
 pnpm --filter @home-server-mcps/plugin-homeassistant build   # dist/index.js (self-contained bundle)
-pnpm --filter @home-server-mcps/core test homeassistant      # core + built plugin + fake HA, end to end
 ```
+
+The end-to-end suite (`test/e2e.test.ts`) runs the real core on the built bundle through core's plugin harness (`@home-server-mcps/core/testing`).
 
 The fake server (`test/fake-ha.ts`) speaks the WebSocket API and the REST config endpoints on one port. The live checklist for a real instance is in [`docs/runbook-homeassistant.md`](../../docs/runbook-homeassistant.md).
