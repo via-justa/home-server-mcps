@@ -271,9 +271,12 @@ export function createGateBindings(
           preapproved = true;
           decision = 'auto-approved:level';
         } else if (!operation.locked && access.reachable && access.level === 'ask') {
+          const targetCovers = operation.matchProfile
+            ? rt.manifest.matchProfiles[operation.matchProfile]?.find((f) => f.field === '$targets')?.covers
+            : undefined;
           const outcome = evaluatePreApproval(
             deps.db,
-            { instanceId: rt.instanceId, operationId: operation.id, params, targets },
+            { instanceId: rt.instanceId, operationId: operation.id, params, targets, targetCovers },
             now(),
           );
           if (outcome.kind === 'auto_approved') {

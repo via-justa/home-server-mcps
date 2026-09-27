@@ -71,24 +71,6 @@ function checkMatchAgainstProfile(manifest: Manifest, op: OperationRow, match: R
   if (misfit) throw misfit;
 }
 
-/**
- * A `$targets` condition checks every resolved target, so the raw target params it stands for (the
- * profile field's `covers`, e.g. HA's `/target`) count as covered under strict matching. Stored as an
- * explicit "any value" condition, present exactly while the rule has a `$targets` condition.
- */
-export function withTargetCoverage(
-  manifest: Pick<Manifest, 'matchProfiles'>,
-  op: Pick<OperationRow, 'matchProfile'>,
-  match: RuleInput['match'],
-): RuleInput['match'] {
-  const covers = (op.matchProfile ? manifest.matchProfiles[op.matchProfile] : undefined)?.find(
-    (f) => f.field === '$targets',
-  )?.covers;
-  if (!covers) return match;
-  const rest = match.filter((c) => !(c.field === covers && 'op' in c && c.op === 'any'));
-  return rest.some((c) => c.field === '$targets') ? [...rest, { field: covers, op: 'any' }] : rest;
-}
-
 function describe(db: Db, instanceId: string, rule: RuleRow, op: OperationRow) {
   const access = resolveAccess(db, instanceId, op.key);
   return {
@@ -120,11 +102,10 @@ export function createRule(
   raw: unknown,
   actor: { userId?: string } = {},
 ) {
-  const parsed = RuleInputSchema.parse(raw);
-  const op = loadOperation(db, instanceId, parsed.operationId);
+  const input = RuleInputSchema.parse(raw);
+  const op = loadOperation(db, instanceId, input.operationId);
   if (op.locked) throw new ConflictError('operation_locked', `${op.key} is locked and can never be pre-approved`);
-  checkMatchAgainstProfile(manifest, op, parsed.match);
-  const input = { ...parsed, match: withTargetCoverage(manifest, op, parsed.match) };
+  checkMatchAgainstProfile(manifest, op, input.match);
   const id = randomUUID();
   db.transaction((tx) => {
     tx.insert(preApprovalRules)
@@ -175,7 +156,7 @@ export function updateRule(
   checkMatchAgainstProfile(manifest, op, input.match);
   const set = {
     operationId: op.id,
-    match: withTargetCoverage(manifest, op, input.match),
+    match: input.match,
     rateLimit: input.rateLimit ?? null,
     windowSeconds: input.rateLimit ? (input.windowSeconds ?? 3600) : null,
     expiresAt: input.expiresAt ?? null,
