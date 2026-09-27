@@ -363,6 +363,29 @@ Installation, update, removal, and repo add/remove/key-change are written to the
 - **Supervision.** If the child crashes, the instance status becomes `error`. It restarts with exponential backoff (1 s → 60 s max), and the incident is audited and sent to notifiers (§9). Start, stop and restart run one at a time per instance; a stop or restart kills a child still in `init` instead of waiting for it, so at most one child per instance is ever alive. While the child is down, in-flight `execute` calls fail with a structured `PluginUnavailable` error. The permission gate itself does not fail open; it never needs the plugin in order to _deny_.
 - **Known limit: network egress is not restricted.** The Node permission model does not cover network access. A malicious plugin can reach any host the container can. The manifest's `network.hosts` is a _declaration_ shown at install time, not enforcement. Container-level egress policy is the documented mitigation, and per-plugin egress control is an open decision (§14).
 
+### 4.5 Testing a plugin end to end
+
+A plugin proves itself against the real core from its **own** package. Core's test suite never names a plugin. Core exports a harness for this, `@synoikia/core/testing`, and a plugin adds `@synoikia/core` as a devDependency:
+
+```ts
+const h = await startPluginHarness({ pluginDir, connection: { baseUrl: fake.url, apiKey } });
+h.setGroupLevel('pool.dataset', 'ask');
+await h.execute(`return await truenas.call('pool.dataset.create', { name: 'tank/apps' })`, {
+  onApproval: (a) => a.approve(),
+});
+```
+
+What `startPluginHarness` does:
+
+- It copies the plugin's release files (`manifest.json`, `package.json` and the entry's top-level path) into a temporary core-plugins directory.
+- It boots core on that directory with an in-memory database, creates an instance and syncs it. The bundle runs as a permission-confined child, exactly as in production.
+- A plugin whose entry isn't built fails with an error instead of being skipped. For this reason plugin `test` scripts build first.
+
+The harness offers:
+
+| Area | What it provides |
+|
+
 ---
 
 ## 5. Call Path & Permission Gate

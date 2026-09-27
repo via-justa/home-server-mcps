@@ -10,6 +10,14 @@
   },
   "type": "module",
   "main": "dist/main.js",
+  "exports": {
+    "./testing": {
+      "synoikia-source": "./src/testing/index.ts",
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",

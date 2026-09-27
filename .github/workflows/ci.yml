@@ -22,7 +22,7 @@ jobs:
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm typecheck
-      # Build first: the plugin-host tests run the bundled core plugins under the permission model.
+      # Build first: core's type declarations and the plugin bundles (plugin tests also rebuild their own).
       - run: pnpm build
       - run: pnpm test
 

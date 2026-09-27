@@ -152,18 +152,30 @@ importers:
       '@synoikia/plugin-sdk':
         specifier: workspace:*
         version: link:../../packages/plugin-sdk
+    devDependencies:
+      '@synoikia/core':
+        specifier: workspace:*
+        version: link:../../packages/core
 
   plugins/seerr:
     dependencies:
       '@synoikia/plugin-sdk':
         specifier: workspace:*
         version: link:../../packages/plugin-sdk
+    devDependencies:
+      '@synoikia/core':
+        specifier: workspace:*
+        version: link:../../packages/core
 
   plugins/truenas:
     dependencies:
       '@synoikia/plugin-sdk':
         specifier: workspace:*
         version: link:../../packages/plugin-sdk
+    devDependencies:
+      '@synoikia/core':
+        specifier: workspace:*
+        version: link:../../packages/core
 
 packages:
 
