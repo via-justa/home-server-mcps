@@ -11,7 +11,8 @@ import {
   updateOperation,
 } from '../src/catalog/groups.js';
 import { applyCatalogSync } from '../src/catalog/sync.js';
-import { createRule } from '../src/catalog/rules.js';
+import { createRule, updateRule } from '../src/catalog/rules.js';
+import { evaluatePreApproval } from '../src/gate/preapproval.js';
 import { auditLog, operationGroupAliases, operations, preApprovalRules } from '../src/db/schema.js';
 import { ConflictError, NotFoundError, ValidationError } from '../src/errors.js';
 import { catalog, op, seedInstance } from './helpers.js';
@@ -330,6 +331,99 @@ describe('re-sync of changed operations (review M14)', () => {
       .all()
       .find((a) => a.decision === 'rules_disabled_operation_changed');
     expect(audit?.detail).toMatchObject({ rules: [{ ruleId: fits.id, operationKey: 'app.upgrade' }] });
+  });
+});
+
+describe('rules on $targets (design §3.4, HA §3.5)', () => {
+  const profiles = {
+    targets: [
+      { field: '$targets', label: 'Targets', widget: 'registry-picker' as const, covers: '/target' },
+      { field: '/brightness', label: 'Brightness', widget: 'range' as const, op: 'range' as const },
+    ],
+  };
+  const manifest = { matchProfiles: profiles } as never;
+  const target = (id: string, area: string) => ({ kind: 'entity', id, name: id, scopes: { area, domain: 'light' } });
+  const living = [target('light.a', 'living_room')];
+
+  function withRules() {
+    const ctx = setup();
+    applyCatalogSync(
+      ctx.db,
+      ctx.instanceId,
+      catalog(op('app.upgrade', { matchProfile: 'targets' }), op('app.stop', { matchProfile: 'targets' })),
+      new Date(),
+      { matchProfiles: profiles },
+    );
+    const areaRule = createRule(ctx.db, manifest, ctx.instanceId, {
+      operationId: ctx.id('app.upgrade'),
+      match: [{ field: '$targets', areas: ['living_room'] }],
+      reason: 'living room lights',
+    });
+    const anyTarget = createRule(ctx.db, manifest, ctx.instanceId, {
+      operationId: ctx.id('app.stop'),
+      match: [
+        { field: '/target', op: 'any' },
+        { field: '/brightness', op: 'range', value: { max: 50 } },
+      ],
+      reason: 'dim anything',
+    });
+    const evaluate = (key: string, params: unknown, targets: ReturnType<typeof target>[], targetCovers?: string) =>
+      evaluatePreApproval(ctx.db, {
+        instanceId: ctx.instanceId,
+        operationId: ctx.id(key),
+        params,
+        targets,
+        targetCovers,
+      });
+    return { ...ctx, areaRule, anyTarget, evaluate };
+  }
+
+  it('stores a rule exactly as written, with no hidden conditions', () => {
+    const { areaRule, anyTarget, db, instanceId } = withRules();
+    expect(areaRule.match).toEqual([{ field: '$targets', areas: ['living_room'] }]);
+    // An explicit "any target" without a $targets condition is the admin's choice, and is kept.
+    expect(anyTarget.match).toEqual([
+      { field: '/target', op: 'any' },
+      { field: '/brightness', op: 'range', value: { max: 50 } },
+    ]);
+    const updated = updateRule(db, manifest, instanceId, areaRule.id, {
+      match: [{ field: '$targets', areas: ['kitchen'] }],
+    });
+    expect(updated.match).toEqual([{ field: '$targets', areas: ['kitchen'] }]);
+  });
+
+  it('lets a $targets condition cover the raw target at match time, never widening the target check', () => {
+    const { evaluate } = withRules();
+    const params = { target: { area_id: ['living_room'] } };
+    expect(evaluate('app.upgrade', params, living, '/target')).toMatchObject({ kind: 'auto_approved' });
+    // Without the profile's covers pointer, the raw target is an uncovered param under strict matching.
+    expect(evaluate('app.upgrade', params, living)).toEqual({ kind: 'no_match' });
+    // One entity outside the area still asks.
+    expect(evaluate('app.upgrade', params, [...living, target('light.k', 'kitchen')], '/target')).toEqual({
+      kind: 'no_match',
+    });
+    // Other params still need their own condition.
+    expect(evaluate('app.upgrade', { ...params, brightness: 10 }, living, '/target')).toEqual({ kind: 'no_match' });
+  });
+
+  it('applies an explicit "any target" rule on its own terms', () => {
+    const { evaluate } = withRules();
+    expect(
+      evaluate(
+        'app.stop',
+        { target: { area_id: ['kitchen'] }, brightness: 40 },
+        [target('light.k', 'kitchen')],
+        '/target',
+      ),
+    ).toMatchObject({ kind: 'auto_approved' });
+    expect(
+      evaluate(
+        'app.stop',
+        { target: { area_id: ['kitchen'] }, brightness: 90 },
+        [target('light.k', 'kitchen')],
+        '/target',
+      ),
+    ).toEqual({ kind: 'no_match' });
   });
 });
 

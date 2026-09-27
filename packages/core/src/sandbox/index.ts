@@ -141,6 +141,12 @@ function toJson(value: unknown): string {
 export async function runInSandbox(run: SandboxRun): Promise<SandboxResult> {
   const limits = { ...DEFAULT_LIMITS, ...run.limits };
   const redact = run.redact ?? ((v: unknown) => v);
+  // Redacted as strings, so secret values are scrubbed but a plugin's sensitive key named `code`
+  // (HA lock codes) can't hide the error code itself.
+  const redactError = (e: { code: string; message: string }) => ({
+    code: String(redact(e.code)),
+    message: String(redact(e.message)),
+  });
   const logs: string[] = [];
   let logBytes = 0;
   const isolate = new ivm.Isolate({ memoryLimit: limits.memoryMb });
@@ -210,7 +216,7 @@ export async function runInSandbox(run: SandboxRun): Promise<SandboxResult> {
 
     const envelope = JSON.parse(json) as
       { ok: true; value: unknown } | { ok: false; error: { code: string; message: string } };
-    if (!envelope.ok) return { ok: false, error: redact(envelope.error) as typeof envelope.error, logs };
+    if (!envelope.ok) return { ok: false, error: redactError(envelope.error), logs };
     // Redact before measuring: the preview of an oversized result is raw text, beyond key redaction.
     const value = redact(envelope.value);
     const valueJson = JSON.stringify(value);
@@ -224,7 +230,7 @@ export async function runInSandbox(run: SandboxRun): Promise<SandboxResult> {
     budget.stop();
     return {
       ok: false,
-      error: redact(classify(err, budget.expired, isolate)) as { code: string; message: string },
+      error: redactError(classify(err, budget.expired, isolate)),
       logs,
     };
   } finally {

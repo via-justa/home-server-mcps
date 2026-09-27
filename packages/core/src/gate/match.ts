@@ -104,8 +104,13 @@ const escapePointer = (key: string) => key.replace(/~/g, '~0').replace(/\//g, '~
  * turn. Nothing (or `{}` / `[]`) is covered. Arrays matter for positional APIs such as TrueNAS, whose
  * params are `[{ name, … }]`.
  */
-export function coversAllParams(match: readonly MatchCondition[], params: unknown): boolean {
-  const pointers = match.filter((c) => c.field !== '$targets').map((c) => c.field);
+export function coversAllParams(
+  match: readonly MatchCondition[],
+  params: unknown,
+  /** Extra covered pointers, e.g. the raw target a `$targets` condition stands for (design §3.4). */
+  alsoCovered: readonly string[] = [],
+): boolean {
+  const pointers = [...match.filter((c) => c.field !== '$targets').map((c) => c.field), ...alsoCovered];
   const covered = (value: unknown, path: string): boolean => {
     if (pointers.includes(path)) return true;
     if (value === undefined || value === null) return path === '';
