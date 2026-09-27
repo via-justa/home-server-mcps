@@ -40,11 +40,11 @@ A typical MCP server exposes one tool per operation, and every tool's name, desc
 
 Synoikia uses the **Code Mode** pattern instead: each endpoint exposes exactly two tools. The model calls `search(code)` to find only the operations and schemas it needs for the task, then `execute(code)` to call them. The full catalog never enters the context, so the cost stays flat however large the upstream API is:
 
-| Integration    | Before                                     | Tool definitions | With Synoikia               |
-| -------------- | ------------------------------------------ | ---------------- | --------------------------- |
-| TrueNAS        | 52 hand-picked tools                       | ~15–20K tokens   | ~1–3K, all ~650–700 methods |
-| Home Assistant | 65 curated tools, growing with each domain | ~45–60K+ tokens  | ~1–3K, every service        |
-| Seerr          | 6 tools covering ~10% of the API           | ~1K tokens       | ~1–2K, 100% of the API      |
+| Integration    | Classic MCP server                         | Context cost    | With Synoikia (2 tools)     |
+| -------------- | ------------------------------------------ | --------------- | --------------------------- |
+| TrueNAS        | 52 hand-picked tools                       | ~15–20K tokens  | ~1–3K, all ~650–700 methods |
+| Home Assistant | 65 curated tools, growing with each domain | ~45–60K+ tokens | ~1–3K, every service        |
+| Seerr          | 6 tools covering ~10% of the API           | ~1K tokens      | ~1–2K, 100% of the API      |
 
 A naive one-tool-per-method wrapper of the TrueNAS API alone would cost over 100K tokens. _Estimates from the original per-server designs in [`docs/reference/`](docs/reference/)._
 
