@@ -89,7 +89,7 @@ function tmp(prefix: string) {
 
 /** npm-pack style tarball of the echo fixture, with the manifest version overridden. */
 function echoTarball(version: string, mutate?: (dir: string) => void) {
-  const work = tmp('hsm-pkg-');
+  const work = tmp('synoikia-pkg-');
   const pkg = path.join(work, 'package');
   cpSync(path.join(FIXTURES, 'plugins/echo'), pkg, { recursive: true });
   const manifest = JSON.parse(readFileSync(path.join(pkg, 'manifest.json'), 'utf8')) as Record<string, unknown>;
@@ -129,14 +129,14 @@ function rawTar(entries: { name: string; type: string; body?: string; link?: str
 const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
 
 async function setup(opts: { coreDir?: string } = {}) {
-  const dataDir = tmp('hsm-repos-');
+  const dataDir = tmp('synoikia-repos-');
   const files = new Map<string, Buffer>();
   const fetched: string[] = [];
   const redirects = new Map<string, string>();
   const ctx = await createAppContext(
     loadConfig({
       DATA_DIR: dataDir,
-      CORE_PLUGINS_DIR: opts.coreDir ?? tmp('hsm-core-'),
+      CORE_PLUGINS_DIR: opts.coreDir ?? tmp('synoikia-core-'),
       CORE_PLUGINS_AUTOENABLE: 'true',
     }),
     {
@@ -499,7 +499,7 @@ describe('plugin repositories', () => {
 
 describe('swapDirectory (review L5)', () => {
   it('replaces the directory, or puts the old one back when the new one cannot be moved in', () => {
-    const root = tmp('hsm-swap-');
+    const root = tmp('synoikia-swap-');
     const target = path.join(root, 'plugins/echo');
     const next = path.join(root, 'staging/new');
     mkdirSync(target, { recursive: true });

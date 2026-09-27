@@ -35,7 +35,7 @@ async function open(dataDir: string, extra: Record<string, string> = {}, now?: (
 
 describe('housekeeping', () => {
   it('purges expired state and applies audit retention only when configured', async () => {
-    const dataDir = mkdtempSync(path.join(tmpdir(), 'hsm-maint-'));
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'synoikia-maint-'));
     cleanup.push(() => rmSync(dataDir, { recursive: true, force: true }));
     let now = new Date(); // audit rows are stamped with the real clock
     const ctx = await open(dataDir, {}, () => now);
@@ -64,7 +64,7 @@ describe('housekeeping', () => {
 
 describe('rotate-master-key', () => {
   async function seeded(extra: Record<string, string> = {}) {
-    const dataDir = mkdtempSync(path.join(tmpdir(), 'hsm-rotate-'));
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'synoikia-rotate-'));
     cleanup.push(() => rmSync(dataDir, { recursive: true, force: true }));
     const ctx = await open(dataDir, extra);
     const user = await ctx.users.create({ username: 'admin', password: PASSWORD });

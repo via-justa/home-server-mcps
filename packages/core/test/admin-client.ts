@@ -8,7 +8,7 @@ export function browser(app: Pick<Hono, 'request'>, opts: { csrf?: boolean } = {
   async function req(method: string, path: string, body?: unknown, headers: Record<string, string> = {}) {
     const h: Record<string, string> = { ...headers };
     if (jar.size) h.cookie = [...jar].map(([k, v]) => `${k}=${v}`).join('; ');
-    if (withCsrf && jar.has('hsm_csrf') && !('x-csrf-token' in h)) h['x-csrf-token'] = jar.get('hsm_csrf')!;
+    if (withCsrf && jar.has('syn_csrf') && !('x-csrf-token' in h)) h['x-csrf-token'] = jar.get('syn_csrf')!;
     if (body !== undefined) h['content-type'] = 'application/json';
     const res = await app.request(path, {
       method,

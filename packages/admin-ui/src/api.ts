@@ -2,8 +2,8 @@
 function csrfToken(): string | undefined {
   return document.cookie
     .split('; ')
-    .find((c) => c.startsWith('hsm_csrf='))
-    ?.slice('hsm_csrf='.length);
+    .find((c) => c.startsWith('syn_csrf='))
+    ?.slice('syn_csrf='.length);
 }
 
 export class ApiError extends Error {

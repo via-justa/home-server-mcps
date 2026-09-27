@@ -25,7 +25,7 @@ afterEach(async () => {
 });
 
 const tmp = () => {
-  const d = mkdtempSync(path.join(tmpdir(), 'hsm-plugins-'));
+  const d = mkdtempSync(path.join(tmpdir(), 'synoikia-plugins-'));
   cleanup.push(() => rmSync(d, { recursive: true, force: true }));
   return d;
 };

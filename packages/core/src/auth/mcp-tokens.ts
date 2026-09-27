@@ -9,11 +9,11 @@ import { ACCESS_CEILINGS } from '../gate/access.js';
 import { randomToken, sha256 } from './tokens.js';
 
 /**
- * Static bearer tokens for MCP clients (design §6.2): `hsm_…`, shown once, stored as SHA-256,
+ * Static bearer tokens for MCP clients (design §6.2): `syn_…`, shown once, stored as SHA-256,
  * scoped to instance ids or `*`. A token outside its scope gets 403, not 401.
  */
 
-export const TOKEN_PREFIX = 'hsm_';
+export const TOKEN_PREFIX = 'syn_';
 
 export const CreateTokenSchema = z.object({
   name: z.string().trim().min(1).max(100),

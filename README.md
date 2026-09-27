@@ -46,7 +46,7 @@ pnpm test        # all packages (workspace deps resolve to TS sources, no build 
 pnpm typecheck
 pnpm lint
 pnpm build
-DATA_DIR=./data pnpm start   # MCP on :8080, admin on :8081; creates ./data/hsm.sqlite + master.key
+DATA_DIR=./data pnpm start   # MCP on :8080, admin on :8081; creates ./data/synoikia.sqlite + master.key
 ```
 
 Admin UI with hot reload: run `pnpm start` in one shell and `pnpm --filter @synoikia/admin-ui dev` in another. Vite proxies `/api` and `/auth` to `:8081`.

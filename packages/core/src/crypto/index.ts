@@ -67,7 +67,7 @@ export class SecretBox {
 
   /** Purpose-bound subkeys (attestation HMAC, approval links, session pepper) via HKDF-SHA256. */
   deriveKey(purpose: string, length = KEY_BYTES): Buffer {
-    return Buffer.from(hkdfSync('sha256', this.key, Buffer.alloc(0), `hsm:${purpose}`, length));
+    return Buffer.from(hkdfSync('sha256', this.key, Buffer.alloc(0), `synoikia:${purpose}`, length));
   }
 }
 

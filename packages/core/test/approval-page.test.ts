@@ -51,7 +51,7 @@ const hidden = (page: string, name: string) => new RegExp(`name="${name}" value=
  * waiting for approval from a client that supports URL prompts.
  */
 async function withPendingCall(code: string, opts: { totp?: boolean; lockedAsk?: boolean } = {}) {
-  const dataDir = mkdtempSync(path.join(tmpdir(), 'hsm-approval-'));
+  const dataDir = mkdtempSync(path.join(tmpdir(), 'synoikia-approval-'));
   cleanup.push(() => rmSync(dataDir, { recursive: true, force: true }));
   let clock = Date.now();
   const ctx = await createAppContext(
@@ -233,15 +233,15 @@ describe('approval page', () => {
   it('keeps approval sign-ins apart from OAuth consent sign-ins (review L14)', async () => {
     const t = await withPendingCall(`return (await echo.call('echo.set', { name: 'tank/a' })).key;`);
     const signedIn = await t.signIn(t.page);
-    const cookie = signedIn.headers.getSetCookie().find((c) => c.startsWith('hsm_mcp_approve='))!;
+    const cookie = signedIn.headers.getSetCookie().find((c) => c.startsWith('syn_mcp_approve='))!;
     expect(cookie).toMatch(/Path=\/a(;|$)/);
     expect(cookie).toMatch(/HttpOnly/);
-    const raw = cookie.slice('hsm_mcp_approve='.length).split(';')[0]!;
+    const raw = cookie.slice('syn_mcp_approve='.length).split(';')[0]!;
     const limits = { idleMs: 60 * 60_000, absoluteMs: 24 * 60 * 60_000 };
     expect(t.ctx.sessions.validate(raw, 'approval_ui', limits)).not.toBeNull();
     // The same session can't stand in for a consent sign-in.
     expect(t.ctx.sessions.validate(raw, 'oauth_ui', limits)).toBeNull();
-    expect(signedIn.headers.getSetCookie().some((c) => c.startsWith('hsm_mcp_oauth='))).toBe(false);
+    expect(signedIn.headers.getSetCookie().some((c) => c.startsWith('syn_mcp_oauth='))).toBe(false);
   });
 
   it('rejects unknown tokens', async () => {

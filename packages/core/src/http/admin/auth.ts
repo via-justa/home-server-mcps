@@ -18,12 +18,12 @@ import { clientIp, isSecure, readJson, requestOrigin } from '../common.js';
 
 export type AdminEnv = { Variables: { user: UserRow; sessionRaw: string } };
 
-const SESSION_COOKIE = 'hsm_admin';
-const SECURE_SESSION_COOKIE = '__Host-hsm_admin';
-export const CSRF_COOKIE = 'hsm_csrf';
+const SESSION_COOKIE = 'syn_admin';
+const SECURE_SESSION_COOKIE = '__Host-syn_admin';
+export const CSRF_COOKIE = 'syn_csrf';
 export const CSRF_HEADER = 'x-csrf-token';
-const MFA_COOKIE = 'hsm_mfa';
-const OIDC_COOKIE = 'hsm_oidc';
+const MFA_COOKIE = 'syn_mfa';
+const OIDC_COOKIE = 'syn_oidc';
 const MFA_TTL_MS = 5 * 60_000;
 
 export function sessionLimits(ctx: AppContext): SessionLimits {

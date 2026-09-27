@@ -21,7 +21,7 @@ afterAll(() => {
 
 describe('graceful shutdown (review M16)', () => {
   it('finishes promptly with an admin SSE stream, an MCP session and a pending approval open', async () => {
-    const dataDir = mkdtempSync(path.join(tmpdir(), 'hsm-shutdown-'));
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'synoikia-shutdown-'));
     dirs.push(dataDir);
     const ctx = await createAppContext(
       loadConfig({
@@ -43,7 +43,7 @@ describe('graceful shutdown (review M16)', () => {
     setGroupLevel(ctx.db, instanceId, 'echo', 'ask');
 
     // The portal's live event stream, which never ends on its own.
-    const cookie = `hsm_admin=${ctx.sessions.create(user.id, 'admin', sessionLimits(ctx))}`;
+    const cookie = `syn_admin=${ctx.sessions.create(user.id, 'admin', sessionLimits(ctx))}`;
     const sse = await fetch(`http://127.0.0.1:${servers.admin.port}/api/events`, { headers: { cookie } });
     expect(sse.status).toBe(200);
     const sseDone = sse.text().then(

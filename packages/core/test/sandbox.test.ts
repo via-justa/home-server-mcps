@@ -31,7 +31,7 @@ describe('runInSandbox', () => {
       error: { code: 'SYNTAX_ERROR' },
     });
     const r = await run(
-      `return [typeof require, typeof process, typeof fetch, typeof setTimeout, typeof __hsm, typeof __hsm_call, typeof __hsm_log, typeof call, typeof log, typeof bind].join(',')`,
+      `return [typeof require, typeof process, typeof fetch, typeof setTimeout, typeof __syn, typeof __syn_call, typeof __syn_log, typeof call, typeof log, typeof bind].join(',')`,
     );
     expect(r).toMatchObject({ ok: true, value: Array(10).fill('undefined').join(',') });
     // Nothing on the global object is a host reference either.

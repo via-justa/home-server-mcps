@@ -24,7 +24,7 @@ describe('openDatabase', () => {
   });
 
   it('persists to DATA_DIR and is idempotent across reopen', () => {
-    const dataDir = mkdtempSync(path.join(tmpdir(), 'hsm-db-'));
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'synoikia-db-'));
     dirs.push(dataDir);
     const first = openDatabase({ dataDir });
     first

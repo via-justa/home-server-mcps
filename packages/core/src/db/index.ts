@@ -15,7 +15,7 @@ export type DbLike = Db | Tx;
 // src/db or dist/db → packages/core/drizzle
 const MIGRATIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../drizzle');
 
-export const DB_FILENAME = 'hsm.sqlite';
+export const DB_FILENAME = 'synoikia.sqlite';
 
 /**
  * Opens (creating if needed) the single SQLite database and applies pending migrations

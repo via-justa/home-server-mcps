@@ -359,11 +359,11 @@ export class NotifierService {
         headers: {
           ...(secrets.headers ?? {}),
           'content-type': 'application/json',
-          'x-hsm-event': n.event,
-          'x-hsm-timestamp': timestamp,
+          'x-synoikia-event': n.event,
+          'x-synoikia-timestamp': timestamp,
           ...(secrets.hmacSecret
             ? {
-                'x-hsm-signature': `sha256=${createHmac('sha256', secrets.hmacSecret).update(`${timestamp}.${body}`).digest('hex')}`,
+                'x-synoikia-signature': `sha256=${createHmac('sha256', secrets.hmacSecret).update(`${timestamp}.${body}`).digest('hex')}`,
               }
             : {}),
         },

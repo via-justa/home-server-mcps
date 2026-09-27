@@ -223,7 +223,7 @@ async function remove(ch: Notifier) {
             :placeholder="draft.secretsSet.hmacSecret ? 'Set — leave empty to keep' : 'Optional'"
           />
           <p class="help">
-            Sent as <span class="mono">x-hsm-signature: sha256=HMAC(secret, timestamp + "." + body)</span>.
+            Sent as <span class="mono">x-synoikia-signature: sha256=HMAC(secret, timestamp + "." + body)</span>.
           </p>
           <label v-if="draft.secretsSet.hmacSecret" class="row small"
             ><input v-model="draft.clear.hmacSecret" type="checkbox" /> Remove secret</label

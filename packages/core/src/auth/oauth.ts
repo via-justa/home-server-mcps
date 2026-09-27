@@ -15,8 +15,8 @@ import { randomToken, safeEqual, sha256 } from './tokens.js';
  * reuse detection. Every secret is stored as a hash.
  */
 
-export const ACCESS_PREFIX = 'hsmo_';
-export const REFRESH_PREFIX = 'hsmr_';
+export const ACCESS_PREFIX = 'syno_';
+export const REFRESH_PREFIX = 'synr_';
 const CODE_TTL_MS = 60_000;
 
 /** OAuth protocol errors carry RFC 6749 codes (`invalid_grant`, …) and map to 400/401. */

@@ -16,9 +16,9 @@ let mcp: string;
 let admin: string;
 
 beforeAll(async () => {
-  uiDir = mkdtempSync(path.join(tmpdir(), 'hsm-ui-'));
+  uiDir = mkdtempSync(path.join(tmpdir(), 'synoikia-ui-'));
   writeFileSync(path.join(uiDir, 'index.html'), '<!doctype html><div id="app"></div>');
-  dataDir = mkdtempSync(path.join(tmpdir(), 'hsm-data-'));
+  dataDir = mkdtempSync(path.join(tmpdir(), 'synoikia-data-'));
   ctx = await createAppContext(
     loadConfig({
       MCP_HOST: '127.0.0.1',

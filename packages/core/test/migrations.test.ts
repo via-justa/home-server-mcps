@@ -20,7 +20,7 @@ afterEach(() => {
 
 /** A database migrated only up to (and including) `lastTag`, as an older release left it. */
 function databaseAt(lastTag: string) {
-  const dir = mkdtempSync(path.join(tmpdir(), 'hsm-migrate-'));
+  const dir = mkdtempSync(path.join(tmpdir(), 'synoikia-migrate-'));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const partial = path.join(dir, 'migrations');
   cpSync(MIGRATIONS, partial, { recursive: true });
@@ -29,7 +29,7 @@ function databaseAt(lastTag: string) {
   journal.entries = journal.entries.slice(0, journal.entries.findIndex((e) => e.tag === lastTag) + 1);
   writeFileSync(journalFile, JSON.stringify(journal));
 
-  const sqlite = new Database(path.join(dir, 'hsm.sqlite'));
+  const sqlite = new Database(path.join(dir, 'synoikia.sqlite'));
   migrate(drizzle(sqlite, { schema }), { migrationsFolder: partial });
   return { dir, sqlite };
 }
