@@ -7,9 +7,12 @@
   "scripts": {
     "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/index.js --log-level=warning",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "pnpm run build && vitest run"
   },
   "dependencies": {
     "@synoikia/plugin-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@synoikia/core": "workspace:*"
   }
 }

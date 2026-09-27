@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import { errorText, http } from '../../api';
+import MarkdownLite from '../../components/MarkdownLite';
 import SchemaForm from '../../components/SchemaForm.vue';
 import { ago } from '../../format';
 import { useAppStore } from '../../stores/app';
@@ -119,7 +120,7 @@ const sync = () =>
       </div>
       <div v-if="conn?.help" class="card">
         <h2>Setup notes</h2>
-        <p class="small help-text">{{ conn.help }}</p>
+        <MarkdownLite class="small help-text" :source="conn.help" />
       </div>
     </aside>
   </div>
@@ -132,8 +133,17 @@ const sync = () =>
   gap: 16px;
   align-items: start;
 }
-.help-text {
-  white-space: pre-line;
+.help-text :deep(p),
+.help-text :deep(ol),
+.help-text :deep(ul) {
+  margin: 0 0 8px;
+}
+.help-text :deep(ol),
+.help-text :deep(ul) {
+  padding-left: 18px;
+}
+.help-text :deep(li) {
+  margin-bottom: 4px;
 }
 @media (max-width: 860px) {
   .grid {

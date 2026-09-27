@@ -121,6 +121,19 @@ describe('matches', () => {
     );
   });
 
+  it('covers positional (array) params by index, and whole arrays by their own path', () => {
+    const rule = [{ field: '/0/name', op: 'prefix', value: 'tank/media' }] as const;
+    expect(matches(rule, call([{ name: 'tank/media/tv' }]))).toBe(true);
+    expect(matches(rule, call([{ name: 'tank/media/tv', quota: 1 }]))).toBe(false);
+    expect(matches(rule, call([{ name: 'tank/media/tv' }, { recursive: true }]))).toBe(false);
+    expect(matches([...rule, { field: '/1', op: 'any' }], call([{ name: 'tank/media/tv' }, { a: 1 }]))).toBe(true);
+    expect(matches([{ field: '/0', op: 'in', value: ['plex'] }], call(['plex']))).toBe(true);
+    expect(matches([{ field: '/0', op: 'in', value: ['plex'] }], call(['plex', { force: true }]))).toBe(false);
+    // An array covered at its own path is covered whole, as before.
+    expect(matches([{ field: '/apps', op: 'in', value: ['a', 'b'] }], call({ apps: ['a', 'b'] }))).toBe(true);
+    expect(matches([], call([]))).toBe(true);
+  });
+
   it.each([
     ['prefix hit', { field: '/name', op: 'prefix', value: 'tank/media/' }, { name: 'tank/media/tv' }, true],
     ['prefix at a boundary', { field: '/name', op: 'prefix', value: 'tank/media' }, { name: 'tank/media/tv' }, true],
