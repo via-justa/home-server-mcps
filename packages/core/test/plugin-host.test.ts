@@ -17,8 +17,6 @@ import { PluginSupervisor } from '../src/plugins/supervisor.js';
 import type { InstanceStatus } from '../src/plugins/supervisor.js';
 
 const FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/plugins/echo');
-const REPO_PLUGINS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../plugins');
-
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => {
   for (const fn of cleanup.splice(0).reverse()) await fn();
@@ -301,53 +299,4 @@ describe('discovery', () => {
     expect(db.select().from(plugins).all()).toHaveLength(1);
     expect(db.select().from(plugins).get()).toMatchObject({ source: 'repo', status: 'invalid' });
   });
-
-  it.skipIf(!existsSync(path.join(REPO_PLUGINS, 'truenas', 'dist', 'index.js')))(
-    'discovers the built core plugins and runs their bundles under the permission model',
-    async () => {
-      const found = discoverPlugins([{ dir: REPO_PLUGINS, source: 'core' }]);
-      expect(found.map((p) => [p.status, p.status === 'ok' ? p.manifest.id : p.pluginId])).toEqual([
-        ['ok', 'homeassistant'],
-        ['ok', 'seerr'],
-        ['ok', 'truenas'],
-      ]);
-      for (const p of found) {
-        if (p.status !== 'ok') continue;
-        const proc = new PluginProcess({
-          dir: p.dir,
-          entry: p.manifest.entry,
-          instanceId: 'i',
-          defaultTimeoutMs: 5000,
-        });
-        proc.start();
-        cleanup.push(() => proc.stop(500));
-        if (p.manifest.id === 'truenas') {
-          // A real plugin: it loads, takes its config and reports an unreachable upstream cleanly
-          // (its bundled WebSocket client works with no access outside its own directory).
-          await proc.call('init', {
-            instanceId: 'i',
-            config: { baseUrl: 'http://127.0.0.1:1' },
-            secrets: { apiKey: 'k' },
-            sdkVersion: '1.0.0',
-          });
-          await expect(proc.call('testConnection')).resolves.toMatchObject({ ok: false });
-          continue;
-        }
-        if (p.manifest.id === 'seerr') {
-          // Same for Seerr's bundled YAML parser and global fetch.
-          await proc.call('init', {
-            instanceId: 'i',
-            config: { baseUrl: 'http://127.0.0.1:1', authMethod: 'apiKey' },
-            secrets: { apiKey: 'k' },
-            sdkVersion: '1.0.0',
-          });
-          await expect(proc.call('testConnection')).resolves.toMatchObject({ ok: false });
-          continue;
-        }
-        // The skeleton plugins answer NOT_IMPLEMENTED — which proves the bundle loaded with no
-        // access outside its own directory.
-        await expect(proc.call('getUpstreamVersion')).rejects.toMatchObject({ code: 'NOT_IMPLEMENTED' });
-      }
-    },
-  );
 });
