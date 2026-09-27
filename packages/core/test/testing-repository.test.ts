@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,14 +19,14 @@ afterEach(() => {
 });
 
 /** A repository with the echo fixture as a flat tarball, the layout a release publishes. */
-function buildRepo(key: ReturnType<typeof testKey>, opts: { tamper?: boolean; url?: string } = {}) {
+function buildRepo(key: ReturnType<typeof testKey>, opts: { tamper?: boolean; url?: string; entry?: string } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'synoikia-repo-'));
   dirs.push(dir);
+  const src = path.join(dir, 'src');
+  cpSync(path.join(FIXTURES, 'echo'), src, { recursive: true });
+  if (opts.entry !== undefined) writeFileSync(path.join(src, 'index.mjs'), opts.entry);
   const file = path.join(dir, 'echo-1.0.0.tgz');
-  tar.c({ gzip: true, cwd: path.join(FIXTURES, 'echo'), file, sync: true, portable: true }, [
-    'manifest.json',
-    'index.mjs',
-  ]);
+  tar.c({ gzip: true, cwd: src, file, sync: true, portable: true }, ['manifest.json', 'index.mjs']);
   const tarball = readFileSync(file);
   const signature = key.sign(tarball);
   if (opts.tamper) writeFileSync(file, Buffer.concat([tarball, Buffer.alloc(512)]));
@@ -78,6 +78,19 @@ describe('verifyPluginRepository', () => {
       verifyPluginRepository({ ...buildRepo(key, { url: 'nope.tgz' }), publicKey: key.publicKey }),
     ).rejects.toThrow(/echo@1.0.0/);
   });
+
+  it('starts each plugin: a bundle that fails on import, or never answers, fails the check', async () => {
+    const key = testKey();
+    await expect(
+      verifyPluginRepository({ ...buildRepo(key, { entry: "throw new Error('boom');\n" }), publicKey: key.publicKey }),
+    ).rejects.toThrow(/echo@1.0.0 does not start[\s\S]*boom/);
+    await expect(
+      verifyPluginRepository({
+        ...buildRepo(key, { entry: 'setInterval(() => {}, 1000);\n' }),
+        publicKey: key.publicKey,
+      }),
+    ).rejects.toThrow(/echo@1.0.0 does not start/);
+  }, 30_000);
 
   it('ships a valid pre-configured repository key', () => {
     expect(parsePublicKey(DEFAULT_PLUGIN_REPO.publicKey).keyId).toBe('89B25CCABB076D83');

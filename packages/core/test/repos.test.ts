@@ -8,7 +8,7 @@ import * as tar from 'tar';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createAppContext } from '../src/app.js';
 import { loadConfig } from '../src/config/env.js';
-import { auditLog, plugins } from '../src/db/schema.js';
+import { auditLog, pluginInstances, plugins } from '../src/db/schema.js';
 import { createAdminApp } from '../src/http/admin-app.js';
 import { parsePublicKey, verifySignature } from '../src/plugins/minisign.js';
 import { swapDirectory } from '../src/plugins/repos.js';
@@ -370,31 +370,84 @@ describe('plugin repositories', () => {
     expect(t.ctx.repos.list()).toHaveLength(1);
   });
 
-  it('requires typing the plugin id for unsigned repos and never replaces a plugin it did not install', async () => {
+  it('adopts a plugin no repository installed, keeping its endpoints, and leaves it disabled for review', async () => {
+    // A plugin copied in by hand, or built in before 0.3.0, with an endpoint on it.
     const t = await setup({ preinstalled: true });
+    const before = t.ctx.db.select().from(plugins).get()!;
+    expect(before).toMatchObject({ pluginId: 'echo', repoId: null });
+    t.ctx.db.update(plugins).set({ enabled: true }).where(eq(plugins.id, before.id)).run();
+    t.ctx.db
+      .insert(pluginInstances)
+      .values({ id: 'inst-1', pluginId: before.id, slug: 'echo', displayName: 'Echo', enabled: false })
+      .run();
+
     const tarball = echoTarball('2.0.0');
     t.files.set('https://plugins.example.com/echo-2.0.0.tgz', tarball);
     t.publish(indexFor(null, [{ version: '2.0.0', tarball }]));
     const repo = await t.ctx.repos.add({ url: INDEX_URL, signingMode: 'unsigned' });
     expect(await (await t.b.get('/api/plugin-repos/available')).json()).toMatchObject([
-      { blocked: 'installed_from_elsewhere', installed: { version: '1.0.0', fromThisRepo: false } },
+      { blocked: null, installed: { version: '1.0.0', fromThisRepo: false, managed: false } },
     ]);
-    expect(
-      await (
-        await t.b.post('/api/plugins/install', { repoId: repo.id, pluginId: 'echo', version: '2.0.0', confirm: 'echo' })
-      ).json(),
-    ).toMatchObject({ error: 'installed_from_elsewhere' });
-
-    const t2 = await setup();
-    t2.files.set('https://plugins.example.com/echo-2.0.0.tgz', tarball);
-    t2.publish(indexFor(null, [{ version: '2.0.0', tarball }]));
-    const repo2 = await t2.ctx.repos.add({ url: INDEX_URL, signingMode: 'unsigned' });
-    const body = { repoId: repo2.id, pluginId: 'echo', version: '2.0.0' };
-    expect(await (await t2.b.post('/api/plugins/install', body)).json()).toMatchObject({ error: 'confirm_required' });
-    expect(await (await t2.b.post('/api/plugins/install', { ...body, confirm: 'echo' })).json()).toMatchObject({
+    const body = { repoId: repo.id, pluginId: 'echo', version: '2.0.0' };
+    expect(await (await t.b.post('/api/plugins/install', body)).json()).toMatchObject({ error: 'confirm_required' });
+    expect(await (await t.b.post('/api/plugins/install', { ...body, confirm: 'echo' })).json()).toMatchObject({
+      id: before.id,
       version: '2.0.0',
+      repoId: repo.id,
+      enabled: false,
       signatureVerified: false,
     });
+    expect(t.ctx.db.select().from(pluginInstances).get()).toMatchObject({ id: 'inst-1', pluginId: before.id });
+    expect(t.ctx.db.select().from(auditLog).where(eq(auditLog.decision, 'plugin_adopted')).get()).toBeTruthy();
+    expect(await (await t.b.get('/api/plugin-repos/available')).json()).toMatchObject([
+      { blocked: null, installed: { version: '2.0.0', fromThisRepo: true, managed: true } },
+    ]);
+  });
+
+  it('never replaces a plugin another repository installed', async () => {
+    const t = await setup();
+    const tarball = echoTarball('2.0.0');
+    t.files.set('https://plugins.example.com/echo-2.0.0.tgz', tarball);
+    t.publish(indexFor(null, [{ version: '2.0.0', tarball }]));
+    const first = await t.ctx.repos.add({ url: INDEX_URL, signingMode: 'unsigned' });
+    await t.ctx.repos.install({ repoId: first.id, pluginId: 'echo', version: '2.0.0', confirm: 'echo' });
+
+    const OTHER = 'https://other.example.com/index.json';
+    t.files.set('https://other.example.com/echo-2.0.0.tgz', tarball);
+    t.files.set(
+      OTHER,
+      Buffer.from(JSON.stringify({ ...indexFor(null, [{ version: '2.0.0', tarball }]), name: 'Other' })),
+    );
+    const other = await t.ctx.repos.add({ url: OTHER, signingMode: 'unsigned' });
+    const offered = (await (await t.b.get('/api/plugin-repos/available')).json()) as { repoId: string }[];
+    expect(offered.find((a) => a.repoId === other.id)).toMatchObject({
+      blocked: 'installed_from_elsewhere',
+      installed: { fromThisRepo: false, managed: true },
+    });
+    expect(
+      await (
+        await t.b.post('/api/plugins/install', {
+          repoId: other.id,
+          pluginId: 'echo',
+          version: '2.0.0',
+          confirm: 'echo',
+        })
+      ).json(),
+    ).toMatchObject({ error: 'installed_from_elsewhere' });
+  });
+
+  it('retries a repository whose last fetch failed on the next refresh, not a day later', async () => {
+    const t = await setup();
+    const key = testKey();
+    const repo = t.ctx.repos.addPreconfigured({ url: INDEX_URL, name: 'Preset', publicKey: key.publicKey })!;
+    await t.ctx.repos.refreshStale(); // index not published yet: 404
+    expect(t.ctx.repos.list()[0]).toMatchObject({ id: repo.id, lastFetchError: expect.stringMatching(/404/) });
+    t.publish({ schema: 1, name: 'Preset', publicKey: key.publicKey, plugins: [] });
+    await t.ctx.repos.refreshStale();
+    expect(t.ctx.repos.list()[0]).toMatchObject({ lastFetchError: null, keyStatus: 'ok' });
+    const fetches = t.fetched.length;
+    await t.ctx.repos.refreshStale(); // fresh and healthy: skipped
+    expect(t.fetched).toHaveLength(fetches);
   });
 
   it('checks every redirect hop: https → https is followed, a downgrade to http is refused (review L4)', async () => {

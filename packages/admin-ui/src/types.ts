@@ -294,7 +294,8 @@ export interface AvailablePlugin {
   description: string | null;
   versions: { version: string; compatible: boolean }[];
   latest: string | null;
-  installed: { version: string; fromThisRepo: boolean } | null;
+  /** `managed`: installed from a repository. An unmanaged plugin (built in before 0.3.0, or copied in by hand) can be replaced from any repo. */
+  installed: { version: string; fromThisRepo: boolean; managed: boolean } | null;
   updateAvailable: boolean;
   blocked: string | null;
 }

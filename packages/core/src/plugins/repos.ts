@@ -396,10 +396,14 @@ export class PluginRepoService {
     return this.publicRepo(this.repoRow(id));
   }
 
-  /** Daily refresh (design §10). Failures are recorded on the row, never thrown. */
+  /**
+   * Daily refresh (design §10). A repo whose last fetch failed is retried on every call (hourly), so a
+   * start-up network hiccup doesn't leave it empty for a day. Failures are recorded on the row, never thrown.
+   */
   async refreshStale(maxAgeMs = 24 * 60 * 60_000) {
     for (const row of this.db.select().from(pluginRepos).all()) {
-      if (row.lastFetchedAt && this.now().getTime() - row.lastFetchedAt.getTime() < maxAgeMs) continue;
+      const fresh = row.lastFetchedAt && this.now().getTime() - row.lastFetchedAt.getTime() < maxAgeMs;
+      if (fresh && !row.lastFetchError) continue;
       await this.refresh(row.id).catch(() => undefined);
     }
   }
@@ -480,10 +484,14 @@ export class PluginRepoService {
           description: p.description ?? null,
           versions: p.versions.map((v) => ({ version: v.version, compatible: compatible.includes(v.version) })),
           latest,
-          installed: current ? { version: current.version, fromThisRepo: fromHere } : null,
+          installed: current ? { version: current.version, fromThisRepo: fromHere, managed: !!current.repoId } : null,
           updateAvailable: !!(fromHere && latest && semver.gt(latest, current.version)),
           blocked:
-            current && !fromHere ? 'installed_from_elsewhere' : repo.keyStatus === 'key_changed' ? 'key_changed' : null,
+            current?.repoId && !fromHere
+              ? 'installed_from_elsewhere'
+              : repo.keyStatus === 'key_changed'
+                ? 'key_changed'
+                : null,
         });
       }
     }
@@ -584,12 +592,15 @@ export class PluginRepoService {
       );
     }
     const current = this.db.select().from(plugins).where(eq(plugins.pluginId, input.pluginId)).get();
-    if (current && current.repoId !== repo.id) {
+    if (current?.repoId && current.repoId !== repo.id) {
       throw new ConflictError(
         'installed_from_elsewhere',
-        `"${input.pluginId}" is installed from another source; uninstall it first`,
+        `"${input.pluginId}" is installed from another repository; uninstall it first`,
       );
     }
+    // A plugin no repository manages (a built-in plugin from before 0.3.0, or one copied in by hand) is
+    // adopted: this install replaces its files and keeps its row, so its endpoints carry over.
+    const adopting = !!current && !current.repoId;
     if (repo.signingMode === 'unsigned' && input.confirm !== input.pluginId) {
       throw new ConflictError(
         'confirm_required',
@@ -645,7 +656,8 @@ export class PluginRepoService {
       // New installs start disabled, and an update that changes what the plugin may do is disabled
       // again: enabling it is the admin's review of its binding, capabilities and hosts (design §4.2).
       const review = current ? permissionChanges(current.manifest, inspected.manifest) : [];
-      const enabled = current ? current.enabled && review.length === 0 : false;
+      // Adopted code comes from a new source, so it waits for the admin's review like a new install.
+      const enabled = current && !adopting ? current.enabled && review.length === 0 : false;
       this.db.transaction((tx) => {
         tx.update(plugins)
           .set({ repoId: repo.id, sha256, signatureVerified, enabled })
@@ -653,7 +665,7 @@ export class PluginRepoService {
           .run();
         writeAudit(tx, {
           kind: 'config',
-          decision: current ? 'plugin_updated' : 'plugin_installed',
+          decision: adopting ? 'plugin_adopted' : current ? 'plugin_updated' : 'plugin_installed',
           actorKind: 'user',
           actorId: actor.userId,
           detail: {

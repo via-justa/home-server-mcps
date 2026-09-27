@@ -1,11 +1,13 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import type { Manifest } from '@synoikia/plugin-sdk';
 import { eq } from 'drizzle-orm';
 import semver from 'semver';
 import { createAppContext } from '../app.js';
 import { loadConfig } from '../config/env.js';
 import { plugins } from '../db/schema.js';
+import { PluginProcess, PluginRpcError } from '../plugins/process.js';
 import { IndexSchema } from '../plugins/repos.js';
 
 /** Where the index appears to live; relative tarball URLs resolve against it. */
@@ -29,7 +31,9 @@ export interface VerifiedPlugin {
 /**
  * Checks a plugin repository before it is published: core's own repository service adds it as a
  * signed repo with `publicKey` pinned, installs the newest version of every plugin (sha256, minisign
- * signature, archive checks), and requires each to load. Throws on the first failure.
+ * signature, archive checks), requires its manifest to be valid, and starts it: the bundle runs as a
+ * permission-confined child, exactly as in production, and must answer core over IPC. Throws on the
+ * first failure.
  */
 export async function verifyPluginRepository(opts: VerifyRepositoryOptions): Promise<VerifiedPlugin[]> {
   const indexBytes = readFileSync(opts.index);
@@ -62,11 +66,45 @@ export async function verifyPluginRepository(opts: VerifyRepositoryOptions): Pro
       if (row?.status !== 'ok') {
         throw new Error(`${plugin.id}@${version} does not load: ${row?.statusError ?? 'not discovered'}`);
       }
+      await startsAndAnswers(row.path, (row.manifest as Manifest).entry, `${plugin.id}@${version}`);
       verified.push({ id: plugin.id, version, signatureVerified: row.signatureVerified });
     }
     return verified;
   } finally {
     await ctx.stop();
     rmSync(work, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Starts the installed bundle the way core runs it and asks it to shut down. An answer, even an error,
+ * shows that the bundle imports under the permission model and speaks the RPC protocol; no `init` is
+ * sent, so nothing reaches for an upstream.
+ */
+async function startsAndAnswers(dir: string, entry: string, label: string) {
+  const proc = new PluginProcess({ dir, entry, instanceId: 'repository-check', defaultTimeoutMs: 10_000 });
+  const stderr: string[] = [];
+  proc.on('log', (level, message) => level === 'error' && stderr.push(message));
+  proc.start();
+  try {
+    await proc.call('shutdown');
+  } catch (err) {
+    if (!(err instanceof PluginRpcError)) {
+      await new Promise((r) => setTimeout(r, 100)); // stderr can arrive just after the exit
+      const detail = stderr
+        .join('\n')
+        .split('\n')
+        .filter((l) => l.trim() && !/^\s+at /.test(l))
+        .slice(0, 6)
+        .join('\n');
+      throw new Error(
+        `${label} does not start: ${err instanceof Error ? err.message : String(err)}${detail ? `\n${detail}` : ''}`,
+        {
+          cause: err,
+        },
+      );
+    }
+  } finally {
+    await proc.stop(2000);
   }
 }

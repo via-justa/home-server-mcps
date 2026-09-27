@@ -134,7 +134,7 @@ async function confirmKey() {
 }
 
 const BLOCKED: Record<string, string> = {
-  installed_from_elsewhere: 'Installed from another source',
+  installed_from_elsewhere: 'Installed from another repository',
   key_changed: 'Repository key changed',
 };
 </script>
@@ -234,7 +234,15 @@ const BLOCKED: Record<string, string> = {
             <td class="right">
               <span v-if="a.blocked" class="pill warn">{{ BLOCKED[a.blocked] ?? a.blocked }}</span>
               <button v-else class="btn btn-sm btn-primary" type="button" :disabled="!a.latest" @click="openInstall(a)">
-                {{ a.installed ? (a.updateAvailable ? 'Update…' : 'Reinstall…') : 'Install…' }}
+                {{
+                  !a.installed
+                    ? 'Install…'
+                    : !a.installed.managed
+                      ? 'Replace…'
+                      : a.updateAvailable
+                        ? 'Update…'
+                        : 'Reinstall…'
+                }}
               </button>
             </td>
           </tr>
@@ -320,6 +328,10 @@ const BLOCKED: Record<string, string> = {
       </div>
       <p class="small muted">
         Plugins run in their own process and can only read their own files, but they can reach the network.
+      </p>
+      <p v-if="installing.item.installed && !installing.item.installed.managed" class="alert warn">
+        {{ installing.item.pluginId }} {{ installing.item.installed.version }} wasn't installed from a repository. This
+        replaces its files and keeps its endpoints, but leaves the plugin disabled until you review and enable it.
       </p>
       <template v-if="installRepo?.signingMode === 'unsigned'">
         <p class="alert warn">

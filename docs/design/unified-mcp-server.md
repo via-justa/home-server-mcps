@@ -332,10 +332,10 @@ The admin adds a repository by URL on the Plugins → Repositories page. The URL
 }
 ```
 
-- The index is fetched when the repo is added, when someone clicks "Refresh", and daily. It is cached in `plugin_repos.index_cache`.
+- The index is fetched when the repo is added, when someone clicks "Refresh", and daily; a repo whose last fetch failed is retried hourly. It is cached in `plugin_repos.index_cache`.
 - The Plugins page lists available plugins across all repos. It shows the installed version and whether an update is available. **There are no automatic updates.** Every install or update is an explicit admin action on a pinned version. A new install arrives **disabled**; enabling it is the admin's review of its binding, capabilities, sensitive keys and network hosts. An update that changes any of those is disabled again (its endpoints stop, and the audit event lists what changed) until the admin re-enables it; other updates keep the plugin's enabled state.
 - Tarballs contain a **prebuilt, self-contained** package: `manifest.json` plus the entry and everything it imports **inside the package directory**, typically a single bundle (`esbuild --bundle --platform=node`), which is how the Synoikia plugins are built. Under the permission model (§4.4) the child cannot read anything outside its directory, so an entry that imports from a shared `node_modules` fails to load. Discovery also rejects an entry whose real path (after symlinks) lies outside the directory. The server never runs `npm install` or build scripts. Archives may be flat or npm-pack style (one top-level `package/` directory). Extraction accepts only regular files and directories: links, devices, paths that escape the target, and archives over 50 MB compressed, 200 MB extracted or 5,000 entries all fail the install. The archive's manifest must name exactly the plugin id and version being installed.
-- Plugin ID conflicts: the installed row records its `repo_id`, and only that repository can update it. When two repositories offer the same ID, the other one shows it as installed from elsewhere and refuses to install over it (`installed_from_elsewhere`); the admin uninstalls it first. A plugin copied into `/data/plugins` by hand belongs to no repository and is never replaced by one.
+- Plugin ID conflicts: the installed row records its `repo_id`, and only that repository can update it. When two repositories offer the same ID, the other one shows it as installed from elsewhere and refuses to install over it (`installed_from_elsewhere`); the admin uninstalls it first. A plugin no repository manages (built in before 0.3.0, or copied into `/data/plugins` by hand) is **adopted** by the first repository install of its ID: the files are replaced, the row and its endpoints are kept, and the plugin is left disabled until the admin reviews and re-enables it (audited as `plugin_adopted`).
 
 ### 4.3 Trust & signing (optional per repo)
 
@@ -385,7 +385,7 @@ The harness offers:
 | Upstream   | `testConnection(connection)`, `syncNow()`                                                                                                                                      |
 | Lifecycle  | `stop()` shuts core down and removes the temporary directory                                                                                                                   |
 
-**Releasing a plugin repository.** `verifyPluginRepository({ index, assets, publicKey })`, from the same package, checks a built repository before it is published: core's own repository service adds it as a signed repository with `publicKey` pinned, installs the newest version of every plugin (sha256, signature, archive checks) and requires each to load. A release workflow runs it after signing and before uploading anything.
+**Releasing a plugin repository.** `verifyPluginRepository({ index, assets, publicKey })`, from the same package, checks a built repository before it is published: core's own repository service adds it as a signed repository with `publicKey` pinned, installs the newest version of every plugin (sha256, signature, archive checks), then starts each bundle as a permission-confined child, as in production, and requires it to answer over IPC. A release workflow runs it after signing and before uploading anything.
 
 ---
 
