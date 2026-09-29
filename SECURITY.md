@@ -7,7 +7,7 @@ about it, and about the credential handling around it, seriously.
 ## Supported Versions
 
 Only the latest published release (npm packages `@synoikia/core` /
-`@synoikia/plugin-sdk`, and the latest `ghcr.io/via-justa/synoikia-core`
+`@synoikia/plugin-sdk`, and the latest `ghcr.io/via-justa/synoikia`
 image tag) receives security fixes. There is no long-term support branch —
 upgrade to the latest release before reporting an issue that may already be
 fixed.

@@ -3,7 +3,7 @@
 services:
   synoikia:
     # `latest` tracks the newest stable release; pin an explicit version (e.g. `:0.1.0`) in production.
-    image: ghcr.io/via-justa/synoikia-core:latest
+    image: ghcr.io/via-justa/synoikia:latest
     restart: unless-stopped
     env_file: .env
     ports:
