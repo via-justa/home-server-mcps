@@ -137,7 +137,7 @@ Prerelease versions (`0.3.0-rc.0`) are never published by a merge. Publish them 
 
 ### Publishing the Docker image
 
-The Docker image ships as one unit (core + admin-ui, plugin-sdk only as a build dependency), so it carries its own version, in the root `package.json`, decoupled from the SDK/core/admin-ui package versions above. To release a new image, bump that `version` and merge to `main`; the same `release.yml` builds and pushes `ghcr.io/via-justa/synoikia-core:<version>` (and moves `latest` to it, for stable versions) whenever that tag isn't already published. Prereleases follow the same manual-dispatch rule as the npm packages.
+The Docker image ships as one unit (core + admin-ui, plugin-sdk only as a build dependency), so it carries its own version, in the root `package.json`, decoupled from the SDK/core/admin-ui package versions above. To release a new image, bump that `version` and merge to `main`; the same `release.yml` builds and pushes `ghcr.io/via-justa/synoikia:<version>` (and moves `latest` to it, for stable versions) whenever that tag isn't already published. Prereleases follow the same manual-dispatch rule as the npm packages.
 
 ## Deployment
 
@@ -146,7 +146,7 @@ cp .env.example .env   # set MASTER_KEY, PUBLIC_MCP_URL, …
 docker compose -f docker-compose.example.yml up -d
 ```
 
-Pulls the published image from `ghcr.io/via-justa/synoikia-core` — `latest` tracks the newest stable release; pin an explicit version tag (e.g. `ghcr.io/via-justa/synoikia-core:0.1.0`) in production. Deploys with [Docker Compose][compose]. Put `:8080` behind your reverse proxy (such as [Caddy][caddy], [Traefik][traefik] or a [Cloudflare Tunnel][cf-tunnel]) as the public MCP hostname and set `PUBLIC_MCP_URL` to it. Keep `:8081` reachable from the LAN or VPN only. See design §11.
+Pulls the published image from `ghcr.io/via-justa/synoikia` — `latest` tracks the newest stable release; pin an explicit version tag (e.g. `ghcr.io/via-justa/synoikia:0.1.0`) in production. Deploys with [Docker Compose][compose]. Put `:8080` behind your reverse proxy (such as [Caddy][caddy], [Traefik][traefik] or a [Cloudflare Tunnel][cf-tunnel]) as the public MCP hostname and set `PUBLIC_MCP_URL` to it. Keep `:8081` reachable from the LAN or VPN only. See design §11.
 
 On first start, open the admin portal and create the first account (or set `ADMIN_BOOTSTRAP_USERNAME`/`ADMIN_BOOTSTRAP_PASSWORD` once). Then install and enable plugins, create an endpoint, raise the access groups you want above Read, and connect your MCP client to `PUBLIC_MCP_URL/<slug>`.
 
