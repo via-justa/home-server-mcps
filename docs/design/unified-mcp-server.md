@@ -835,6 +835,7 @@ The maintenance cadence of the source designs applies unchanged, each run **per 
   1. `pnpm install --frozen-lockfile`
   2. build SDK → core → admin-ui
   3. runtime stage: `node:22-bookworm-slim` with the production `node_modules` (native: `better-sqlite3`, `isolated-vm`, `argon2`), `packages/core/dist`, and the admin-ui `dist` (served by core). No plugins: they are installed into the data volume
+- Published to `ghcr.io/via-justa/synoikia-core` for `linux/amd64` and `linux/arm64`, tagged with the root `package.json`'s `version` (decoupled from the SDK/core/admin-ui package versions) plus `latest` for the newest stable release. Built and pushed by `.github/workflows/release.yml` on a version bump merged to `main`, same dedup/prerelease rules as the npm packages (README "Publishing the Docker image").
 - Runs as a non-root user. `DATA_DIR=/data` is a volume. `EXPOSE 8080 8081`. `HEALTHCHECK` hits `:8080/healthz`.
 - `/healthz` (both ports) returns `{status, db, plugins: {…instance: status}, pendingApprovals, lastSyncAgeSeconds}`. It is unauthenticated and contains no secrets or slugs; per-instance details are only on the admin port's `/api/overview`. On the MCP port it returns only an aggregate status.
 - **Reverse proxy** (documented examples for Caddy, Traefik, and Cloudflare Tunnel):
