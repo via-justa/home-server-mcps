@@ -112,7 +112,7 @@ The TrueNAS, Seerr and Home Assistant plugins live in [synoikia-core-plugins][co
 
 ## Development
 
-Requires [Node.js][node] ≥ 22.12 and [pnpm][pnpm] 10 (`corepack enable`).
+Requires [Node.js][node] 22 (≥ 22.12) or 24 and [pnpm][pnpm] 10 (`corepack enable`).
 
 ```sh
 pnpm install
