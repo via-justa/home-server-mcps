@@ -16,7 +16,8 @@ RUN pnpm install --frozen-lockfile
 
 COPY tsconfig.base.json ./
 COPY packages packages
-RUN pnpm -r build
+# Only what the image ships: other workspace packages (create-plugin) aren't installed in this stage.
+RUN pnpm --filter @synoikia/plugin-sdk --filter @synoikia/core --filter @synoikia/admin-ui build
 
 # ── runtime ───────────────────────────────────────────────────────────────────────────────────────
 FROM ${NODE_IMAGE} AS runtime
