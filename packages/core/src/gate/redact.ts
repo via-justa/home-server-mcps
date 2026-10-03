@@ -152,17 +152,31 @@ export function redactDiff(
   sensitiveParams?: readonly string[] | null,
 ): DiffEntry[] | undefined {
   if (!diff) return diff;
+  // Without a key check (a hand-built redactor) every path counts as sensitive: fail closed.
+  const isSensitive = redact.isSensitiveKey ?? (() => true);
+  const declared = sensitiveParams ?? [];
   return diff.map((entry) => {
     const path = typeof entry.path === 'string' ? entry.path : '';
-    const segments = pointerSegments(path);
+    // A JSON pointer, or a plugin's own dotted form (`smtp.password`): check every part and the whole.
+    const segments = path.startsWith('/') ? pointerSegments(path) : path.split(/[./]/);
     const secret =
-      segments.some((s) => redact.isSensitiveKey?.(s)) ||
-      (sensitiveParams ?? []).some((p) => path === p || path.startsWith(`${p}/`));
-    if (!secret) return redact(entry);
-    return {
-      path: redact(path),
-      ...('before' in entry ? { before: REDACTED } : {}),
-      ...('after' in entry ? { after: REDACTED } : {}),
-    };
+      isSensitive(path) ||
+      segments.some((s) => s !== '' && isSensitive(s)) ||
+      declared.some((p) => path === p || path.startsWith(`${p}/`));
+    if (secret) {
+      return {
+        path: redact(path),
+        ...('before' in entry ? { before: REDACTED } : {}),
+        ...('after' in entry ? { after: REDACTED } : {}),
+      };
+    }
+    // An entry above a declared path (`/args` holding `/args/1`) hides that part of its values.
+    const below = declared.filter((p) => path === '' || p.startsWith(`${path}/`)).map((p) => p.slice(path.length));
+    const hide = (v: unknown) => (below.length ? redactPaths(v, below) : v);
+    return redact({
+      path,
+      ...('before' in entry ? { before: hide(entry.before) } : {}),
+      ...('after' in entry ? { after: hide(entry.after) } : {}),
+    });
   });
 }

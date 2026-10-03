@@ -269,4 +269,24 @@ describe('redactDiff', () => {
     ]);
     expect(redactDiff(undefined, redact)).toBeUndefined();
   });
+
+  it('catches dotted and bare paths, hides declared parts inside a parent entry, and fails closed', () => {
+    expect(
+      redactDiff(
+        [
+          { path: 'password', after: 'p1' },
+          { path: 'smtp.password', before: 'p2' },
+          { path: '/args', before: ['u', 'old-secret'], after: ['u', 'new-secret'] },
+        ],
+        redact,
+        ['/args/1'],
+      ),
+    ).toEqual([
+      { path: 'password', after: REDACTED },
+      { path: 'smtp.password', before: REDACTED },
+      { path: '/args', before: ['u', REDACTED], after: ['u', REDACTED] },
+    ]);
+    const bare = (<T>(v: T) => v) as Parameters<typeof redactDiff>[1];
+    expect(redactDiff([{ path: '/alias', after: 'x' }], bare)).toEqual([{ path: '/alias', after: REDACTED }]);
+  });
 });
