@@ -47,7 +47,7 @@ Maintainers bump versions; don't bump them unless asked. `@synoikia/plugin-sdk` 
 
 ## Security review
 
-Before opening a PR that touches `gate/`, `sandbox/`, `approvals/`, `auth/`, `crypto/`, `plugins/`, `http/`, `runtime/`, `instances/`, the SDK's RPC contract or the DB schema, run the `security-reviewer` subagent (`.claude/agents/security-reviewer.md`) on the diff and address its findings.
+Before opening a PR that touches `gate/`, `sandbox/`, `approvals/`, `auth/`, `crypto/`, `plugins/`, `http/`, `runtime/`, `instances/`, the SDK's RPC contract, the DB schema, a `package.json` or the `Dockerfile`, run the `security-reviewer` subagent (`.claude/agents/security-reviewer.md`) on the diff and address its findings. It also runs `pnpm audit` and triages known CVEs by whether the vulnerable dependency ships and is reachable.
 
 ## Protected files
 
