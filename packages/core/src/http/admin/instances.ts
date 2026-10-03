@@ -6,7 +6,6 @@ import {
   applyBulkLevel,
   listGroups,
   mergeGroups,
-  previewBulkLevel,
   renameGroup,
   setGroupLevel,
   updateOperation,
@@ -109,12 +108,11 @@ export function registerInstanceRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
       z.object({
         level: z.string().optional(),
         label: z.string().optional(),
-        acknowledge: z.array(z.string()).optional(),
       }),
     );
     if (body.label !== undefined) renameGroup(ctx.db, id, c.req.param('key'), body.label, { actor: actor(c) });
     if (body.level !== undefined) {
-      setGroupLevel(ctx.db, id, c.req.param('key'), body.level, { acknowledge: body.acknowledge, actor: actor(c) });
+      setGroupLevel(ctx.db, id, c.req.param('key'), body.level, { actor: actor(c) });
     }
     return c.json(listGroups(ctx.db, id).find((g) => g.key === c.req.param('key')) ?? null);
   });
@@ -129,18 +127,10 @@ export function registerInstanceRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
     return c.json(mergeGroups(ctx.db, id, body, { actor: actor(c) }));
   });
 
-  app.get('/api/instances/:id/groups/bulk-level/preview', (c) => {
-    exists(c.req.param('id'));
-    return c.json(previewBulkLevel(ctx.db, c.req.param('id'), c.req.query('level') ?? ''));
-  });
-
   app.post('/api/instances/:id/groups/bulk-level', async (c) => {
     exists(c.req.param('id'));
-    const body = await readJson(
-      c,
-      z.object({ level: z.string(), confirm: z.string().optional(), acknowledge: z.array(z.string()).optional() }),
-    );
-    return c.json(applyBulkLevel(ctx.db, c.req.param('id'), body.level, { ...body, actor: actor(c) }));
+    const body = await readJson(c, z.object({ level: z.string() }));
+    return c.json(applyBulkLevel(ctx.db, c.req.param('id'), body.level, { actor: actor(c) }));
   });
 
   app.get('/api/instances/:id/operations', (c) => {

@@ -267,13 +267,7 @@ describe('InstanceManager', () => {
     const t = setup();
     const inst = await create(t.manager);
     await t.manager.syncNow(inst.id);
-    const opIds = t.db
-      .select()
-      .from(operations)
-      .all()
-      .filter((o) => o.classification === 'write' && !o.locked)
-      .map((o) => o.id);
-    setGroupLevel(t.db, inst.id, 'echo', 'write', { acknowledge: opIds });
+    setGroupLevel(t.db, inst.id, 'echo', 'write');
 
     const approvals = new ApprovalService(t.db, new ApprovalLinkService(t.db));
     cleanup.push(() => approvals.cancelAll());

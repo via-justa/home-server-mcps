@@ -12,8 +12,6 @@ const props = defineProps<{
   instance: Instance;
   /** Whether MCP clients may register themselves (OAuth dynamic client registration); null if unknown. */
   dynamicRegistration: boolean | null;
-  /** The configured public MCP URL; null when endpoint URLs are derived from the request. */
-  publicMcpUrl: string | null;
 }>();
 
 const CLIENTS = {
@@ -43,7 +41,15 @@ watch(client, (v) => {
 });
 
 const slug = computed(() => props.instance.slug);
-const url = computed(() => props.instance.endpointUrl ?? `${window.location.origin}/${props.instance.slug}`);
+/**
+ * Without PUBLIC_MCP_URL core only knows the path (`/<slug>`); the MCP listener is on another port than
+ * this portal, so guessing from the browser's address would be wrong. Show a placeholder host instead.
+ */
+const knownUrl = computed(() => {
+  const u = props.instance.endpointUrl;
+  return u && /^https?:\/\//.test(u) ? u : null;
+});
+const url = computed(() => knownUrl.value ?? `https://<your-mcp-host>/${props.instance.slug}`);
 const auth = computed(() => props.instance.effectiveAuthMode ?? 'oauth');
 const oauth = computed(() => auth.value === 'oauth' || auth.value === 'bearer+oauth');
 const bearer = computed(() => auth.value === 'bearer');
@@ -90,6 +96,10 @@ async function copy(text: string) {
       </div>
       <pre class="code" data-snippet="url">{{ url }}</pre>
     </div>
+    <p v-if="!knownUrl" class="alert warn" data-warn="public-url">
+      Synoikia doesn't know its public MCP address. Set <code>PUBLIC_MCP_URL</code> to the address clients reach the MCP
+      port on, then replace <code>&lt;your-mcp-host&gt;</code> below.
+    </p>
     <div class="meta">
       Sign-in <span class="pill">{{ AUTH_MODE_LABELS[auth] ?? auth }}</span>
       <RouterLink :to="`/endpoints/${slug}/settings`">change</RouterLink>
@@ -185,10 +195,6 @@ async function copy(text: string) {
         The portal's <strong>Automatic</strong> OAuth option registers itself with Synoikia. Turn on
         <strong>Let MCP clients register themselves</strong> under
         <RouterLink to="/settings/mcp">Settings → MCP</RouterLink>.
-      </p>
-      <p v-if="!publicMcpUrl" class="alert warn" data-warn="public-url">
-        This URL comes from your browser's address. Cloudflare must reach the endpoint publicly (or through a Cloudflare
-        Tunnel): set <code>PUBLIC_MCP_URL</code> to that address.
       </p>
       <ol class="steps">
         <li>

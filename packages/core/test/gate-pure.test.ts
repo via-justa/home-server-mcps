@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { canonicalJson, sha256Hex } from '../src/gate/canonical.js';
 import { getPointer, matches, MatchSchema } from '../src/gate/match.js';
-import { createInstanceRedactor, createRedactor, GLOBAL_SENSITIVE_KEYS, REDACTED } from '../src/gate/redact.js';
+import {
+  createInstanceRedactor,
+  createRedactor,
+  GLOBAL_SENSITIVE_KEYS,
+  REDACTED,
+  redactPaths,
+} from '../src/gate/redact.js';
 
 describe('createRedactor', () => {
   const redact = createRedactor(GLOBAL_SENSITIVE_KEYS, ['vendorToken']);
@@ -206,5 +212,24 @@ describe('instance redactor', () => {
     expect(redact({ url: 'https://x/?k=p%40ss%20word!' })).toEqual({ url: 'https://x/?k=[REDACTED]' });
     expect(redact({ ['p@ss word!']: 1 })).toEqual({ [REDACTED]: 1 });
     expect(redact('abc stays')).toBe('abc stays'); // too short to scrub safely
+  });
+});
+
+describe('redactPaths', () => {
+  it('hides positional and nested values the plugin declared, on a copy', () => {
+    const params = ['admin', 'hunter22', { opts: { pin: 1234, keep: 'x' } }];
+    expect(redactPaths(params, ['/1', '/2/opts/pin'])).toEqual([
+      'admin',
+      REDACTED,
+      { opts: { pin: REDACTED, keep: 'x' } },
+    ]);
+    expect(params[1]).toBe('hunter22'); // the input is untouched
+  });
+
+  it('ignores missing paths, empty values and inherited keys, and decodes ~1 / ~0', () => {
+    expect(redactPaths({ a: '', b: null }, ['/a', '/b', '/c/d', '/__proto__/x'])).toEqual({ a: '', b: null });
+    expect(redactPaths({ 'a/b': 's', 'c~d': 't' }, ['/a~1b', '/c~0d'])).toEqual({ 'a/b': REDACTED, 'c~d': REDACTED });
+    expect(redactPaths('plain', ['/0'])).toBe('plain');
+    expect(redactPaths({ a: 1 }, null)).toEqual({ a: 1 });
   });
 });

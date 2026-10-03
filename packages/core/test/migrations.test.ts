@@ -234,3 +234,21 @@ describe('0010 access by kind migration', () => {
     expect(resolveAccess(db, 'i1', 'ovr.ran')).toMatchObject({ mode: 'approve' });
   });
 });
+
+describe('0011 sensitive params migration', () => {
+  it('adds the column, empty for existing operations', () => {
+    const { dir, sqlite } = databaseAt('0010_access_by_kind');
+    const now = Date.now();
+    sqlite.exec(`
+      INSERT INTO plugins (id, plugin_id, version, path, manifest, status) VALUES ('p1', 'echo', '1.0.0', '/x', '{}', 'ok');
+      INSERT INTO plugin_instances (id, plugin_id, slug, display_name) VALUES ('i1', 'p1', 'nas', 'NAS');
+      INSERT INTO operation_groups (id, instance_id, key, label, level, first_seen_at) VALUES ('g', 'i1', 'a', 'A', 'ask', ${now});
+      INSERT INTO operations (id, instance_id, key, kind, plugin_group, group_id, classification, classification_source,
+          inferred_classification, inferred_reason, first_seen_at, last_seen_at)
+        VALUES ('o1', 'i1', 'a.set', 'method', 'a', 'g', 'write', 'inferred', 'write', 'x', ${now}, ${now});
+    `);
+    sqlite.close();
+    const db = openDatabase({ dataDir: dir });
+    expect(db.select().from(schema.operations).get()).toMatchObject({ key: 'a.set', sensitiveParams: null });
+  });
+});

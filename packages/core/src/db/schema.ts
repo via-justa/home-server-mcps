@@ -194,6 +194,8 @@ export const operations = sqliteTable(
     needsReview: flag('needs_review').notNull().default(false),
     matchProfile: text('match_profile'),
     paramsSchema: json('params_schema'),
+    /** JSON-pointer paths into params that hold a secret without a key name (a positional password). */
+    sensitiveParams: json('sensitive_params').$type<string[]>(),
     docs: json('docs'),
     firstSeenAt: ts('first_seen_at').notNull(),
     lastSeenAt: ts('last_seen_at').notNull(),

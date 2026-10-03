@@ -1,7 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import SchemaForm from '../src/components/SchemaForm.vue';
-import { fakeApi, json, mountAt, signedIn } from './helpers';
+import { fakeApi, mountAt, signedIn } from './helpers';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -134,7 +134,7 @@ describe('Access page', () => {
     });
   });
 
-  it('lists exactly the writes that will run without asking before setting a group to Write', async () => {
+  it('sets a group to Write with no dialog and no acknowledgement list', async () => {
     const { calls } = api({ 'PATCH /api/instances/i1/groups/app': {} });
     const { wrapper } = await mountAt('/endpoints/nas/access');
     await wrapper
@@ -142,75 +142,25 @@ describe('Access page', () => {
       .findAll('[role="radio"]')
       .find((b) => b.text() === 'Write')!
       .trigger('click');
-    const dialog = wrapper.get('[role="dialog"]');
-    expect(dialog.text()).toContain('run without asking');
-    expect(dialog.text()).toContain('app.start');
-    expect(dialog.text()).toContain('app.stop');
-    // Setting the group resets operations with their own level, so app.redeploy runs too.
-    expect(dialog.text()).toContain('app.redeploy');
-    expect(dialog.text()).toContain('go back to following the group');
-    expect(dialog.text()).not.toContain('app.delete'); // locked never auto-runs
-    await dialog
-      .findAll('button')
-      .find((b) => b.text() === 'Set to Write')!
-      .trigger('click');
     await flushPromises();
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
     expect(calls.find((c) => c.method === 'PATCH')).toMatchObject({
       path: '/api/instances/i1/groups/app',
-      body: { level: 'write', acknowledge: ['op-app.start', 'op-app.stop', 'op-app.redeploy'] },
+      body: { level: 'write' },
     });
   });
 
-  it('shows the server’s list when the writes changed since the page loaded', async () => {
-    api({
-      'PATCH /api/instances/i1/groups/app': json(409, {
-        error: 'acknowledgement_mismatch',
-        message: 'Acknowledge exactly the writes that will run without asking',
-        details: { expected: [{ id: 'op-app.upgrade', key: 'app.upgrade' }] },
-      }),
-    });
-    const { wrapper } = await mountAt('/endpoints/nas/access');
-    await wrapper.get('[data-group="app"]').findAll('[role="radio"]')[3]!.trigger('click');
-    await wrapper
-      .get('[role="dialog"]')
-      .findAll('button')
-      .find((b) => b.text() === 'Set to Write')!
-      .trigger('click');
-    await flushPromises();
-    const dialog = wrapper.get('[role="dialog"]');
-    expect(dialog.text()).toContain('app.upgrade');
-    expect(dialog.text()).toContain('The list changed');
-  });
-
-  it('bulk Write needs the slug typed and sends the previewed acknowledgement list', async () => {
-    const { calls } = api({
-      'GET /api/instances/i1/groups/bulk-level/preview': {
-        level: 'write',
-        groups: [{ key: 'app', label: 'Apps', from: 'ask', exposes: [{ id: 'op-app.start', key: 'app.start' }] }],
-        acknowledge: ['op-app.start'],
-      },
-      'POST /api/instances/i1/groups/bulk-level': [],
-    });
+  it('sets every group from the dropdown after one confirm, Write included', async () => {
+    const { calls } = api({ 'POST /api/instances/i1/groups/bulk-level': [] });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
     const { wrapper } = await mountAt('/endpoints/nas/access');
     const bulk = wrapper.get('select.bulk');
-    expect(bulk.findAll('option').map((o) => o.text())).toEqual(['Set all groups…', 'None', 'Read', 'Ask', 'Write…']);
+    expect(bulk.findAll('option').map((o) => o.text())).toEqual(['Set all groups…', 'None', 'Read', 'Ask', 'Write']);
     await bulk.setValue('write');
     await flushPromises();
-    // The dropdown goes back to its prompt once a choice is made.
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
     expect((bulk.element as HTMLSelectElement).value).toBe('');
-    const dialog = wrapper.get('[role="dialog"]');
-    expect(dialog.text()).toContain('Ask → Write');
-    const confirm = dialog.findAll('button').find((b) => b.text() === 'Set all to Write')!;
-    expect(confirm.attributes('disabled')).toBeDefined();
-    await dialog.get('input#bulk-confirm').setValue('nas');
-    expect(confirm.attributes('disabled')).toBeUndefined();
-    await confirm.trigger('click');
-    await flushPromises();
-    expect(calls.find((c) => c.path === '/api/instances/i1/groups/bulk-level')?.body).toEqual({
-      level: 'write',
-      confirm: 'nas',
-      acknowledge: ['op-app.start'],
-    });
+    expect(calls.find((c) => c.path === '/api/instances/i1/groups/bulk-level')?.body).toEqual({ level: 'write' });
   });
 
   it('gives operations their own level with the same toggles, only the levels their kind allows', async () => {
@@ -274,12 +224,13 @@ describe('Access page', () => {
     expect(patched('app.redeploy')[1]?.body).toEqual({ level: null });
     expect(wrapper.get('[data-op="app.redeploy"]').text()).not.toContain('own level');
 
-    // Write on a plain write warns first.
+    // Write on a plain write needs no confirmation.
+    vi.mocked(window.confirm).mockClear();
     await radios('app.start')
       .find((b) => b.text() === 'Write')!
       .trigger('click');
     await flushPromises();
-    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('without asking anyone'));
+    expect(window.confirm).not.toHaveBeenCalled();
     expect(patched('app.start')[0]?.body).toEqual({ level: 'write' });
   });
 
@@ -520,14 +471,11 @@ describe('Pre-approval rules', () => {
 
 describe('Connect a client', () => {
   function api(auth: string, opts: { dcr?: boolean; publicMcpUrl?: string | null } = {}) {
-    const inst = { ...instance, endpointUrl: 'https://mcp.example.com/nas', effectiveAuthMode: auth };
+    const pub = opts.publicMcpUrl === undefined ? 'https://mcp.example.com' : opts.publicMcpUrl;
+    const inst = { ...instance, endpointUrl: `${pub ?? ''}/nas`, effectiveAuthMode: auth };
     return fakeApi({
       'GET /api/session': signedIn,
-      'GET /api/overview': {
-        ...overview,
-        instances: [inst],
-        publicMcpUrl: opts.publicMcpUrl === undefined ? 'https://mcp.example.com' : opts.publicMcpUrl,
-      },
+      'GET /api/overview': { ...overview, instances: [inst], publicMcpUrl: pub },
       'GET /api/instances/i1/connection': {
         config: {},
         schema: { type: 'object', properties: {} },
@@ -577,14 +525,21 @@ describe('Connect a client', () => {
     expect(localStorage.getItem('synoikia.connectClient')).toBe('claude-desktop');
   });
 
-  it('warns on the Cloudflare portal when the endpoint cannot do OAuth, DCR is off, or there is no public URL', async () => {
-    api('bearer', { dcr: false, publicMcpUrl: null });
+  it('warns on the Cloudflare portal when the endpoint cannot do OAuth or DCR is off', async () => {
+    api('bearer', { dcr: false });
     const { card: c } = await card();
     await c.get('select').setValue('cloudflare');
     expect(c.find('[data-warn="auth"]').exists()).toBe(true);
     expect(c.find('[data-warn="dcr"]').exists()).toBe(true);
-    expect(c.find('[data-warn="public-url"]').exists()).toBe(true);
     expect(c.text()).toContain('Add MCP server');
+  });
+
+  it('shows a placeholder host, never the portal’s own address, when PUBLIC_MCP_URL is unset', async () => {
+    api('oauth', { publicMcpUrl: null });
+    const { card: c } = await card();
+    expect(c.get('[data-snippet="url"]').text()).toBe('https://<your-mcp-host>/nas');
+    expect(c.find('[data-warn="public-url"]').exists()).toBe(true);
+    expect(c.get('[data-snippet="command"]').text()).toContain('https://<your-mcp-host>/nas');
   });
 
   it('shows no Cloudflare warnings when everything is in place, and copies snippets', async () => {

@@ -1,18 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import { ApiError, errorText, http, qs } from '../../api';
+import { errorText, http } from '../../api';
 import ModalDialog from '../../components/ModalDialog.vue';
 import { LEVEL_HELP, LEVEL_LABELS, OP_LEVEL_HELP, REASON_LABELS, kindSource } from '../../format';
 import { useAppStore } from '../../stores/app';
 import { LEVELS } from '../../types';
-import type { BulkPreview, GroupSummary, Instance, Level, Operation } from '../../types';
+import type { GroupSummary, Instance, Level, Operation } from '../../types';
 
 /**
  * Access page (design §5.2.1): one None | Read | Ask | Write control per group. Setting it resets every
  * operation in the group to follow it. Each operation has its own control with only the levels its
  * kind allows (reads: None | Read | Ask, writes: None | Ask | Write, locked: None | Ask); a level of
  * its own shows a ↺ that puts it back on the group's. Ask: calls wait for a human. Write: writes run
- * without asking, so raising a group to Write lists exactly those writes and acknowledges them.
+ * without asking; setting it acknowledges them, with no confirmation.
  * Locked operations never follow their group: each needs its own Ask, and can't be set to Write.
  */
 const props = defineProps<{ instance: Instance }>();
@@ -41,8 +41,6 @@ onMounted(load);
 
 const text = computed(() => search.value.trim().toLowerCase());
 const isWrite = (o: Operation) => o.locked || o.classification === 'write';
-/** Plain writes: setting their group to Write resets them to follow it, so they then run without asking. */
-const isPlainWrite = (o: Operation) => !o.locked && o.classification === 'write';
 const needsAttention = (o: Operation) => o.pendingReview || o.needsReview;
 const opsOf = (key: string) =>
   ops.value.filter(
@@ -85,88 +83,29 @@ async function act(fn: () => Promise<unknown>) {
 
 // ── single-group level ──
 
-const raising = ref<{ group: GroupSummary; autoRun: { id: string; key: string }[]; note?: string }>();
-
 function setLevel(group: GroupSummary, level: Level) {
   // Clicking the current level still resets operations that have their own.
   if (level === group.level && !group.counts.overridden) return;
-  if (level !== 'write') {
-    void act(() => http.patch(`${base.value}/groups/${encodeURIComponent(group.key)}`, { level }));
-    return;
-  }
-  const autoRun = ops.value
-    .filter((o) => o.group === group.key && isPlainWrite(o))
-    .map((o) => ({ id: o.id, key: o.key }));
-  raising.value = { group, autoRun };
-}
-
-async function confirmRaise() {
-  const r = raising.value;
-  if (!r) return;
-  try {
-    await http.patch(`${base.value}/groups/${encodeURIComponent(r.group.key)}`, {
-      level: 'write',
-      acknowledge: r.autoRun.map((e) => e.id),
-    });
-    raising.value = undefined;
-    await load();
-  } catch (err) {
-    if (err instanceof ApiError && err.code === 'acknowledgement_mismatch') {
-      const expected = (err.details as { expected: { id: string; key: string }[] }).expected;
-      raising.value = { ...r, autoRun: expected, note: 'The list changed since this page loaded. Review it again.' };
-    } else {
-      raising.value = { ...r, note: errorText(err) };
-    }
-  }
+  void act(() => http.patch(`${base.value}/groups/${encodeURIComponent(group.key)}`, { level }));
 }
 
 // ── bulk ──
 
-const bulk = ref<{ preview: BulkPreview; confirm: string; note?: string }>();
 const bulkChoice = ref('');
 /** The "Set all groups…" dropdown: act on the choice, then show the prompt again. */
 async function onBulkChoice() {
   const level = bulkChoice.value as Level;
   bulkChoice.value = '';
-  if (level) await bulkLevel(level);
-}
-async function bulkLevel(level: Level) {
-  if (level !== 'write') {
-    if (
-      !window.confirm(
-        `Set every group on /${props.instance.slug} to ${LEVEL_LABELS[level]}? Operations with their own level go back to following their group.`,
-      )
+  if (!level) return;
+  // One confirm because it changes every group at once, the same for every level.
+  if (
+    !window.confirm(
+      `Set every group on /${props.instance.slug} to ${LEVEL_LABELS[level]}? Operations with their own level go back to following their group.`,
     )
-      return;
-    await act(() => http.post(`${base.value}/groups/bulk-level`, { level }));
+  )
     return;
-  }
-  try {
-    const preview = await http.get<BulkPreview>(`${base.value}/groups/bulk-level/preview${qs({ level: 'write' })}`);
-    bulk.value = { preview, confirm: '' };
-  } catch (err) {
-    error.value = errorText(err);
-  }
+  await act(() => http.post(`${base.value}/groups/bulk-level`, { level }));
 }
-async function confirmBulk() {
-  const b = bulk.value;
-  if (!b) return;
-  try {
-    await http.post(`${base.value}/groups/bulk-level`, {
-      level: 'write',
-      confirm: b.confirm,
-      acknowledge: b.preview.acknowledge,
-    });
-    bulk.value = undefined;
-    await load();
-  } catch (err) {
-    if (err instanceof ApiError && err.status === 409) {
-      const preview = await http.get<BulkPreview>(`${base.value}/groups/bulk-level/preview${qs({ level: 'write' })}`);
-      bulk.value = { preview, confirm: b.confirm, note: `${errorText(err)} The preview was refreshed.` };
-    } else bulk.value = { ...b, note: errorText(err) };
-  }
-}
-const bulkGroups = computed(() => bulk.value?.preview.groups.filter((g) => g.exposes.length) ?? []);
 
 // ── regroup ──
 
@@ -216,13 +155,14 @@ async function setOpLevel(op: Operation, group: GroupSummary, level: Level) {
   // Picking what the group already gives it just puts the operation back on the group's level.
   const own: Level | null = level === fromGroup(op, group) ? null : level;
   if (own === op.levelOverride && (own !== null || level === op.level)) return;
-  const warning =
-    own === 'ask' && op.locked
-      ? `${op.key} is locked (destructive or irreversible). At Ask it becomes callable: every call needs your approval on the approval page, with a typed confirmation and a fresh authenticator code. Continue?`
-      : own === 'write'
-        ? `${op.key} will run without asking anyone. Continue?`
-        : null;
-  if (warning && !window.confirm(warning)) return;
+  if (
+    own === 'ask' &&
+    op.locked &&
+    !window.confirm(
+      `${op.key} is locked (destructive or irreversible). At Ask it becomes callable: every call needs your approval on the approval page, with a typed confirmation and a fresh authenticator code. Continue?`,
+    )
+  )
+    return;
   await patchOp(op, { level: own });
 }
 
@@ -254,7 +194,7 @@ function status(op: Operation): { text: string; tone: string } {
         @change="onBulkChoice"
       >
         <option value="" disabled>Set all groups…</option>
-        <option v-for="l in LEVELS" :key="l" :value="l">{{ LEVEL_LABELS[l] }}{{ l === 'write' ? '…' : '' }}</option>
+        <option v-for="l in LEVELS" :key="l" :value="l">{{ LEVEL_LABELS[l] }}</option>
       </select>
       <button class="btn btn-sm" type="button" @click="merging = { from: [], into: '', label: '' }">Regroup…</button>
     </div>
@@ -391,63 +331,6 @@ function status(op: Operation): { text: string; tone: string } {
         {{ groups.length ? 'Nothing matches.' : 'No catalog yet — sync the endpoint from the Connection tab.' }}
       </div>
     </div>
-
-    <ModalDialog
-      v-if="raising"
-      :title="`Let writes in ${raising.group.label} run without asking?`"
-      @close="raising = undefined"
-    >
-      <p v-if="raising.autoRun.length" class="small">
-        At Write, these {{ opLabel.toLowerCase() }} run as soon as a client calls them, with nobody approving:
-      </p>
-      <p v-else class="small">This group has no writes, so nothing starts running without asking.</p>
-      <ul class="expose mono small">
-        <li v-for="e in raising.autoRun" :key="e.id">{{ e.key }}</li>
-      </ul>
-      <p v-if="raising.group.counts.locked" class="small muted">
-        {{ raising.group.counts.locked }} locked operation(s) never run without asking.
-      </p>
-      <p class="small muted">
-        Operations with their own level go back to following the group. Writes found by later syncs start off.
-      </p>
-      <p v-if="raising.note" class="alert warn">{{ raising.note }}</p>
-      <template #footer>
-        <button class="btn" type="button" @click="raising = undefined">Cancel</button>
-        <button class="btn btn-danger-solid" type="button" @click="confirmRaise">Set to Write</button>
-      </template>
-    </ModalDialog>
-
-    <ModalDialog v-if="bulk" :title="`Set every group on /${instance.slug} to Write?`" wide @close="bulk = undefined">
-      <p class="small">
-        <strong>{{ bulk.preview.acknowledge.length }}</strong> write operation(s) across
-        {{ bulkGroups.length }} group(s) will run without anyone approving them. Operations with their own level go back
-        to following their group. Locked operations still ask. Writes found by later syncs start off.
-      </p>
-      <div class="bulk-list">
-        <div v-for="g in bulkGroups" :key="g.key" class="small">
-          <strong>{{ g.label }}</strong> <span class="muted">({{ LEVEL_LABELS[g.from] }} → Write)</span>
-          <span class="mono muted"> {{ g.exposes.map((e) => e.key).join(', ') }}</span>
-        </div>
-      </div>
-      <div class="field">
-        <label for="bulk-confirm"
-          >Type <code>{{ instance.slug }}</code> to confirm</label
-        >
-        <input id="bulk-confirm" v-model="bulk.confirm" autocomplete="off" />
-      </div>
-      <p v-if="bulk.note" class="alert warn">{{ bulk.note }}</p>
-      <template #footer>
-        <button class="btn" type="button" @click="bulk = undefined">Cancel</button>
-        <button
-          class="btn btn-danger-solid"
-          type="button"
-          :disabled="bulk.confirm !== instance.slug"
-          @click="confirmBulk"
-        >
-          Set all to Write
-        </button>
-      </template>
-    </ModalDialog>
 
     <ModalDialog v-if="merging" title="Regroup" @close="merging = undefined">
       <p class="small muted">
@@ -647,14 +530,11 @@ function status(op: Operation): { text: string; tone: string } {
 .reset:hover {
   border-color: var(--border-strong);
 }
-.expose,
-.bulk-list,
 .merge-list {
   max-height: 240px;
   overflow: auto;
   margin: 8px 0 12px;
 }
-.bulk-list > div + div,
 .merge-list > label + label {
   margin-top: 6px;
 }

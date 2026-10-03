@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ApprovalLinkService } from '../src/approvals/links.js';
 import { ApprovalService } from '../src/approvals/service.js';
 import type { ClientPrompts, FormPromptRequest, UrlPromptRequest } from '../src/approvals/service.js';
-import { previewBulkLevel, setGroupLevel, updateOperation } from '../src/catalog/groups.js';
+import { setGroupLevel, updateOperation } from '../src/catalog/groups.js';
 import { applyCatalogSync } from '../src/catalog/sync.js';
 import { openDatabase } from '../src/db/index.js';
 import { approvalLinks, auditLog, guides, operations, pendingApprovals, preApprovalRules } from '../src/db/schema.js';
@@ -51,10 +51,7 @@ async function setup(settings: Partial<InstanceSettings> = {}) {
     plugin: () => proc,
   };
   const opId = (key: string) => db.select().from(operations).where(eq(operations.key, key)).get()!.id;
-  const setLevel = (level: AccessLevel) =>
-    setGroupLevel(db, instanceId, 'echo', level, {
-      acknowledge: level === 'write' ? previewBulkLevel(db, instanceId, 'write').acknowledge : undefined,
-    });
+  const setLevel = (level: AccessLevel) => setGroupLevel(db, instanceId, 'echo', level);
   const caller = (prompts?: ClientPrompts, ceiling: AccessCeiling = 'write'): CallerContext => ({
     client: { kind: 'mcp_client', id: 'claude-test' },
     principal: { ceiling },
@@ -278,6 +275,43 @@ describe('execute → gate → plugin', () => {
         },
       );
       expect(client.asked).toHaveLength(1);
+
+      // A read the admin put at its own Ask always needs a human, whatever the setting allows for writes.
+      updateOperation(t.db, t.instanceId, t.opId('echo.query'), { level: 'ask' });
+      await expect(t.exec(`await echo.call('echo.query', { q: 1 });`, client.prompts)).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('only supports form') },
+      });
+      expect(client.asked).toHaveLength(1);
+    });
+
+    it('rejects a read whose own Ask was lowered while its approval waited', async () => {
+      const t = await setup();
+      updateOperation(t.db, t.instanceId, t.opId('echo.query'), { level: 'ask' });
+      const client = urlClient((req) => {
+        updateOperation(t.db, t.instanceId, t.opId('echo.query'), { level: 'none' });
+        t.approvals.decide(req.approvalId, { approve: true, decidedBy: 'admin' });
+      });
+      await expect(t.exec(`await echo.call('echo.query', { q: 1 });`, client.prompts)).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'OPERATION_DISABLED' },
+      });
+      expect(t.audits()[0]).toMatchObject({ decision: 'rejected:access_changed' });
+    });
+
+    it('hides params the plugin declared sensitive by path from the approval and the audit log', async () => {
+      const t = await setup();
+      t.setLevel('ask');
+      const client = urlClient((req) => t.approvals.decide(req.approvalId, { approve: true, decidedBy: 'admin' }));
+      const r = await t.exec(
+        `return (await echo.call('echo.set', { name: 'x', pin: '4711' })).params;`,
+        client.prompts,
+      );
+      // The plugin's invoke still gets the real value.
+      expect(r).toMatchObject({ ok: true, value: { name: 'x', pin: '4711' } });
+      expect(client.opened[0]?.message).not.toContain('4711');
+      expect(t.db.select().from(pendingApprovals).get()?.paramsDisplay).toEqual({ name: 'x', pin: '[REDACTED]' });
+      expect(t.audits()[0]?.params).toEqual({ name: 'x', pin: '[REDACTED]' });
     });
 
     it('denies at once when the client cannot show prompts', async () => {
@@ -485,6 +519,17 @@ describe('execute → gate → plugin', () => {
       });
       expect(t.audits().map((a) => a.decision)).toEqual([`auto-approved:rule:${ruleId}`, 'denied']);
       expect(t.db.select().from(pendingApprovals).all()).toHaveLength(1); // only the non-matching call
+    });
+
+    it('can cover a read the admin put at its own Ask', async () => {
+      const t = await setup();
+      updateOperation(t.db, t.instanceId, t.opId('echo.query'), { level: 'ask' });
+      const ruleId = addRule(t, { operationId: t.opId('echo.query'), match: [{ field: '/q', op: 'eq', value: 1 }] });
+      await expect(t.exec(`return (await echo.call('echo.query', { q: 1 })).key;`)).resolves.toMatchObject({
+        ok: true,
+        value: 'echo.query',
+      });
+      expect(t.audits()[0]).toMatchObject({ decision: `auto-approved:rule:${ruleId}`, classification: 'read' });
     });
 
     it('fall back to a human once the rate limit is hit', async () => {

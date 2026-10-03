@@ -6,7 +6,8 @@ import { writeAudit } from '../audit.js';
 import type { Db } from '../db/index.js';
 import { operationGroupAliases, operationGroups, operations, pluginInstances, preApprovalRules } from '../db/schema.js';
 import { ValidationError } from '../errors.js';
-import { normalizeLevel } from '../gate/access.js';
+import { levelInForce, normalizeLevel } from '../gate/access.js';
+import type { AccessLevel } from '../gate/access.js';
 import { MatchSchema } from '../gate/match.js';
 import { matchMisfit } from './rules.js';
 
@@ -136,6 +137,7 @@ export function applyCatalogSync(
         needsReview: d.needsReview,
         matchProfile: d.matchProfile ?? null,
         paramsSchema: d.paramsSchema ?? null,
+        sensitiveParams: d.sensitiveParams ?? null,
         docs: d.docs ?? null,
         lastSeenAt: now,
         stale: false,
@@ -165,19 +167,30 @@ export function applyCatalogSync(
       const becameLocked = locked && !prev.locked;
       const changed = fingerprint(prev) !== fingerprint(fields) || prev.stale;
       const becameWrite = nowWrite && (!isEffectiveWrite(prev) || (prev.writeAcknowledged && changed));
+      // Its own level, made to fit what it is now. A newly locked op starts closed again (it needs its
+      // own `ask`). One the plugin moved to another group keeps the access it had there, so a regroup
+      // never opens it wider (a new group starts at `ask`; an existing one may be at `write`).
+      let levelOverride: AccessLevel | null = prev.levelOverride;
+      if (becameLocked) levelOverride = null;
+      else if (prev.levelOverride !== null)
+        levelOverride = normalizeLevel({ classification, locked }, prev.levelOverride);
+      else if (prev.groupId !== fields.groupId && !locked) {
+        const had = levelInForce(
+          { classification: prev.classification, locked: false, levelOverride: null, writeAcknowledged: false },
+          groupsBefore.get(prev.groupId),
+        );
+        const newGroup = [...groups.values()].find((g) => g.id === fields.groupId);
+        const kind = { classification, locked, levelOverride: null, writeAcknowledged: false };
+        // Only an exception when following the new group would give it different access.
+        if (levelInForce(kind, newGroup) !== normalizeLevel(kind, had)) levelOverride = normalizeLevel(kind, had);
+      }
       tx.update(operations)
         .set({
           ...fields,
           // The plugin can add the attestation requirement; only an admin can remove it (and then it stays off).
           attestationRequired: prev.attestationRequired || (d.attestationRequired && !prev.attestationWaived),
           ...(becameWrite ? { writeAcknowledged: false, acknowledgedAt: null, acknowledgedBy: null } : {}),
-          // A newly locked op starts closed again: it needs its own `ask` level to be callable.
-          ...(becameLocked
-            ? { levelOverride: null }
-            : prev.levelOverride !== null &&
-                normalizeLevel({ classification, locked }, prev.levelOverride) !== prev.levelOverride
-              ? { levelOverride: normalizeLevel({ classification, locked }, prev.levelOverride) }
-              : {}),
+          ...(levelOverride !== prev.levelOverride ? { levelOverride } : {}),
         })
         .where(eq(operations.id, prev.id))
         .run();

@@ -261,31 +261,13 @@ describe('instances and access', () => {
       ['echo.set', 'none'],
     ]);
 
-    const refused = await t.b.patch(`/api/instances/${t.id}/groups/echo`, { level: 'write' });
-    expect(refused.status).toBe(409);
-    const { details } = (await refused.json()) as { details: { expected: { id: string }[] } };
-    const ok = await t.b.patch(`/api/instances/${t.id}/groups/echo`, {
-      level: 'write',
-      acknowledge: details.expected.map((e) => e.id),
-    });
+    // Write needs no acknowledgement list or typed slug: it acknowledges the writes it lets run.
+    const ok = await t.b.patch(`/api/instances/${t.id}/groups/echo`, { level: 'write' });
     expect(await ok.json()).toMatchObject({ level: 'write', counts: { pendingReview: 0 } });
-
-    const preview = (await (await t.b.get(`/api/instances/${t.id}/groups/bulk-level/preview?level=write`)).json()) as {
-      acknowledge: string[];
-    };
-    expect(
-      (await t.b.post(`/api/instances/${t.id}/groups/bulk-level`, { level: 'write', acknowledge: preview.acknowledge }))
-        .status,
-    ).toBe(409);
-    expect(
-      (
-        await t.b.post(`/api/instances/${t.id}/groups/bulk-level`, {
-          level: 'write',
-          confirm: 'echo',
-          acknowledge: preview.acknowledge,
-        })
-      ).status,
-    ).toBe(200);
+    expect((await t.b.get(`/api/instances/${t.id}/groups/bulk-level/preview?level=write`)).status).toBe(404);
+    const bulk = await t.b.post(`/api/instances/${t.id}/groups/bulk-level`, { level: 'write' });
+    expect(bulk.status).toBe(200);
+    expect(await bulk.json()).toEqual([{ key: 'echo', label: 'echo', from: 'write' }]);
   });
 
   it('rejects rules on locked operations and unknown match fields, and flags inert rules', async () => {

@@ -91,3 +91,29 @@ export function createInstanceRedactor(opts: {
   };
   return <T>(value: T) => walk(value, new WeakSet()) as T;
 }
+
+/**
+ * Hides values at JSON-pointer `paths` (`/1`, `/0/password`): secrets the plugin declared by position
+ * (`sensitiveParams`) because they have no key name to catch. Returns a copy; paths that don't exist
+ * are ignored. Applied on top of the instance redactor wherever params are shown or stored.
+ */
+export function redactPaths<T>(value: T, paths: readonly string[] | null | undefined): T {
+  if (!paths?.length || value === null || typeof value !== 'object') return value;
+  const out = structuredClone(value) as unknown;
+  for (const path of paths) {
+    const parts = path
+      .split('/')
+      .slice(1)
+      .map((p) => p.replace(/~1/g, '/').replace(/~0/g, '~'));
+    let node: unknown = out;
+    for (const [i, part] of parts.entries()) {
+      if (node === null || typeof node !== 'object' || !Object.hasOwn(node, part)) break;
+      const container = node as Record<string, unknown>;
+      if (i === parts.length - 1) {
+        if (container[part] !== undefined && container[part] !== null && container[part] !== '')
+          container[part] = REDACTED;
+      } else node = container[part];
+    }
+  }
+  return out as T;
+}

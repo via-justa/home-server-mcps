@@ -52,7 +52,7 @@ describe('applyCatalogSync', () => {
   it('adds a new write to an open group switched off, as its own level, until an admin opens it', () => {
     const { db, instanceId } = seedInstance();
     applyCatalogSync(db, instanceId, catalog(op('app.query'), op('app.upgrade')));
-    setGroupLevel(db, instanceId, 'app', 'write', { acknowledge: [opRow(db, 'app.upgrade').id] });
+    setGroupLevel(db, instanceId, 'app', 'write');
     expect(resolveAccess(db, instanceId, 'app.upgrade')).toEqual({ reachable: true, mode: 'auto', level: 'write' });
 
     const summary = applyCatalogSync(db, instanceId, catalog(op('app.query'), op('app.upgrade'), op('app.rollback')));
@@ -88,7 +88,7 @@ describe('applyCatalogSync', () => {
   it('resets acknowledgement when a read is reclassified as a write', () => {
     const { db, instanceId } = seedInstance();
     applyCatalogSync(db, instanceId, catalog(op('app.status', { classification: 'read' }), op('app.upgrade')));
-    setGroupLevel(db, instanceId, 'app', 'write', { acknowledge: [opRow(db, 'app.upgrade').id] });
+    setGroupLevel(db, instanceId, 'app', 'write');
     updateOperation(db, instanceId, opRow(db, 'app.status').id, { acknowledged: true });
 
     const summary = applyCatalogSync(
@@ -133,6 +133,45 @@ describe('applyCatalogSync', () => {
       catalog(op('app.status', { locked: true }), op('app.info', { classification: 'write' })),
     );
     expect(opRow(db, 'app.status')).toMatchObject({ classification: 'write', classificationSource: 'locked' });
+  });
+
+  it('keeps an operation the plugin moves to another group at the access it had', () => {
+    const { db, instanceId } = seedInstance();
+    applyCatalogSync(db, instanceId, catalog(op('app.query'), op('app.upgrade'), op('app.stop')));
+    setGroupLevel(db, instanceId, 'app', 'none');
+    db.insert(preApprovalRules)
+      .values({ id: randomUUID(), instanceId, operationId: opRow(db, 'app.upgrade').id, reason: 'old rule' })
+      .run();
+
+    // A plugin update moves app.upgrade into a brand-new group, which starts at Ask.
+    applyCatalogSync(
+      db,
+      instanceId,
+      catalog(op('app.query'), op('app.upgrade', { group: 'lifecycle' }), op('app.stop')),
+    );
+    expect(listGroups(db, instanceId).find((g) => g.key === 'lifecycle')?.level).toBe('ask');
+    expect(opRow(db, 'app.upgrade').levelOverride).toBe('none');
+    expect(resolveAccess(db, instanceId, 'app.upgrade')).toEqual({ reachable: false, reason: 'level_none' });
+
+    // Moving into a group where it would have the same access needs no exception.
+    setGroupLevel(db, instanceId, 'lifecycle', 'ask');
+    setGroupLevel(db, instanceId, 'app', 'ask');
+    applyCatalogSync(
+      db,
+      instanceId,
+      catalog(op('app.query'), op('app.upgrade'), op('app.stop', { group: 'lifecycle' })),
+    );
+    expect(opRow(db, 'app.stop').levelOverride).toBeNull();
+    expect(resolveAccess(db, instanceId, 'app.stop')).toMatchObject({ mode: 'approve', level: 'ask' });
+  });
+
+  it('keeps an acknowledged write moved into a group at Write asking as before', () => {
+    const { db, instanceId } = seedInstance();
+    applyCatalogSync(db, instanceId, catalog(op('app.upgrade'), op('vm.start')));
+    setGroupLevel(db, instanceId, 'vm', 'write');
+    updateOperation(db, instanceId, opRow(db, 'app.upgrade').id, { acknowledged: true });
+    applyCatalogSync(db, instanceId, catalog(op('app.upgrade', { group: 'vm' }), op('vm.start')));
+    expect(resolveAccess(db, instanceId, 'app.upgrade')).toMatchObject({ mode: 'approve', level: 'ask' });
   });
 
   it('disables pre-approval rules on operations that become locked', () => {

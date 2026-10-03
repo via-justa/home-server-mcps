@@ -159,12 +159,6 @@ export interface GroupSummary {
   counts: { read: number; write: number; locked: number; pendingReview: number; overridden: number };
 }
 
-export interface BulkPreview {
-  level: Level;
-  groups: { key: string; label: string; from: Level; exposes: { id: string; key: string }[] }[];
-  acknowledge: string[];
-}
-
 export interface Operation {
   id: string;
   key: string;

@@ -17,6 +17,7 @@ import { verifyAttestationKey } from './attestation.js';
 import { canonicalJson, sha256Hex } from './canonical.js';
 import { evaluatePreApproval } from './preapproval.js';
 import type { SlidingWindowLimiter } from './rate-limit.js';
+import { redactPaths } from './redact.js';
 import type { Redactor } from './redact.js';
 
 /**
@@ -188,7 +189,9 @@ export function createGateBindings(
         .from(operations)
         .where(and(eq(operations.instanceId, rt.instanceId), eq(operations.key, resolved.key)))
         .get() as OperationRow | undefined;
-      audit.params = rt.redact(resolved.params);
+      // Redacted by key name, plus the paths the plugin declared for this operation (positional secrets).
+      const redactParams = <T>(p: T): T => redactPaths(rt.redact(p), op?.sensitiveParams);
+      audit.params = redactParams(resolved.params);
 
       // 1. Attestation, before anything else about the op is revealed.
       if (op && !op.stale && op.attestationRequired) {
@@ -294,7 +297,7 @@ export function createGateBindings(
           // prompts, the DB and notifications, and never need a secret.
           const summary = await rt
             .plugin()
-            .call('summarize', { key: operation.key, params: rt.redact(params), targets });
+            .call('summarize', { key: operation.key, params: redactParams(params), targets });
           if (operation.typedConfirmation && !summary.confirmLiteral) {
             reject(
               'rejected:missing_confirmation_literal',
@@ -310,7 +313,7 @@ export function createGateBindings(
             operationId: operation.id,
             operationKey: operation.key,
             classification: audit.classification,
-            paramsDisplay: rt.redact(params),
+            paramsDisplay: redactParams(params),
             paramsHash,
             resolvedTargets: targets,
             summary: summary.text,
@@ -321,8 +324,12 @@ export function createGateBindings(
             mcpSessionId: caller.mcpSessionId,
             timeoutMs: rt.settings.approvalTimeoutMs,
             prompts: caller.prompts,
+            // Only plain writes, as the setting's name says: a read the admin put at Ask always needs a human.
             formApprovals:
-              rt.settings.formElicitationApprovals === 'writes' && !operation.locked && !operation.typedConfirmation,
+              rt.settings.formElicitationApprovals === 'writes' &&
+              isWrite &&
+              !operation.locked &&
+              !operation.typedConfirmation,
           });
           audit.detail.approvalId = request.id;
           openApprovals.add(request.id);

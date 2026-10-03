@@ -135,11 +135,7 @@ const sync = () =>
         <h2>Setup notes</h2>
         <MarkdownLite class="small help-text" :source="conn.help" />
       </div>
-      <ConnectClient
-        :instance="instance"
-        :dynamic-registration="dynamicRegistration"
-        :public-mcp-url="app.overview?.publicMcpUrl ?? null"
-      />
+      <ConnectClient :instance="instance" :dynamic-registration="dynamicRegistration" />
     </aside>
   </div>
 </template>

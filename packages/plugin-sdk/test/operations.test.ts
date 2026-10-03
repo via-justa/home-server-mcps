@@ -33,4 +33,13 @@ describe('OperationDescriptorSchema', () => {
   it.each(['', 'App', '.app', 'store/volume', 'a b', 'x'.repeat(129)])('rejects group %j', (group) => {
     expect(() => OperationDescriptorSchema.parse({ ...base, group })).toThrow();
   });
+
+  it('accepts sensitive params as JSON pointers, and nothing else', () => {
+    expect(OperationDescriptorSchema.parse({ ...base, sensitiveParams: ['/1', '/0/password'] })).toMatchObject({
+      sensitiveParams: ['/1', '/0/password'],
+    });
+    for (const bad of [['1'], ['/'], ['//x'], ['/a/b/c/d/e/f/g/h/i'], Array.from({ length: 33 }, (_, i) => `/${i}`)]) {
+      expect(() => OperationDescriptorSchema.parse({ ...base, sensitiveParams: bad })).toThrow();
+    }
+  });
 });

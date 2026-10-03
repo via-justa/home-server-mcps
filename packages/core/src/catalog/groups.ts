@@ -35,9 +35,9 @@ export const accessInput = (op: OperationRow) => ({
 const isPlainWrite = (op: OperationRow) => !op.stale && !op.locked && op.classification === 'write';
 
 /**
- * Writes that would run without asking once their group is at `write`. Setting a group's level resets
- * every operation in it to follow the group, so that is every plain write in it; raising a group to
- * `write` must acknowledge exactly these (locked ops never auto-run).
+ * Writes that run without asking once their group is at `write`. Setting a group's level resets every
+ * operation in it to follow the group, so that is every plain write in it; raising a group to `write`
+ * acknowledges them (locked ops never auto-run).
  */
 const runsAtGroupWrite = isPlainWrite;
 
@@ -62,9 +62,6 @@ function resetOwnLevels(db: DbLike, groupIds: string[]): string[] {
 function isPendingWrite(op: OperationRow, group: GroupRow | undefined): boolean {
   return isPlainWrite(op) && !op.writeAcknowledged && (op.levelOverride ?? group?.level) === 'write';
 }
-
-const sameSet = (a: readonly string[] = [], b: readonly string[]) =>
-  a.length === b.length && new Set(a).size === b.length && b.every((x) => a.includes(x));
 
 function getGroup(db: DbLike, instanceId: string, key: string): GroupRow {
   const group = db
@@ -149,44 +146,22 @@ export function resolveAccess(
 
 /**
  * Sets one group's level and resets every operation in it to follow the group (locked operations go
- * back to closed). Raising to `write` must carry
- * `acknowledge` = exactly the writes that will then run without asking (the list the admin was
- * shown); if a sync changed that list in between, this fails with 409 and the fresh list.
+ * back to closed). Raising to `write` acknowledges the plain writes it lets run without asking; the
+ * audit event lists them.
  */
 export function setGroupLevel(
   db: Db,
   instanceId: string,
   key: string,
   level: string,
-  opts: { acknowledge?: string[]; actor?: Actor; now?: Date } = {},
+  opts: { actor?: Actor; now?: Date } = {},
 ): GroupSummary {
   assertLevel(level);
   const now = opts.now ?? new Date();
   const actor = opts.actor ?? {};
   db.transaction((tx) => {
     const group = getGroup(tx, instanceId, key);
-    let acknowledged: string[] = [];
-    if (level === 'write') {
-      const autoRun = opsInGroups(tx, [group.id]).filter(runsAtGroupWrite);
-      const expected = autoRun.map((o) => o.id);
-      if (!sameSet(opts.acknowledge, expected)) {
-        throw new ConflictError(
-          'acknowledgement_mismatch',
-          'Acknowledge exactly the writes that will run without asking',
-          {
-            expected: autoRun.map((o) => ({ id: o.id, key: o.key })),
-          },
-        );
-      }
-      const fresh = autoRun.filter((o) => !o.writeAcknowledged);
-      acknowledge(
-        tx,
-        fresh.map((o) => o.id),
-        actor,
-        now,
-      );
-      acknowledged = fresh.map((o) => o.key);
-    }
+    const acknowledged = level === 'write' ? acknowledgeWrites(tx, [group.id], actor, now) : [];
     const reset = resetOwnLevels(tx, [group.id]);
     if (group.level === level && acknowledged.length === 0 && reset.length === 0) return;
     tx.update(operationGroups)
@@ -209,91 +184,43 @@ export function setGroupLevel(
   return listGroups(db, instanceId).find((g) => g.key === key)!;
 }
 
-export interface BulkPreview {
-  level: AccessLevel;
-  /** `exposes`: writes that will run without asking at `write` (only listed for a `write` preview). */
-  groups: { key: string; label: string; from: AccessLevel; exposes: { id: string; key: string }[] }[];
-  /** Pass back unchanged as `acknowledge` when applying a bulk `write`. */
-  acknowledge: string[];
-}
-
-export function previewBulkLevel(db: DbLike, instanceId: string, level: string): BulkPreview {
-  assertLevel(level);
-  const groups = db
-    .select()
-    .from(operationGroups)
-    .where(eq(operationGroups.instanceId, instanceId))
-    .orderBy(asc(operationGroups.key))
-    .all();
-  const pending =
-    level === 'write'
-      ? opsInGroups(
-          db,
-          groups.map((g) => g.id),
-        ).filter(runsAtGroupWrite)
-      : [];
-  const preview = groups.map((g) => ({
-    key: g.key,
-    label: g.label,
-    from: g.level,
-    exposes: pending.filter((o) => o.groupId === g.id).map((o) => ({ id: o.id, key: o.key })),
-  }));
-  return { level, groups: preview, acknowledge: pending.map((o) => o.id) };
+/** Acknowledges the not-yet-acknowledged plain writes in these groups; returns their keys. */
+function acknowledgeWrites(db: DbLike, groupIds: string[], actor: Actor, now: Date): string[] {
+  const fresh = opsInGroups(db, groupIds).filter((o) => runsAtGroupWrite(o) && !o.writeAcknowledged);
+  acknowledge(
+    db,
+    fresh.map((o) => o.id),
+    actor,
+    now,
+  );
+  return fresh.map((o) => o.key);
 }
 
 /**
  * Sets every group of an instance to one level and resets every operation to follow its group.
- * `none`/`read`/`ask` apply directly. `write` requires `confirm` = the instance slug and
- * `acknowledge` = the current preview's list. Locked operations never auto-run.
+ * `write` acknowledges the plain writes it lets run without asking. Locked operations never auto-run.
  */
 export function applyBulkLevel(
   db: Db,
   instanceId: string,
   level: string,
-  opts: { confirm?: string; acknowledge?: string[]; actor?: Actor; now?: Date } = {},
-): BulkPreview['groups'] {
+  opts: { actor?: Actor; now?: Date } = {},
+): { key: string; label: string; from: AccessLevel }[] {
   assertLevel(level);
   const now = opts.now ?? new Date();
   const actor = opts.actor ?? {};
   return db.transaction((tx) => {
     const instance = tx.select().from(pluginInstances).where(eq(pluginInstances.id, instanceId)).get();
     if (!instance) throw new NotFoundError('instance_not_found', 'No such instance');
-    const preview = previewBulkLevel(tx, instanceId, level);
-    if (level === 'write') {
-      if (opts.confirm !== instance.slug) {
-        throw new ConflictError('confirmation_required', `Type the endpoint slug "${instance.slug}" to confirm`);
-      }
-      if (!sameSet(opts.acknowledge, preview.acknowledge)) {
-        throw new ConflictError('acknowledgement_mismatch', 'The list of exposed writes changed; review it again', {
-          preview,
-        });
-      }
-      acknowledge(
-        tx,
-        opsInGroups(
-          tx,
-          tx
-            .select({ id: operationGroups.id })
-            .from(operationGroups)
-            .where(eq(operationGroups.instanceId, instanceId))
-            .all()
-            .map((g) => g.id),
-        )
-          .filter((o) => runsAtGroupWrite(o) && !o.writeAcknowledged)
-          .map((o) => o.id),
-        actor,
-        now,
-      );
-    }
-    const reset = resetOwnLevels(
-      tx,
-      tx
-        .select({ id: operationGroups.id })
-        .from(operationGroups)
-        .where(eq(operationGroups.instanceId, instanceId))
-        .all()
-        .map((g) => g.id),
-    );
+    const groups = tx
+      .select()
+      .from(operationGroups)
+      .where(eq(operationGroups.instanceId, instanceId))
+      .orderBy(asc(operationGroups.key))
+      .all();
+    const ids = groups.map((g) => g.id);
+    const acknowledged = level === 'write' ? acknowledgeWrites(tx, ids, actor, now) : [];
+    const reset = resetOwnLevels(tx, ids);
     tx.update(operationGroups)
       .set({ level, levelChangedAt: now, levelChangedBy: actor.userId ?? null })
       .where(eq(operationGroups.instanceId, instanceId))
@@ -308,14 +235,14 @@ export function applyBulkLevel(
         actorId: actor.userId,
         detail: {
           to: level,
-          groups: preview.groups.map((g) => ({ key: g.key, from: g.from, to: level })),
-          acknowledged: preview.groups.flatMap((g) => g.exposes.map((o) => o.key)),
+          groups: groups.map((g) => ({ key: g.key, from: g.level, to: level })),
+          acknowledged,
           reset,
         },
       },
       now,
     );
-    return preview.groups;
+    return groups.map((g) => ({ key: g.key, label: g.label, from: g.level }));
   });
 }
 
