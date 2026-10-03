@@ -45,6 +45,10 @@ Schema is `packages/core/src/db/schema.ts`. Migrations in `packages/core/drizzle
 
 Maintainers bump versions; don't bump them unless asked. `@synoikia/plugin-sdk` and `@synoikia/core` publish to npm when their `version` changes on `main`. The Docker image uses the root `package.json` version, separate from the package versions. A breaking change to the SDK or `@synoikia/core/testing` breaks every plugin repo, so call it out.
 
+## Security review
+
+Before opening a PR that touches `gate/`, `sandbox/`, `approvals/`, `auth/`, `crypto/`, `plugins/`, `http/`, `runtime/`, `instances/`, the SDK's RPC contract or the DB schema, run the `security-reviewer` subagent (`.claude/agents/security-reviewer.md`) on the diff and address its findings.
+
 ## Protected files
 
 A PreToolUse hook (`.claude/hooks/guard-paths.mjs`) denies edits to `drizzle/meta/` and `pnpm-lock.yaml`, and asks first for migration SQL and `packages/core/src/plugins/default-repo.ts`. That file pins the plugin repository's signing key, and changing it makes every install block plugin installs until an admin confirms the new key.
