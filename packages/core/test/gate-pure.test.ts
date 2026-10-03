@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { canonicalJson, sha256Hex } from '../src/gate/canonical.js';
 import { getPointer, matches, MatchSchema } from '../src/gate/match.js';
-import { createInstanceRedactor, createRedactor, GLOBAL_SENSITIVE_KEYS, REDACTED } from '../src/gate/redact.js';
+import {
+  createInstanceRedactor,
+  createRedactor,
+  GLOBAL_SENSITIVE_KEYS,
+  REDACTED,
+  redactDiff,
+  redactPaths,
+} from '../src/gate/redact.js';
 
 describe('createRedactor', () => {
   const redact = createRedactor(GLOBAL_SENSITIVE_KEYS, ['vendorToken']);
@@ -206,5 +213,80 @@ describe('instance redactor', () => {
     expect(redact({ url: 'https://x/?k=p%40ss%20word!' })).toEqual({ url: 'https://x/?k=[REDACTED]' });
     expect(redact({ ['p@ss word!']: 1 })).toEqual({ [REDACTED]: 1 });
     expect(redact('abc stays')).toBe('abc stays'); // too short to scrub safely
+  });
+});
+
+describe('redactPaths', () => {
+  it('hides positional and nested values the plugin declared, on a copy', () => {
+    const params = ['admin', 'hunter22', { opts: { pin: 1234, keep: 'x' } }];
+    expect(redactPaths(params, ['/1', '/2/opts/pin'])).toEqual([
+      'admin',
+      REDACTED,
+      { opts: { pin: REDACTED, keep: 'x' } },
+    ]);
+    expect(params[1]).toBe('hunter22'); // the input is untouched
+  });
+
+  it('ignores missing paths, empty values and inherited keys, and decodes ~1 / ~0', () => {
+    expect(redactPaths({ a: '', b: null }, ['/a', '/b', '/c/d', '/__proto__/x'])).toEqual({ a: '', b: null });
+    expect(redactPaths({ 'a/b': 's', 'c~d': 't' }, ['/a~1b', '/c~0d'])).toEqual({ 'a/b': REDACTED, 'c~d': REDACTED });
+    expect(redactPaths('plain', ['/0'])).toBe('plain');
+    expect(redactPaths({ a: 1 }, null)).toEqual({ a: 1 });
+  });
+});
+
+describe('redactor and __proto__', () => {
+  it('keeps a __proto__ key as a visible own key instead of a prototype', () => {
+    const out = createRedactor([])(JSON.parse('{"a":1,"__proto__":{"x":1}}') as object);
+    expect(JSON.stringify(out)).toBe('{"a":1,"__proto__":{"x":1}}');
+    expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+  });
+});
+
+describe('redactDiff', () => {
+  const redact = createRedactor(GLOBAL_SENSITIVE_KEYS, ['webhook_id']);
+  it('hides both sides of entries whose path names a secret or a sensitive param', () => {
+    expect(
+      redactDiff(
+        [
+          { path: '/action/0/data/password', before: 'old', after: 'new' },
+          { path: '/trigger/webhook_id', after: 'hook-123' },
+          { path: '/pin', before: '1' },
+          { path: '/pin/deep', after: '2' },
+          { path: '/alias', before: 'Lights', after: 'Lamps' },
+          { path: '/data', after: { token: 'abc', keep: 1 } },
+        ],
+        redact,
+        ['/pin'],
+      ),
+    ).toEqual([
+      { path: '/action/0/data/password', before: REDACTED, after: REDACTED },
+      { path: '/trigger/webhook_id', after: REDACTED },
+      { path: '/pin', before: REDACTED },
+      { path: '/pin/deep', after: REDACTED },
+      { path: '/alias', before: 'Lights', after: 'Lamps' },
+      { path: '/data', after: { token: REDACTED, keep: 1 } },
+    ]);
+    expect(redactDiff(undefined, redact)).toBeUndefined();
+  });
+
+  it('catches dotted and bare paths, hides declared parts inside a parent entry, and fails closed', () => {
+    expect(
+      redactDiff(
+        [
+          { path: 'password', after: 'p1' },
+          { path: 'smtp.password', before: 'p2' },
+          { path: '/args', before: ['u', 'old-secret'], after: ['u', 'new-secret'] },
+        ],
+        redact,
+        ['/args/1'],
+      ),
+    ).toEqual([
+      { path: 'password', after: REDACTED },
+      { path: 'smtp.password', before: REDACTED },
+      { path: '/args', before: ['u', REDACTED], after: ['u', REDACTED] },
+    ]);
+    const bare = (<T>(v: T) => v) as Parameters<typeof redactDiff>[1];
+    expect(redactDiff([{ path: '/alias', after: 'x' }], bare)).toEqual([{ path: '/alias', after: REDACTED }]);
   });
 });

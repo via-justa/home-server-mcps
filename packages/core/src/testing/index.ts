@@ -9,7 +9,6 @@ import type { AppContext, AppOptions } from '../app.js';
 import { setGroupLevel, updateOperation } from '../catalog/groups.js';
 import { createRule } from '../catalog/rules.js';
 import { loadConfig } from '../config/env.js';
-import { ConflictError } from '../errors.js';
 import { secretFieldNames } from '../instances/connection.js';
 import { auditLog, operations, pendingApprovals, plugins, registryEntries } from '../db/schema.js';
 import type { AccessLevel } from '../gate/access.js';
@@ -191,15 +190,7 @@ function harness(ctx: AppContext, manifest: Manifest, instanceId: string, work: 
     execute: (code, opts) => executeCode(ctx.gateDeps(), ctx.instances.runtime(instanceId), caller(opts), code),
     search: (code) => searchCode(ctx.gateDeps(), ctx.instances.runtime(instanceId), caller(), code),
     setGroupLevel(group, level) {
-      try {
-        setGroupLevel(ctx.db, instanceId, group, level);
-      } catch (err) {
-        // Raising to write must acknowledge the writes it lets through: take the list core offers,
-        // as an admin confirming the portal's dialog does.
-        if (!(err instanceof ConflictError) || err.code !== 'acknowledgement_mismatch') throw err;
-        const expected = (err.details as { expected: { id: string }[] }).expected.map((o) => o.id);
-        setGroupLevel(ctx.db, instanceId, group, level, { acknowledge: expected });
-      }
+      setGroupLevel(ctx.db, instanceId, group, level);
     },
     setOperationLevel(key, level) {
       updateOperation(ctx.db, instanceId, operation(key).id, { level });

@@ -61,7 +61,7 @@ Synoikia implements the security-critical parts **once, in core**, and applies t
 
 **🧰 Two tools per endpoint.** Every endpoint exposes just `search(code)` and `execute(code)`. The model discovers operations and calls them with code that runs inside an [`isolated-vm`][isolated-vm] sandbox with no Node APIs, network or timers.
 
-**🛂 A permission gate on every call.** Each operation has an access level, set per group with per-operation exceptions:
+**🛂 A permission gate on every call.** Each operation has an access level, set per group with per-operation exceptions. New groups start at Ask. Whether an operation reads or writes comes from the upstream API (the HTTP method, or the roles a TrueNAS method requires), not from a guess:
 
 | Level     | Behaviour                                                                   |
 | --------- | --------------------------------------------------------------------------- |
@@ -69,6 +69,8 @@ Synoikia implements the security-critical parts **once, in core**, and applies t
 | **Read**  | Reads only                                                                  |
 | **Ask**   | Writes wait for a human approval, unless a narrow pre-approval rule matches |
 | **Write** | Writes run without asking, once acknowledged                                |
+
+An operation's own level only offers what fits it: a read is None, Read or Ask (every call asks), a write None, Ask or Write.
 
 **✋ Human approvals the model can't fake.** The MCP client asks you to open an approval page ([URL-mode elicitation][elicitation]), where you sign in and decide with your authenticator app. The client that made the call can't approve it. Destructive operations are `locked`: off until you set them to Ask, and then they always need a human, a typed confirmation and a fresh authenticator code, and can never be pre-approved or set to Write.
 
@@ -146,7 +148,7 @@ cp .env.example .env   # set MASTER_KEY, PUBLIC_MCP_URL, …
 docker compose -f docker-compose.example.yml up -d
 ```
 
-Pulls the published image from `ghcr.io/via-justa/synoikia` — `latest` tracks the newest stable release; pin an explicit version tag (e.g. `ghcr.io/via-justa/synoikia:0.1.0`) in production. Deploys with [Docker Compose][compose]. Put `:8080` behind your reverse proxy (such as [Caddy][caddy], [Traefik][traefik] or a [Cloudflare Tunnel][cf-tunnel]) as the public MCP hostname and set `PUBLIC_MCP_URL` to it. Keep `:8081` reachable from the LAN or VPN only. See design §11.
+Pulls the published image from `ghcr.io/via-justa/synoikia` — `latest` tracks the newest stable release; pin an explicit version tag (e.g. `ghcr.io/via-justa/synoikia:0.2.0`) in production. Deploys with [Docker Compose][compose]. Put `:8080` behind your reverse proxy (such as [Caddy][caddy], [Traefik][traefik] or a [Cloudflare Tunnel][cf-tunnel]) as the public MCP hostname and set `PUBLIC_MCP_URL` to it. Keep `:8081` reachable from the LAN or VPN only. See design §11.
 
 On first start, open the admin portal and create the first account (or set `ADMIN_BOOTSTRAP_USERNAME`/`ADMIN_BOOTSTRAP_PASSWORD` once). Then install and enable plugins, create an endpoint, raise the access groups you want above Read, and connect your MCP client to `PUBLIC_MCP_URL/<slug>`.
 

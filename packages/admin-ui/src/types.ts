@@ -159,12 +159,6 @@ export interface GroupSummary {
   counts: { read: number; write: number; locked: number; pendingReview: number; overridden: number };
 }
 
-export interface BulkPreview {
-  level: Level;
-  groups: { key: string; label: string; from: Level; exposes: { id: string; key: string }[] }[];
-  acknowledge: string[];
-}
-
 export interface Operation {
   id: string;
   key: string;
@@ -179,8 +173,12 @@ export interface Operation {
   attestationRequired: boolean;
   /** The operation's own level; null follows its group. */
   levelOverride: Level | null;
-  /** The level in force (own, else the group's). */
+  /** The level in force, in the operation's own terms (own, else what its group's level means for it). */
   level: Level;
+  /** The levels this operation can be given on its own. */
+  allowedLevels: Level[];
+  /** What the upstream API says the operation does, when it says. */
+  description: string | null;
   writeAcknowledged: boolean;
   needsReview: boolean;
   matchProfile: string | null;

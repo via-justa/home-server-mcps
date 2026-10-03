@@ -26,7 +26,7 @@ export const OperationDescriptorSchema = z.object({
   groupLabel: z.string().max(128).optional(),
   /** Free-form tag for filtering/display; not used for access. */
   tag: z.string().optional(),
-  /** The plugin's inferred default. Core applies locked ▸ override ▸ inferred on top. */
+  /** Read or write, from what the upstream API says. Core takes it as is; `locked` always makes it a write. */
   classification: z.enum(['read', 'write']),
   classificationReason: z.string().min(1),
   locked: z.boolean().default(false),
@@ -37,6 +37,16 @@ export const OperationDescriptorSchema = z.object({
   needsReview: z.boolean().default(false),
   matchProfile: z.string().optional(),
   paramsSchema: z.record(z.string(), z.unknown()).optional(),
+  /**
+   * Params that hold a secret but have no key name for `sensitiveKeys` to catch, such as a positional
+   * password: JSON-pointer paths into the params (`/1`, `/0/password`). Core replaces them with
+   * `[REDACTED]` wherever params are shown or stored (summaries, approvals, notifications, audit); the
+   * plugin's `invoke` still gets the real values.
+   */
+  sensitiveParams: z
+    .array(z.string().regex(/^(\/[^/]{1,128}){1,8}$/, 'a JSON pointer such as /1 or /0/password'))
+    .max(32)
+    .optional(),
   docs: z
     .object({
       summary: z.string().optional(),

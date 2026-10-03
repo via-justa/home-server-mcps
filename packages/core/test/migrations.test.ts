@@ -168,3 +168,87 @@ describe('plugin source migration', () => {
     expect(db.select().from(schema.pluginInstances).get()).toMatchObject({ id: 'i1', pluginId: 'p1' });
   });
 });
+
+describe('0010 access by kind migration', () => {
+  it('fits own levels to each kind and drops classification overrides, without widening anything', () => {
+    const { dir, sqlite } = databaseAt('0009_drop_plugin_source');
+    const now = Date.now();
+    const row = (
+      id: string,
+      key: string,
+      group: string,
+      cls: string,
+      source: string,
+      inferred: string,
+      locked: number,
+      level: string | null,
+    ) =>
+      `('${id}', 'i1', '${key}', 'method', 'g', '${group}', '${cls}', '${source}', '${inferred}', 'x', ${locked}, ${level === null ? 'NULL' : `'${level}'`}, 1, ${now}, ${now})`;
+    sqlite.exec(`
+      INSERT INTO plugins (id, plugin_id, version, path, manifest, status) VALUES ('p1', 'echo', '1.0.0', '/x', '{}', 'ok');
+      INSERT INTO plugin_instances (id, plugin_id, slug, display_name) VALUES ('i1', 'p1', 'nas', 'NAS');
+      INSERT INTO operation_groups (id, instance_id, key, label, level, first_seen_at) VALUES
+        ('ga', 'i1', 'a', 'A', 'ask', ${now}), ('gr', 'i1', 'r', 'R', 'read', ${now}), ('gn', 'i1', 'n', 'N', 'none', ${now});
+      INSERT INTO operations (id, instance_id, key, kind, plugin_group, group_id, classification, classification_source,
+          inferred_classification, inferred_reason, locked, level_override, write_acknowledged, first_seen_at, last_seen_at) VALUES
+        ${[
+          row('o1', 'read.ask', 'ga', 'read', 'inferred', 'read', 0, 'ask'),
+          row('o2', 'read.write', 'ga', 'read', 'inferred', 'read', 0, 'write'),
+          row('o3', 'write.read', 'ga', 'write', 'inferred', 'write', 0, 'read'),
+          row('o4', 'locked.read', 'ga', 'write', 'locked', 'write', 1, 'read'),
+          row('o5', 'locked.write', 'ga', 'write', 'locked', 'write', 1, 'write'),
+          // Overrides: a read the admin marked write, in a group at Read (hidden) and at Ask (asked).
+          row('o6', 'ovr.hidden', 'gr', 'write', 'override', 'read', 0, null),
+          row('o7', 'ovr.asked', 'ga', 'write', 'override', 'read', 0, null),
+          // A write the admin marked read: it ran; in a group at None it was off.
+          row('o8', 'ovr.ran', 'gr', 'read', 'override', 'write', 0, null),
+          row('o9', 'ovr.off', 'gn', 'read', 'override', 'write', 0, null),
+          row('o10', 'ovr.same', 'ga', 'write', 'override', 'write', 0, 'write'),
+        ].join(',\n')};
+    `);
+    sqlite.close();
+
+    const db = openDatabase({ dataDir: dir });
+    const byKey = Object.fromEntries(
+      db
+        .select()
+        .from(schema.operations)
+        .all()
+        .map((o) => [o.key, o]),
+    );
+    const view = (k: string) => [byKey[k]?.classification, byKey[k]?.classificationSource, byKey[k]?.levelOverride];
+    expect(view('read.ask')).toEqual(['read', 'inferred', 'read']);
+    expect(view('read.write')).toEqual(['read', 'inferred', 'read']);
+    expect(view('write.read')).toEqual(['write', 'inferred', 'none']);
+    expect(view('locked.read')).toEqual(['write', 'locked', 'none']);
+    expect(view('locked.write')).toEqual(['write', 'locked', 'ask']);
+    expect(view('ovr.hidden')).toEqual(['read', 'inferred', 'none']);
+    expect(view('ovr.asked')).toEqual(['read', 'inferred', 'ask']);
+    expect(view('ovr.ran')).toEqual(['write', 'inferred', 'ask']);
+    expect(view('ovr.off')).toEqual(['write', 'inferred', 'none']);
+    expect(view('ovr.same')).toEqual(['write', 'inferred', 'write']);
+    // What used to run still runs; nothing that was off or asking now runs without asking.
+    expect(resolveAccess(db, 'i1', 'read.ask')).toMatchObject({ reachable: true, mode: 'run' });
+    expect(resolveAccess(db, 'i1', 'write.read')).toEqual({ reachable: false, reason: 'level_none' });
+    expect(resolveAccess(db, 'i1', 'ovr.asked')).toMatchObject({ mode: 'approve' });
+    expect(resolveAccess(db, 'i1', 'ovr.ran')).toMatchObject({ mode: 'approve' });
+  });
+});
+
+describe('0011 sensitive params migration', () => {
+  it('adds the column, empty for existing operations', () => {
+    const { dir, sqlite } = databaseAt('0010_access_by_kind');
+    const now = Date.now();
+    sqlite.exec(`
+      INSERT INTO plugins (id, plugin_id, version, path, manifest, status) VALUES ('p1', 'echo', '1.0.0', '/x', '{}', 'ok');
+      INSERT INTO plugin_instances (id, plugin_id, slug, display_name) VALUES ('i1', 'p1', 'nas', 'NAS');
+      INSERT INTO operation_groups (id, instance_id, key, label, level, first_seen_at) VALUES ('g', 'i1', 'a', 'A', 'ask', ${now});
+      INSERT INTO operations (id, instance_id, key, kind, plugin_group, group_id, classification, classification_source,
+          inferred_classification, inferred_reason, first_seen_at, last_seen_at)
+        VALUES ('o1', 'i1', 'a.set', 'method', 'a', 'g', 'write', 'inferred', 'write', 'x', ${now}, ${now});
+    `);
+    sqlite.close();
+    const db = openDatabase({ dataDir: dir });
+    expect(db.select().from(schema.operations).get()).toMatchObject({ key: 'a.set', sensitiveParams: null });
+  });
+});

@@ -1,15 +1,17 @@
 /**
- * Access levels (design §5.2 step 2). Every operation has an effective level: its own override if
- * an admin set one, otherwise its group's level. The level decides whether a call is hidden, runs
- * straight away, needs a human approval, or is auto-approved:
+ * Access levels (design §5.2 step 2). A group has one of four levels; an operation follows its group
+ * unless an admin gave it its own level. What a level means depends on the kind of operation:
  *
- *   none  → nothing callable
- *   read  → reads run; writes are hidden
- *   ask   → reads run; writes need approval (pre-approval rules may cover them)
- *   write → reads run; acknowledged writes run without asking
+ *   group level   read operation   write operation   locked operation
+ *   none          none             none              none
+ *   read          read (runs)      none (hidden)     none (not enabled)
+ *   ask           read (runs)      ask               none (not enabled)
+ *   write         read (runs)      write             none (not enabled)
  *
- * Locked operations never follow their group into `ask`/`write`: each needs its own `ask` override,
- * and `write` is not allowed for them. A principal whose access ceiling is `read` (consent page,
+ * An operation's own level is one of the levels its kind allows (`allowedLevels`): a read is None,
+ * Read or Ask (Ask: every call needs approval); a write is None, Ask or Write (Write: runs without
+ * asking once acknowledged); a locked operation is None or Ask and only opens with its own Ask.
+ * There is no "write at level Read". A principal whose access ceiling is `read` (consent page,
  * bearer token) never reaches a write, whatever the levels say.
  */
 
@@ -25,7 +27,7 @@ export const isAccessLevel = (v: unknown): v is AccessLevel => (ACCESS_LEVELS as
 
 export const minLevel = (a: AccessLevel, b: AccessLevel): AccessLevel => (RANK[a] <= RANK[b] ? a : b);
 
-export type AccessReason = 'group_missing' | 'level_none' | 'read_only' | 'token_read_only' | 'locked_not_opted_in';
+export type AccessReason = 'group_missing' | 'level_none' | 'token_read_only' | 'locked_not_opted_in';
 
 /** `run`: read, no approval · `approve`: needs a human (or a pre-approval rule) · `auto`: write, auto-approved. */
 export type AccessMode = 'run' | 'approve' | 'auto';
@@ -57,29 +59,59 @@ export type AccessDecision =
 
 export const FULL_ACCESS: AccessPrincipal = { ceiling: 'write' };
 
+const isWriteOp = (op: Pick<AccessOperation, 'classification' | 'locked'>) =>
+  op.locked || op.classification === 'write';
+
+/** The levels an operation can be given on its own. */
+export function allowedLevels(op: Pick<AccessOperation, 'classification' | 'locked'>): AccessLevel[] {
+  if (op.locked) return ['none', 'ask'];
+  return isWriteOp(op) ? ['none', 'ask', 'write'] : ['none', 'read', 'ask'];
+}
+
+/**
+ * Maps a stored level onto one the operation's kind allows, never widening: a write at Read is off,
+ * a read at Write just runs, a locked op at Write still asks, and an unknown value is None.
+ */
+export function normalizeLevel(op: Pick<AccessOperation, 'classification' | 'locked'>, level: unknown): AccessLevel {
+  if (!isAccessLevel(level)) return 'none';
+  if (allowedLevels(op).includes(level)) return level;
+  if (op.locked) return level === 'write' ? 'ask' : 'none';
+  return isWriteOp(op) ? 'none' : 'read';
+}
+
+/** What a group's level means for one operation that follows it (the table above). */
+function fromGroup(op: Pick<AccessOperation, 'classification' | 'locked'>, level: AccessLevel): AccessLevel {
+  if (level === 'none' || op.locked) return 'none';
+  if (!isWriteOp(op)) return 'read';
+  return level === 'read' ? 'none' : level;
+}
+
+/** The level in force for an operation: its own (normalized), else what its group's level means for it. */
+export function levelInForce(op: AccessOperation, group: AccessGroup | undefined): AccessLevel {
+  if (op.levelOverride !== null) return normalizeLevel(op, op.levelOverride);
+  if (!group || !isAccessLevel(group.level)) return 'none';
+  return fromGroup(op, group.level);
+}
+
 export function effectiveAccess(
   op: AccessOperation,
   group: AccessGroup | undefined,
   principal: AccessPrincipal = FULL_ACCESS,
 ): AccessDecision {
-  // Fail closed on a missing or unrecognized group row, and on an unrecognized override.
+  // Fail closed on a missing or unrecognized group row.
   if (!group || !isAccessLevel(group.level)) return { reachable: false, reason: 'group_missing' };
-  const level: AccessLevel =
-    op.levelOverride === null ? group.level : isAccessLevel(op.levelOverride) ? op.levelOverride : 'none';
+  const level = levelInForce(op, group);
 
-  if (level === 'none') return { reachable: false, reason: 'level_none' };
-  // Locked operations are always writes, whatever classification the row carries.
-  const isWrite = op.locked || op.classification === 'write';
-  if (!isWrite) return { reachable: true, mode: 'run', level };
+  if (level === 'none') {
+    // A locked op its group would otherwise open says why it is still off.
+    const lockedClosed = op.locked && op.levelOverride === null && group.level !== 'none';
+    return { reachable: false, reason: lockedClosed ? 'locked_not_opted_in' : 'level_none' };
+  }
+  if (!isWriteOp(op)) return { reachable: true, mode: level === 'ask' ? 'approve' : 'run', level };
 
   if (principal.ceiling !== 'write') return { reachable: false, reason: 'token_read_only' };
-  if (op.locked) {
-    // Only an explicit per-operation `ask` opens a locked op, and it never auto-approves.
-    if (op.levelOverride === null || RANK[level] < RANK.ask) return { reachable: false, reason: 'locked_not_opted_in' };
-    return { reachable: true, mode: 'approve', level: 'ask' };
-  }
-  if (level === 'read') return { reachable: false, reason: 'read_only' };
-  if (level === 'ask') return { reachable: true, mode: 'approve', level };
+  // Locked ops only reach here with their own Ask, and never auto-approve.
+  if (level === 'ask' || op.locked) return { reachable: true, mode: 'approve', level: 'ask' };
   if (!op.writeAcknowledged) return { reachable: true, mode: 'approve', level, pendingReview: true };
   return { reachable: true, mode: 'auto', level };
 }

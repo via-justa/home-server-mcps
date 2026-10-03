@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ApprovalLinkService } from '../src/approvals/links.js';
 import { ApprovalService } from '../src/approvals/service.js';
 import type { ClientPrompts, FormPromptRequest, UrlPromptRequest } from '../src/approvals/service.js';
-import { previewBulkLevel, setGroupLevel, updateOperation } from '../src/catalog/groups.js';
+import { setGroupLevel, updateOperation } from '../src/catalog/groups.js';
 import { applyCatalogSync } from '../src/catalog/sync.js';
 import { openDatabase } from '../src/db/index.js';
 import { approvalLinks, auditLog, guides, operations, pendingApprovals, preApprovalRules } from '../src/db/schema.js';
@@ -51,10 +51,7 @@ async function setup(settings: Partial<InstanceSettings> = {}) {
     plugin: () => proc,
   };
   const opId = (key: string) => db.select().from(operations).where(eq(operations.key, key)).get()!.id;
-  const setLevel = (level: AccessLevel) =>
-    setGroupLevel(db, instanceId, 'echo', level, {
-      acknowledge: level === 'write' ? previewBulkLevel(db, instanceId, 'write').acknowledge : undefined,
-    });
+  const setLevel = (level: AccessLevel) => setGroupLevel(db, instanceId, 'echo', level);
   const caller = (prompts?: ClientPrompts, ceiling: AccessCeiling = 'write'): CallerContext => ({
     client: { kind: 'mcp_client', id: 'claude-test' },
     principal: { ceiling },
@@ -121,16 +118,17 @@ describe('execute → gate → plugin', () => {
     ]);
   });
 
-  it('rejects writes at level Read with a catchable reason', async () => {
+  it('treats a write in a group at Read as off, with a catchable reason', async () => {
     const t = await setup();
+    t.setLevel('read');
     const r = await t.exec(
       `try { await echo.call('echo.set', { name: 'x' }); } catch (e) { return [e.code, e.message]; }`,
     );
     expect(r).toMatchObject({
       ok: true,
-      value: ['OPERATION_DISABLED', 'echo.set is a write, and its access level on this endpoint is Read'],
+      value: ['OPERATION_DISABLED', 'echo.set is disabled on this endpoint (access level None)'],
     });
-    expect(t.audits()[0]).toMatchObject({ decision: 'rejected:read_only', resultStatus: 'rejected' });
+    expect(t.audits()[0]).toMatchObject({ decision: 'rejected:level_none', resultStatus: 'rejected' });
   });
 
   it('rejects everything at level None', async () => {
@@ -189,6 +187,21 @@ describe('execute → gate → plugin', () => {
   });
 
   describe('level Ask: approvals', () => {
+    it('asks for a read given its own Ask, through a read-only connection too, without using the write budget', async () => {
+      const t = await setup({ writesPerMinute: 1 });
+      updateOperation(t.db, t.instanceId, t.opId('echo.query'), { level: 'ask' });
+      const client = urlClient((req) => t.approvals.decide(req.approvalId, { approve: true, decidedBy: 'admin' }));
+      for (let i = 0; i < 2; i++) {
+        const r = await t.exec(`return await echo.call('echo.query', { n: ${i} });`, client.prompts, 'read');
+        expect(r).toMatchObject({ ok: true, value: { key: 'echo.query' } });
+      }
+      expect(client.opened).toHaveLength(2);
+      expect(t.audits().map((a) => [a.decision, a.classification])).toEqual([
+        ['human-approved', 'read'],
+        ['human-approved', 'read'],
+      ]);
+    });
+
     it('sends the human to the approval page (URL prompt) and runs the call once approved there', async () => {
       const t = await setup();
       t.setLevel('ask');
@@ -262,6 +275,91 @@ describe('execute → gate → plugin', () => {
         },
       );
       expect(client.asked).toHaveLength(1);
+
+      // A read the admin put at its own Ask always needs a human, whatever the setting allows for writes.
+      updateOperation(t.db, t.instanceId, t.opId('echo.query'), { level: 'ask' });
+      await expect(t.exec(`await echo.call('echo.query', { q: 1 });`, client.prompts)).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('only supports form') },
+      });
+      expect(client.asked).toHaveLength(1);
+    });
+
+    it('rejects a read whose own Ask was lowered while its approval waited', async () => {
+      const t = await setup();
+      updateOperation(t.db, t.instanceId, t.opId('echo.query'), { level: 'ask' });
+      const client = urlClient((req) => {
+        updateOperation(t.db, t.instanceId, t.opId('echo.query'), { level: 'none' });
+        t.approvals.decide(req.approvalId, { approve: true, decidedBy: 'admin' });
+      });
+      await expect(t.exec(`await echo.call('echo.query', { q: 1 });`, client.prompts)).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'OPERATION_DISABLED' },
+      });
+      expect(t.audits()[0]).toMatchObject({ decision: 'rejected:access_changed' });
+    });
+
+    it('hides params the plugin declared sensitive by path from the approval and the audit log', async () => {
+      const t = await setup();
+      t.setLevel('ask');
+      const client = urlClient((req) => t.approvals.decide(req.approvalId, { approve: true, decidedBy: 'admin' }));
+      const r = await t.exec(
+        `return (await echo.call('echo.set', { name: 'x', pin: '4711' })).params;`,
+        client.prompts,
+      );
+      // The plugin's invoke still gets the real value.
+      expect(r).toMatchObject({ ok: true, value: { name: 'x', pin: '4711' } });
+      expect(client.opened[0]?.message).not.toContain('4711');
+      expect(t.db.select().from(pendingApprovals).get()?.paramsDisplay).toEqual({ name: 'x', pin: '[REDACTED]' });
+      expect(t.audits()[0]?.params).toEqual({ name: 'x', pin: '[REDACTED]' });
+    });
+
+    it('hides secrets in a config diff from the approval, the stored row and a form prompt', async () => {
+      const t = await setup({ formElicitationApprovals: 'writes' });
+      t.setLevel('ask');
+      // Make echo.set a config write whose prepareWrite returns a diff that touches secrets.
+      t.db.update(operations).set({ kind: 'config' }).where(eq(operations.key, 'echo.set')).run();
+      t.rt.manifest = { ...t.rt.manifest, capabilities: { ...t.rt.manifest.capabilities, configTransform: true } };
+      const real = t.rt.plugin();
+      t.rt.plugin = () =>
+        ({
+          call: (method: string, params: unknown, ...rest: unknown[]) =>
+            method === 'prepareWrite'
+              ? Promise.resolve({
+                  params: (params as { params: unknown }).params,
+                  diff: [
+                    { path: '/smtp/password', before: 'old-smtp-secret', after: 'new-smtp-secret' },
+                    { path: '/pin', after: '4711' },
+                    { path: '/name', before: 'a', after: 'b' },
+                  ],
+                  expectedHash: 'h1',
+                })
+              : (real.call as (...a: unknown[]) => Promise<unknown>)(method, params, ...rest),
+        }) as unknown as ReturnType<typeof t.rt.plugin>;
+      const client = formClient();
+      await t.exec(`await echo.call('echo.set', { name: 'x', pin: '4711' });`, client.prompts);
+      const row = t.db.select().from(pendingApprovals).get()!;
+      expect(row.diff).toEqual([
+        { path: '/smtp/password', before: '[REDACTED]', after: '[REDACTED]' },
+        { path: '/pin', after: '[REDACTED]' },
+        { path: '/name', before: 'a', after: 'b' },
+      ]);
+      expect(client.asked).toHaveLength(1);
+      expect(client.asked[0]?.message).toContain('/smtp/password');
+      const shown = JSON.stringify(client.asked);
+      for (const secret of ['old-smtp-secret', 'new-smtp-secret', '4711']) expect(shown).not.toContain(secret);
+    });
+
+    it('keeps a __proto__ param visible to the approver', async () => {
+      const t = await setup();
+      t.setLevel('ask');
+      const client = urlClient((req) => t.approvals.decide(req.approvalId, { approve: false, decidedBy: 'admin' }));
+      await t.exec(
+        `await echo.call('echo.set', JSON.parse('{"name":"x","__proto__":{"force":true}}'));`,
+        client.prompts,
+      );
+      const shown = JSON.stringify(t.db.select().from(pendingApprovals).get()?.paramsDisplay);
+      expect(shown).toContain('"__proto__":{"force":true}');
     });
 
     it('denies at once when the client cannot show prompts', async () => {
@@ -469,6 +567,17 @@ describe('execute → gate → plugin', () => {
       });
       expect(t.audits().map((a) => a.decision)).toEqual([`auto-approved:rule:${ruleId}`, 'denied']);
       expect(t.db.select().from(pendingApprovals).all()).toHaveLength(1); // only the non-matching call
+    });
+
+    it('can cover a read the admin put at its own Ask', async () => {
+      const t = await setup();
+      updateOperation(t.db, t.instanceId, t.opId('echo.query'), { level: 'ask' });
+      const ruleId = addRule(t, { operationId: t.opId('echo.query'), match: [{ field: '/q', op: 'eq', value: 1 }] });
+      await expect(t.exec(`return (await echo.call('echo.query', { q: 1 })).key;`)).resolves.toMatchObject({
+        ok: true,
+        value: 'echo.query',
+      });
+      expect(t.audits()[0]).toMatchObject({ decision: `auto-approved:rule:${ruleId}`, classification: 'read' });
     });
 
     it('fall back to a human once the rate limit is hit', async () => {
@@ -680,6 +789,7 @@ describe('search', () => {
     const t = await setup();
     const search = (code: string, ceiling?: AccessCeiling) =>
       searchCode(t.deps, t.rt, t.caller(undefined, ceiling), code);
+    t.setLevel('read');
 
     await expect(search(`return (await catalog.find()).map((o) => o.key);`)).resolves.toMatchObject({
       value: ['echo.query'],
@@ -690,10 +800,10 @@ describe('search', () => {
     expect(all).toMatchObject({
       value: [
         ['echo.delete', 'locked', 'locked_not_opted_in'],
-        ['echo.guided', 'write', 'read_only'],
+        ['echo.guided', 'write', 'level_none'],
         ['echo.nolit', 'locked', 'locked_not_opted_in'],
         ['echo.query', 'read', null],
-        ['echo.set', 'write', 'read_only'],
+        ['echo.set', 'write', 'level_none'],
       ],
     });
     await expect(

@@ -38,7 +38,9 @@ describe('startPluginHarness', () => {
     });
   });
 
-  it('runs reads, redacts results and refuses writes at Read', async () => {
+  it('starts groups at Ask, runs reads, redacts results and refuses writes at Read', async () => {
+    expect(h.operation('echo.set')).toBeDefined();
+    h.setGroupLevel('echo', 'read');
     await expect(h.execute(`return await echo.call('echo.query', { n: 1 });`)).resolves.toMatchObject({
       ok: true,
       value: { key: 'echo.query', params: { n: 1 }, password: '[REDACTED]' },

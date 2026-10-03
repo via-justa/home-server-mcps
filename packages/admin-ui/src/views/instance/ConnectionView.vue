@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import { errorText, http } from '../../api';
+import ConnectClient from '../../components/ConnectClient.vue';
 import MarkdownLite from '../../components/MarkdownLite';
 import SchemaForm from '../../components/SchemaForm.vue';
 import { ago } from '../../format';
 import { useAppStore } from '../../stores/app';
-import type { Connection, Instance } from '../../types';
+import type { Connection, Instance, Settings } from '../../types';
 
 const props = defineProps<{ instance: Instance }>();
 const app = useAppStore();
@@ -21,6 +22,15 @@ async function load() {
   secretPatch.value = {};
 }
 onMounted(() => load().catch((err) => (message.value = { kind: 'error', text: errorText(err) })));
+
+// For the "Connect a client" card: whether clients may self-register (a Cloudflare portal needs it).
+const dynamicRegistration = ref<boolean | null>(null);
+onMounted(() =>
+  http
+    .get<Settings>('/api/settings')
+    .then((s) => (dynamicRegistration.value = s.mcp.allowDynamicRegistration))
+    .catch(() => undefined),
+);
 
 const body = () => ({
   config: config.value,
@@ -125,6 +135,7 @@ const sync = () =>
         <h2>Setup notes</h2>
         <MarkdownLite class="small help-text" :source="conn.help" />
       </div>
+      <ConnectClient :instance="instance" :dynamic-registration="dynamicRegistration" />
     </aside>
   </div>
 </template>

@@ -115,7 +115,8 @@ async function create() {
         </button>
       </div>
       <p class="small muted">
-        New endpoints start read-only: every access group is at Read until you raise it on the Access page.
+        New endpoints start at Ask: reads run and every write waits for your approval. Locked operations stay off.
+        Change any of it on the Access page.
       </p>
     </form>
   </div>

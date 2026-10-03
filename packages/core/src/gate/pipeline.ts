@@ -17,6 +17,7 @@ import { verifyAttestationKey } from './attestation.js';
 import { canonicalJson, sha256Hex } from './canonical.js';
 import { evaluatePreApproval } from './preapproval.js';
 import type { SlidingWindowLimiter } from './rate-limit.js';
+import { redactDiff, redactPaths } from './redact.js';
 import type { Redactor } from './redact.js';
 
 /**
@@ -95,7 +96,6 @@ function toBindingError(err: unknown): BindingError {
 const DISABLED_MESSAGES: Record<string, string> = {
   group_missing: 'is not available on this endpoint',
   level_none: 'is disabled on this endpoint (access level None)',
-  read_only: 'is a write, and its access level on this endpoint is Read',
   token_read_only: 'is a write, and this connection was granted read-only access',
   locked_not_opted_in: 'is a protected operation that the administrator has not enabled',
   unknown_operation: 'is not in the current catalog',
@@ -189,7 +189,9 @@ export function createGateBindings(
         .from(operations)
         .where(and(eq(operations.instanceId, rt.instanceId), eq(operations.key, resolved.key)))
         .get() as OperationRow | undefined;
-      audit.params = rt.redact(resolved.params);
+      // Redacted by key name, plus the paths the plugin declared for this operation (positional secrets).
+      const redactParams = <T>(p: T): T => redactPaths(rt.redact(p), op?.sensitiveParams);
+      audit.params = redactParams(resolved.params);
 
       // 1. Attestation, before anything else about the op is revealed.
       if (op && !op.stale && op.attestationRequired) {
@@ -231,7 +233,9 @@ export function createGateBindings(
       }
       const operation = op!;
       const mode = access.reachable ? access.mode : 'run';
-      const isWrite = mode !== 'run';
+      // A read at its own Ask needs a decision too, but only writes use the write budget or prepareWrite.
+      const needsDecision = mode !== 'run';
+      const isWrite = operation.locked || operation.classification === 'write';
       audit.classification = operation.locked ? 'locked' : operation.classification;
 
       // 3. Concrete targets, so rules and approvers see exactly what will be touched. Fails closed.
@@ -252,7 +256,7 @@ export function createGateBindings(
         expectedHash = prepared.expectedHash;
       }
 
-      // 5. Reads run straight away.
+      // 5. Reads run straight away, unless the read has its own Ask.
       let decision = 'auto-executed';
       let approval: Decision | undefined;
       // Each principal has its own write budget, charged only for writes that actually run (step 9):
@@ -260,12 +264,12 @@ export function createGateBindings(
       const writeBucket = `write:${rt.instanceId}:${principalKey(caller)}`;
       const overWriteBudget = () =>
         reject('rejected:rate_limited', new BindingError('RATE_LIMITED', 'Too many write calls; slow down'));
-      if (isWrite) {
+      if (needsDecision) {
         // Checked before asking anyone, so nobody approves a call that would be refused anyway.
-        if (!deps.limiter.allows(writeBucket, rt.settings.writesPerMinute, 60_000)) overWriteBudget();
+        if (isWrite && !deps.limiter.allows(writeBucket, rt.settings.writesPerMinute, 60_000)) overWriteBudget();
 
-        // 6. Level `write`: acknowledged writes are auto-approved. Level `ask`: pre-approval rules, which
-        //    never cover locked ops nor writes still waiting for acknowledgement.
+        // 6. Level `write`: acknowledged writes are auto-approved. Level `ask` (a write, or a read given
+        //    its own Ask): pre-approval rules, which never cover locked ops nor unacknowledged writes.
         let preapproved = false;
         if (mode === 'auto') {
           preapproved = true;
@@ -293,7 +297,7 @@ export function createGateBindings(
           // prompts, the DB and notifications, and never need a secret.
           const summary = await rt
             .plugin()
-            .call('summarize', { key: operation.key, params: rt.redact(params), targets });
+            .call('summarize', { key: operation.key, params: redactParams(params), targets });
           if (operation.typedConfirmation && !summary.confirmLiteral) {
             reject(
               'rejected:missing_confirmation_literal',
@@ -309,19 +313,24 @@ export function createGateBindings(
             operationId: operation.id,
             operationKey: operation.key,
             classification: audit.classification,
-            paramsDisplay: rt.redact(params),
+            paramsDisplay: redactParams(params),
             paramsHash,
             resolvedTargets: targets,
             summary: summary.text,
             confirmLiteral: operation.typedConfirmation ? summary.confirmLiteral : undefined,
-            diff,
+            // The diff names changed fields in its paths, which key-based redaction can't see.
+            diff: redactDiff(diff as Parameters<typeof redactDiff>[0], rt.redact, operation.sensitiveParams),
             expectedHash,
             client: caller.client,
             mcpSessionId: caller.mcpSessionId,
             timeoutMs: rt.settings.approvalTimeoutMs,
             prompts: caller.prompts,
+            // Only plain writes, as the setting's name says: a read the admin put at Ask always needs a human.
             formApprovals:
-              rt.settings.formElicitationApprovals === 'writes' && !operation.locked && !operation.typedConfirmation,
+              rt.settings.formElicitationApprovals === 'writes' &&
+              isWrite &&
+              !operation.locked &&
+              !operation.typedConfirmation,
           });
           audit.detail.approvalId = request.id;
           openApprovals.add(request.id);

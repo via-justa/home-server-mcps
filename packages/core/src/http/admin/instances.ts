@@ -6,7 +6,6 @@ import {
   applyBulkLevel,
   listGroups,
   mergeGroups,
-  previewBulkLevel,
   renameGroup,
   setGroupLevel,
   updateOperation,
@@ -16,7 +15,7 @@ import { findRegistryEntries, scopesFromQuery } from '../../catalog/registry.js'
 import { createRule, deleteRule, listRules, updateRule } from '../../catalog/rules.js';
 import { operationGroups, operations } from '../../db/schema.js';
 import { ValidationError } from '../../errors.js';
-import { ACCESS_LEVELS, effectiveAccess } from '../../gate/access.js';
+import { ACCESS_LEVELS, allowedLevels, effectiveAccess, levelInForce } from '../../gate/access.js';
 import { AUTH_MODES } from '../../instances/manager.js';
 import { clientIp, readJson, readOptionalJson } from '../common.js';
 import type { AdminEnv } from './auth.js';
@@ -109,12 +108,11 @@ export function registerInstanceRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
       z.object({
         level: z.string().optional(),
         label: z.string().optional(),
-        acknowledge: z.array(z.string()).optional(),
       }),
     );
     if (body.label !== undefined) renameGroup(ctx.db, id, c.req.param('key'), body.label, { actor: actor(c) });
     if (body.level !== undefined) {
-      setGroupLevel(ctx.db, id, c.req.param('key'), body.level, { acknowledge: body.acknowledge, actor: actor(c) });
+      setGroupLevel(ctx.db, id, c.req.param('key'), body.level, { actor: actor(c) });
     }
     return c.json(listGroups(ctx.db, id).find((g) => g.key === c.req.param('key')) ?? null);
   });
@@ -129,18 +127,10 @@ export function registerInstanceRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
     return c.json(mergeGroups(ctx.db, id, body, { actor: actor(c) }));
   });
 
-  app.get('/api/instances/:id/groups/bulk-level/preview', (c) => {
-    exists(c.req.param('id'));
-    return c.json(previewBulkLevel(ctx.db, c.req.param('id'), c.req.query('level') ?? ''));
-  });
-
   app.post('/api/instances/:id/groups/bulk-level', async (c) => {
     exists(c.req.param('id'));
-    const body = await readJson(
-      c,
-      z.object({ level: z.string(), confirm: z.string().optional(), acknowledge: z.array(z.string()).optional() }),
-    );
-    return c.json(applyBulkLevel(ctx.db, c.req.param('id'), body.level, { ...body, actor: actor(c) }));
+    const body = await readJson(c, z.object({ level: z.string() }));
+    return c.json(applyBulkLevel(ctx.db, c.req.param('id'), body.level, { actor: actor(c) }));
   });
 
   app.get('/api/instances/:id/operations', (c) => {
@@ -167,11 +157,22 @@ export function registerInstanceRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
       .map((op) => {
         const group = groups.get(op.groupId);
         const access = effectiveAccess(accessInput(op), group);
+        const docs = op.docs as { summary?: unknown; description?: unknown } | null;
+        const description =
+          typeof docs?.summary === 'string'
+            ? docs.summary
+            : typeof docs?.description === 'string'
+              ? docs.description
+              : null;
         return {
           ...op,
           group: group?.key ?? null,
-          /** The level in force: the operation's own, else its group's. */
-          level: op.levelOverride ?? group?.level ?? 'none',
+          /** The level in force: the operation's own, else what its group's level means for its kind. */
+          level: levelInForce(accessInput(op), group),
+          /** The levels this operation can be given on its own. */
+          allowedLevels: allowedLevels(op),
+          /** What the upstream API says the operation does, when it says. */
+          description,
           reachable: access.reachable,
           mode: access.reachable ? access.mode : null,
           pendingReview: access.reachable && access.pendingReview === true,
@@ -181,7 +182,11 @@ export function registerInstanceRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
       .filter((op) => (!q.group || op.group === q.group) && (!q.reason || op.reason === q.reason))
       .filter((op) => (q.needsReview === '1' ? op.needsReview || op.pendingReview : true))
       .filter(
-        (op) => !text || op.key.toLowerCase().includes(text) || (op.displayName ?? '').toLowerCase().includes(text),
+        (op) =>
+          !text ||
+          op.key.toLowerCase().includes(text) ||
+          (op.displayName ?? '').toLowerCase().includes(text) ||
+          (op.description ?? '').toLowerCase().includes(text),
       );
     return c.json(rows);
   });
@@ -192,7 +197,6 @@ export function registerInstanceRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
       z.object({
         level: z.enum(ACCESS_LEVELS).nullable().optional(),
         acknowledged: z.boolean().optional(),
-        classification: z.enum(['read', 'write']).optional(),
         attestationRequired: z.boolean().optional(),
       }),
     );

@@ -1,0 +1,1 @@
+ALTER TABLE `operations` ADD `sensitive_params` text;
