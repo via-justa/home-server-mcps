@@ -1,0 +1,45 @@
+# yaml-language-server: $schema=./node_modules/@synoikia/plugin-sdk/plugin-settings.schema.json
+#
+# What {{name}} tells Synoikia about its JSON-RPC methods. Each method is declared here with its own
+# classification; rules lock and describe them on top. If the upstream can list its methods, build the
+# catalog from that instead and keep only the rules. Reference: docs/plugin-authoring.md.
+
+defaults:
+  confirm: instance
+  timeouts: { request: 15000, lookup: 10000 }
+
+# Lookups call a read method with these params.
+instanceName: { op: system.info, field: name, fallback: '{{name}}' }
+
+operations:
+  - { key: system.info, kind: method, group: system, classification: read, summary: Name and version. }
+  - { key: items.list, kind: method, group: items, classification: read, summary: List items. }
+  - key: items.get
+    kind: method
+    group: items
+    classification: read
+    summary: One item by id.
+    paramsSchema: { type: object, properties: { id: { type: number } }, required: [id] }
+  - key: items.create
+    kind: method
+    group: items
+    classification: write
+    summary: Create an item.
+    paramsSchema: { type: object, properties: { name: { type: string } }, required: [name] }
+  - key: items.delete
+    kind: method
+    group: items
+    classification: write
+    summary: Delete an item by id.
+    paramsSchema: { type: object, properties: { id: { type: number } }, required: [id] }
+  - { key: settings.get, kind: method, group: settings, classification: read, summary: 'Settings, including an integration key.' }
+
+rules:
+  - match: items.delete
+    locked: true
+    confirm:
+      lookup: { op: items.get, args: [{ id: { $param: /id } }], field: name }
+
+plugin:
+  # WebSocket path under the base URL.
+  path: /rpc

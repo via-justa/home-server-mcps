@@ -1,9 +1,10 @@
 name: Release
 
-# Publishes the packages plugin repos build and test against: the plugin SDK, and core (for its
-# plugin harness, `@synoikia/core/testing`). A package is published when its package.json version
-# isn't on npm yet, so a release is a version bump merged to main. Prereleases (`0.3.0-rc.0`) are
-# published by hand only, under the `next` dist-tag, so `latest` never moves to one.
+# Publishes the packages plugin repos build and test against: the plugin SDK, core (for its
+# plugin harness, `@synoikia/core/testing`) and create-plugin (the scaffolding, build and release
+# CLI). A package is published when its package.json version isn't on npm yet, so a release is a
+# version bump merged to main. Prereleases (`0.3.0-rc.0`) are published by hand only, under the
+# `next` dist-tag, so `latest` never moves to one.
 #
 # Also publishes the Docker image to GHCR, tagged with the root package.json's `version` — a
 # separate, decoupled version for the shipped image, bumped independently of the SDK/core/admin-ui
@@ -37,7 +38,7 @@ jobs:
       # Trusted publishing (OIDC) needs npm >= 11.5.1; Node 22 ships npm 10.
       - run: npm install -g npm@^11.5.1
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @synoikia/plugin-sdk --filter @synoikia/core build
+      - run: pnpm --filter @synoikia/plugin-sdk --filter @synoikia/core --filter @synoikia/create-plugin build
       - name: Publish new versions
         env:
           # No token: npm authenticates through trusted publishing (this repo and release.yml, with
@@ -52,8 +53,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/pack"
-          # SDK first: core's published dependency on it must resolve.
-          for dir in packages/plugin-sdk packages/core; do
+          # SDK first: core's published dependency on it must resolve, and create-plugin depends on both.
+          for dir in packages/plugin-sdk packages/core packages/create-plugin; do
             name=$(node -p "require('./$dir/package.json').name")
             version=$(node -p "require('./$dir/package.json').version")
             if npm view "$name@$version" version >/dev/null 2>&1; then

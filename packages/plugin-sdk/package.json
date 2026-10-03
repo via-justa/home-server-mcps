@@ -1,6 +1,6 @@
 {
   "name": "@synoikia/plugin-sdk",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Manifest schema, RPC contract and child-side runtime for Synoikia plugins",
   "license": "MIT",
   "repository": {
@@ -14,19 +14,22 @@
       "synoikia-source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./plugin-settings.schema.json": "./plugin-settings.schema.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "plugin-settings.schema.json"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/write-settings-schema.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
     "semver": "^7.8.5",
-    "zod": "^4.6.5"
+    "zod": "^4.6.5",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@types/semver": "^7.7.1"

@@ -1,0 +1,61 @@
+# yaml-language-server: $schema=./node_modules/@synoikia/plugin-sdk/plugin-settings.schema.json
+#
+# What {{name}} tells Synoikia about its operations. With no spec to discover, every operation is
+# declared here with its own classification; rules lock and describe them on top. Core decides what is
+# allowed. Reference: docs/plugin-authoring.md.
+
+defaults:
+  confirm: instance
+  timeouts: { request: 15000, lookup: 10000 }
+
+instanceName: { op: 'GET /status', field: name, fallback: '{{name}}' }
+
+operations:
+  - key: items.list
+    group: items
+    classification: read
+    summary: List items.
+    http: { method: GET, path: /items }
+  - key: items.get
+    group: items
+    classification: read
+    summary: One item.
+    http: { method: GET, path: '/items/{itemId}' }
+    paramsSchema:
+      type: object
+      properties: { path: { type: object, properties: { itemId: { type: string } }, required: [itemId] } }
+  - key: items.create
+    group: items
+    classification: write
+    summary: Create an item.
+    http: { method: POST, path: /items }
+    paramsSchema:
+      type: object
+      properties: { body: { type: object, properties: { name: { type: string } }, required: [name] } }
+  - key: items.delete
+    group: items
+    classification: write
+    summary: Delete an item.
+    http: { method: DELETE, path: '/items/{itemId}' }
+  - key: settings.get
+    group: settings
+    classification: read
+    summary: Settings, including an integration key.
+    http: { method: GET, path: /settings }
+
+rules:
+  # Destructive or irreversible: always a human who types the confirmation literal.
+  - match: items.delete
+    locked: true
+    confirm:
+      lookup:
+        op: 'GET /items/{itemId}'
+        args: [{ itemId: { $param: /path/itemId } }]
+        field: name
+
+plugin:
+  # Path of the API under the base URL.
+  apiPath: /api
+  # Endpoint and field that report the version.
+  versionPath: /status
+  versionField: version

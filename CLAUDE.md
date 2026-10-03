@@ -6,12 +6,15 @@ One MCP server for many self-hosted services. Each plugin instance gets its own 
 
 ## Layout
 
-| Path                        | What                                                                                  |
-| --------------------------- | ------------------------------------------------------------------------------------- |
-| `packages/core`             | Server: MCP endpoints, admin API, gate, sandbox, plugin host, SQLite (Drizzle)        |
-| `packages/plugin-sdk`       | Manifest schema, core ⇄ plugin RPC contract, `runPlugin()`. Published to npm          |
-| `packages/admin-ui`         | Admin portal: Vue 3, Pinia, Vite                                                      |
-| `packages/core/src/testing` | `@synoikia/core/testing`: the plugin harness plugin repos test against. Published API |
+| Path                        | What                                                                                                                                                                                                               |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `packages/core`             | Server: MCP endpoints, admin API, gate, sandbox, plugin host, SQLite (Drizzle)                                                                                                                                     |
+| `packages/plugin-sdk`       | Manifest schema, core ⇄ plugin RPC contract, `runPlugin()`, and what plugins are built from: `definePlugin`, the `plugin.yaml` rules engine, HTTP/socket transports, OpenAPI and static catalogs. Published to npm |
+| `packages/create-plugin`    | `@synoikia/create-plugin`: `pnpm create`/`pnpm new` scaffolding, plugin build/check, signed repository release. Published to npm                                                                                   |
+| `packages/admin-ui`         | Admin portal: Vue 3, Pinia, Vite                                                                                                                                                                                   |
+| `packages/core/src/testing` | `@synoikia/core/testing`: the plugin harness, `startFakeHttp` and `checkPluginContract` plugin repos test against. Published API                                                                                   |
+
+Plugin authoring: `docs/plugin-authoring.md`. SDK code is bundled into every plugin, so `rules.ts`, `http-client.ts`, `openapi.ts` and `static-catalog.ts` decide what plugins tell core: treat changes there as security changes. `create-plugin` templates use only published SDK and core APIs and are smoke-tested by `packages/create-plugin/test/smoke.test.ts`.
 
 Each security-critical directory under `packages/core/src` (`gate/`, `sandbox/`, `plugins/`, `auth/`) has a short `README.md` with its pipeline and design sections. Read it before changing that module.
 
@@ -43,11 +46,11 @@ Schema is `packages/core/src/db/schema.ts`. Migrations in `packages/core/drizzle
 
 ## Releases
 
-Maintainers bump versions; don't bump them unless asked. `@synoikia/plugin-sdk` and `@synoikia/core` publish to npm when their `version` changes on `main`. The Docker image uses the root `package.json` version, separate from the package versions. A breaking change to the SDK or `@synoikia/core/testing` breaks every plugin repo, so call it out.
+Maintainers bump versions; don't bump them unless asked. `@synoikia/plugin-sdk`, `@synoikia/core` and `@synoikia/create-plugin` publish to npm when their `version` changes on `main`. The Docker image uses the root `package.json` version, separate from the package versions. A breaking change to the SDK or `@synoikia/core/testing` breaks every plugin repo, so call it out.
 
 ## Security review
 
-Before opening a PR that touches `gate/`, `sandbox/`, `approvals/`, `auth/`, `crypto/`, `plugins/`, `http/`, `runtime/`, `instances/`, the SDK's RPC contract, the DB schema, a `package.json` or the `Dockerfile`, run the `security-reviewer` subagent (`.claude/agents/security-reviewer.md`) on the diff and address its findings. It also runs `pnpm audit` and triages known CVEs by whether the vulnerable dependency ships and is reachable.
+Before opening a PR that touches `gate/`, `sandbox/`, `approvals/`, `auth/`, `crypto/`, `plugins/`, `http/`, `runtime/`, `instances/`, the SDK's RPC contract or its rules, transports and catalog adapters, `packages/create-plugin`, the DB schema, a `package.json` or the `Dockerfile`, run the `security-reviewer` subagent (`.claude/agents/security-reviewer.md`) on the diff and address its findings. It also runs `pnpm audit` and triages known CVEs by whether the vulnerable dependency ships and is reachable.
 
 ## Protected files
 

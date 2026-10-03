@@ -1,0 +1,56 @@
+{
+  "name": "@synoikia/create-plugin",
+  "version": "0.1.1",
+  "description": "Create Synoikia plugin repositories and plugins, then build, check and publish them",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/via-justa/synoikia-core.git",
+    "directory": "packages/create-plugin"
+  },
+  "type": "module",
+  "bin": {
+    "create-plugin": "./dist/create.js",
+    "synoikia-plugin": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "synoikia-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./vitest": {
+      "synoikia-source": "./src/vitest.ts",
+      "types": "./dist/vitest.d.ts",
+      "import": "./dist/vitest.js"
+    }
+  },
+  "files": [
+    "dist",
+    "templates"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.8.1",
+    "@synoikia/plugin-sdk": "workspace:^",
+    "esbuild": "^0.28.2",
+    "yaml": "^2.9.1"
+  },
+  "peerDependencies": {
+    "@synoikia/core": "workspace:^"
+  },
+  "peerDependenciesMeta": {
+    "@synoikia/core": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@synoikia/core": "workspace:^",
+    "@types/ws": "^8.18.1",
+    "ws": "^8.22.0"
+  }
+}

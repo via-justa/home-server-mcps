@@ -1,0 +1,49 @@
+# yaml-language-server: $schema=./node_modules/@synoikia/plugin-sdk/plugin-settings.schema.json
+#
+# What {{name}} tells Synoikia about its operations. The OpenAPI spec lists them (GET reads, every other
+# verb writes, an action-shaped GET is a write flagged for review); these rules lock, split, classify
+# and describe them on top. Core decides what is allowed. Reference: docs/plugin-authoring.md.
+
+defaults:
+  # The literal an approver types for a locked operation with no `confirm` of its own.
+  confirm: instance
+  timeouts: { request: 15000, lookup: 10000 }
+
+# Names this instance for `confirm: instance`. Lookups are GETs only.
+instanceName: { op: 'GET /status', field: name, fallback: '{{name}}' }
+
+# Operations left out of the catalog entirely (session plumbing, debug endpoints).
+exclude:
+  - 'POST /auth/*'
+
+rules:
+  # Destructive or irreversible: always a human who types the confirmation literal.
+  - match: 'DELETE /items/{itemId}'
+    locked: true
+    # The approver types the item's name, looked up by the id in the call (or the id if that fails).
+    confirm:
+      lookup:
+        op: 'GET /items/{itemId}'
+        args: [{ itemId: { $param: /path/itemId } }]
+        field: name
+
+  # A secret the upstream returns under a name too common for the manifest's sensitiveKeys:
+  # - match: GET /backups/*
+  #   sensitiveResult: { keys: [key], deep: true }
+
+  # A GET the heuristic flagged that was reviewed and only reads:
+  # - match: GET /sync/status
+  #   classification: read
+  #   reason: reviewed:read
+  #   needsReview: false
+
+plugin:
+  # Path of the API under the base URL.
+  apiPath: /api
+  # Where the instance serves its OpenAPI spec, under the API path.
+  specPath: /openapi.json
+  # Endpoint and field that report the version.
+  versionPath: /status
+  versionField: version
+  # Refuse a spec with fewer operations: a truncated one must not replace the catalog.
+  minOperations: 3
