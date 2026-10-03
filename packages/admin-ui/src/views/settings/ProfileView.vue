@@ -4,6 +4,8 @@ import { useRoute } from 'vue-router';
 import { errorText, http } from '../../api';
 import TotpEnrollment from '../../components/TotpEnrollment.vue';
 import { useSessionStore } from '../../stores/session';
+import { THEME_PREFS, getTheme, setTheme } from '../../theme';
+import type { ThemePref } from '../../theme';
 import type { PublicUser } from '../../types';
 
 const session = useSessionStore();
@@ -12,6 +14,12 @@ const me = ref<PublicUser>();
 const messages = ref<Record<string, { kind: 'ok' | 'error'; text: string }>>({});
 const pw = ref({ current: '', next: '', confirm: '' });
 const disableCode = ref('');
+const theme = ref<ThemePref>(getTheme());
+const THEME_LABELS: Record<ThemePref, string> = { auto: 'Auto', light: 'Light', dark: 'Dark' };
+function pickTheme(pref: ThemePref) {
+  theme.value = pref;
+  setTheme(pref);
+}
 
 const OIDC_RESULT: Record<string, { kind: 'ok' | 'error'; text: string }> = {
   linked: { kind: 'ok', text: 'Single sign-on linked.' },
@@ -69,6 +77,24 @@ async function enrolled() {
 
 <template>
   <div v-if="me" class="stack">
+    <section class="card">
+      <h2>Appearance</h2>
+      <p class="small muted">Auto follows your system setting. Saved in this browser.</p>
+      <div class="segmented" role="radiogroup" aria-label="Theme">
+        <button
+          v-for="t in THEME_PREFS"
+          :key="t"
+          type="button"
+          role="radio"
+          :aria-checked="theme === t"
+          :class="{ on: theme === t }"
+          @click="pickTheme(t)"
+        >
+          {{ THEME_LABELS[t] }}
+        </button>
+      </div>
+    </section>
+
     <section class="card">
       <h2>Password</h2>
       <form class="form-grid" @submit.prevent="changePassword">

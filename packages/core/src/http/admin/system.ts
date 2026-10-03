@@ -9,6 +9,7 @@ import { pluginInstances, plugins } from '../../db/schema.js';
 import { ConflictError, NotFoundError, ValidationError } from '../../errors.js';
 import { CORE_EVENT_NAMES } from '../../events.js';
 import { getSettings, isSettingsSection, updateSettings } from '../../settings.js';
+import { CORE_VERSION } from '../../version.js';
 import { readJson } from '../common.js';
 import { assertSsoRemains } from './auth.js';
 import type { AdminEnv } from './auth.js';
@@ -41,6 +42,7 @@ export function registerSystemRoutes(app: Hono<AdminEnv>, ctx: AppContext) {
         })),
       warnings: ctx.warnings,
       publicMcpUrl: ctx.config.PUBLIC_MCP_URL ?? null,
+      version: CORE_VERSION,
     });
   });
 

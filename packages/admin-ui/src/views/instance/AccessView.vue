@@ -198,13 +198,17 @@ function status(op: Operation): { text: string; tone: string } {
       </select>
       <button class="btn btn-sm" type="button" @click="merging = { from: [], into: '', label: '' }">Regroup…</button>
     </div>
-    <p class="small muted">
-      <template v-for="l in LEVELS" :key="l"
-        ><strong>{{ LEVEL_LABELS[l] }}</strong
-        >: {{ LEVEL_HELP[l] }}. </template
-      >Setting a group's level resets every {{ instance.plugin.labels?.operation?.toLowerCase() ?? 'operation' }} in it
-      to follow; ↺ puts one with its own level back. New groups start at Ask.
-    </p>
+    <ul class="legend small muted">
+      <li v-for="l in LEVELS" :key="l">
+        <strong>{{ LEVEL_LABELS[l] }}</strong
+        >: {{ LEVEL_HELP[l] }}.
+      </li>
+      <li class="note">
+        Setting a group's level resets every {{ instance.plugin.labels?.operation?.toLowerCase() ?? 'operation' }} in it
+        to follow; ↺ puts one with its own level back.
+      </li>
+      <li>New groups start at Ask.</li>
+    </ul>
     <p v-if="pendingTotal" class="alert warn">
       {{ pendingTotal }} new write {{ pendingTotal === 1 ? 'operation is' : 'operations are' }} at Write but still
       {{ pendingTotal === 1 ? 'asks' : 'ask' }} for approval until you acknowledge
@@ -372,6 +376,14 @@ function status(op: Operation): { text: string; tone: string } {
   </div>
 </template>
 <style scoped>
+.legend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.legend .note {
+  margin-top: 6px;
+}
 .search {
   padding: 8px 11px;
   border: 1px solid var(--border-strong);

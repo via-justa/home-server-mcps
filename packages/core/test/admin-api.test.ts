@@ -7,6 +7,7 @@ import { applyRegistrySync } from '../src/catalog/registry.js';
 import { users } from '../src/db/schema.js';
 import { createAdminApp } from '../src/http/admin-app.js';
 import { updateSettings } from '../src/settings.js';
+import { CORE_VERSION } from '../src/version.js';
 import { eq } from 'drizzle-orm';
 import { browser } from './admin-client.js';
 import { createTestApp } from './helpers.js';
@@ -351,6 +352,7 @@ describe('instances and access', () => {
     expect((await t.b.get('/api/approvals')).status).toBe(404);
     const overview = (await (await t.b.get('/api/overview')).json()) as Record<string, unknown>;
     expect(overview).not.toHaveProperty('pendingApprovals');
+    expect(overview.version).toBe(CORE_VERSION);
 
     const csv = await (await t.b.get('/api/audit/export.csv?kind=config')).text();
     expect(csv.split('\n')[0]).toMatch(/^id,at,kind,/);

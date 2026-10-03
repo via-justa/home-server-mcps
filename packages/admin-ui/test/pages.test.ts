@@ -447,6 +447,12 @@ describe('Pre-approval rules', () => {
     const dialog = wrapper.get('[role="dialog"]');
     await dialog.get('select#r-op').setValue('op-store.volume.create');
     await flushPromises();
+    // Every setting explains itself; a tap opens the tip.
+    expect(dialog.findAll('.infotip').length).toBeGreaterThanOrEqual(10);
+    const tip = dialog.get('.infotip');
+    await tip.get('button').trigger('click');
+    expect(tip.classes()).toContain('open');
+    expect(tip.get('[role="tooltip"]').text()).toContain('Ask');
     await wrapper.get('[role="dialog"] input[placeholder="vol/media/"]').setValue('vol/media');
     const compression = wrapper
       .get('[role="dialog"]')
@@ -551,5 +557,67 @@ describe('Connect a client', () => {
     expect(c.findAll('.alert')).toHaveLength(0);
     await c.get('.copy').trigger('click');
     expect(writeText).toHaveBeenCalledWith('https://mcp.example.com/nas');
+  });
+});
+
+describe('Shell and settings', () => {
+  afterEach(() => {
+    localStorage.clear();
+    document.documentElement.removeAttribute('data-theme');
+  });
+
+  it('shows the core version and a link to report issues above the user name', async () => {
+    fakeApi({ 'GET /api/session': signedIn, 'GET /api/overview': { ...overview, version: '1.2.3' } });
+    const { wrapper } = await mountAt('/');
+    const about = wrapper.get('.sidebar .footer .about');
+    expect(about.text()).toContain('v1.2.3');
+    const link = about.get('a.github');
+    expect(link.attributes('href')).toBe('https://github.com/via-justa/synoikia-core/issues');
+    expect(link.attributes('rel')).toContain('noopener');
+    expect(link.attributes('title')).toBeTruthy();
+  });
+
+  it('switches between auto, light and dark on My profile and remembers the choice', async () => {
+    fakeApi({ 'GET /api/session': signedIn, 'GET /api/overview': overview, 'GET /api/profile': signedIn.user });
+    const { wrapper } = await mountAt('/settings/profile');
+    const pick = (label: string) =>
+      wrapper
+        .findAll('[aria-label="Theme"] button')
+        .find((b) => b.text() === label)!
+        .trigger('click');
+    expect(wrapper.get('[aria-label="Theme"] [aria-checked="true"]').text()).toBe('Auto');
+    await pick('Dark');
+    expect(document.documentElement.dataset.theme).toBe('dark');
+    expect(localStorage.getItem('synoikia.theme')).toBe('dark');
+    await pick('Light');
+    expect(document.documentElement.dataset.theme).toBe('light');
+    await pick('Auto');
+    expect(document.documentElement.hasAttribute('data-theme')).toBe(false);
+    expect(localStorage.getItem('synoikia.theme')).toBeNull();
+  });
+
+  it('names the sign-in tab Admin UI settings and explains MCP access', async () => {
+    fakeApi({
+      'GET /api/session': signedIn,
+      'GET /api/overview': overview,
+      'GET /api/settings': {
+        mcp: {
+          defaultAuthMode: 'oauth',
+          allowDynamicRegistration: true,
+          accessTokenTtlMinutes: 60,
+          refreshTokenTtlDays: 30,
+          cfAccess: { teamDomain: '', aud: '' },
+          trustedIdentityHeader: '',
+        },
+        publicMcpUrl: 'https://mcp.example.com',
+      },
+    });
+    const { wrapper } = await mountAt('/settings/mcp');
+    expect(wrapper.get('.tabs').text()).toContain('Admin UI settings');
+    expect(wrapper.get('.tabs').text()).not.toContain('Sign-in & security');
+    const about = wrapper.get('.card.about');
+    expect(about.text()).toContain('https://mcp.example.com/<slug>');
+    expect(about.text()).toContain('search');
+    expect(about.text()).toContain('execute');
   });
 });
