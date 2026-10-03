@@ -1,0 +1,34 @@
+{
+  "name": "{{repoName}}",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "new": "synoikia-plugin new",
+    "build": "pnpm -r --filter './plugins/*' build",
+    "check": "synoikia-plugin check",
+    "typecheck": "pnpm -r --filter './plugins/*' typecheck",
+    "test": "pnpm -r --filter './plugins/*' test",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "synoikia": {
+    "repository": "{{repository}}",
+    "name": "{{repoName}}"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@synoikia/core": "{{coreRange}}",
+    "@synoikia/create-plugin": "{{cliRange}}",
+    "@types/node": "^22.19.0",
+    "eslint": "^10.11.0",
+    "prettier": "^3.6.2",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.70.1",
+    "vitest": "^5.0.2"
+  }
+}

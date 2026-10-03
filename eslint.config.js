@@ -4,7 +4,15 @@ import pluginVue from 'eslint-plugin-vue';
 
 export default tseslint.config(
   {
-    ignores: ['**/dist/**', '**/node_modules/**', '**/coverage/**', 'docs/mockups/**', 'packages/core/drizzle/**'],
+    ignores: [
+      '**/dist/**',
+      '**/node_modules/**',
+      '**/coverage/**',
+      'docs/mockups/**',
+      'packages/core/drizzle/**',
+      'packages/create-plugin/templates/**',
+      'packages/create-plugin/.smoke/**',
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

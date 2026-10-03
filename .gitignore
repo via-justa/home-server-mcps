@@ -8,3 +8,4 @@ data/
 *.sqlite-*
 master.key
 packages/plugin-sdk/plugin-settings.schema.json
+packages/create-plugin/.smoke/
