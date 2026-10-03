@@ -569,7 +569,9 @@ describe('Shell and settings', () => {
   it('shows the core version and a link to report issues above the user name', async () => {
     fakeApi({ 'GET /api/session': signedIn, 'GET /api/overview': { ...overview, version: '1.2.3' } });
     const { wrapper } = await mountAt('/');
-    const about = wrapper.get('.sidebar .footer .about');
+    const about = wrapper.get('.sidebar .about');
+    // Above the separator, not in the footer with the user name.
+    expect(wrapper.find('.sidebar .footer .about').exists()).toBe(false);
     expect(about.text()).toContain('v1.2.3');
     const link = about.get('a.github');
     expect(link.attributes('href')).toBe('https://github.com/via-justa/synoikia-core/issues');
