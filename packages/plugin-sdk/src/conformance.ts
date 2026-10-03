@@ -10,6 +10,7 @@ import {
   SyncCatalogResultSchema,
   TestConnectionResultSchema,
 } from './operations.js';
+import type { PluginSettings } from './rules.js';
 import type { InitParams, PluginHandlers } from './rpc.js';
 import { SDK_VERSION } from './version.js';
 
@@ -35,6 +36,39 @@ export interface ConformanceOptions {
   samples?: ConformanceSample[];
   /** `resolveOperation` calls that must be rejected (unknown or malformed operations). */
   rejects?: Omit<ConformanceSample, 'expectKey'>[];
+  /** The plugin's parsed `plugin.yaml`, checked against the manifest. */
+  settings?: PluginSettings<unknown>;
+}
+
+/**
+ * Static checks of a manifest beyond its schema, the rules every plugin repository used to test by
+ * hand: each `secret` field is `writeOnly` and listed in `sensitiveKeys`, each `writeOnly` field uses
+ * the `secret` widget, and the plugin names the hosts it may reach. With `settings`, every
+ * `matchProfile` a rule names exists in the manifest. Returns the problems found.
+ */
+export function checkManifest(input: unknown, settings?: PluginSettings<unknown>): string[] {
+  let manifest: Manifest;
+  try {
+    manifest = parseManifest(input);
+  } catch (err) {
+    return [`manifest: ${explain(err)}`];
+  }
+  const issues: string[] = [];
+  const props = (manifest.connection.schema.properties ?? {}) as Record<string, { writeOnly?: boolean }>;
+  for (const [name, prop] of Object.entries(props)) {
+    const secret = manifest.connection.ui[name]?.widget === 'secret';
+    if (secret && prop?.writeOnly !== true) issues.push(`connection.${name}: a secret field must be writeOnly`);
+    if (prop?.writeOnly === true && !secret)
+      issues.push(`connection.${name}: a writeOnly field must use the secret widget`);
+    if ((secret || prop?.writeOnly === true) && !manifest.sensitiveKeys.includes(name))
+      issues.push(`connection.${name}: a secret field must be listed in sensitiveKeys`);
+  }
+  if (manifest.network.hosts.length === 0) issues.push('network.hosts: names no host, so the plugin can reach nothing');
+  for (const [i, rule] of (settings?.rules ?? []).entries()) {
+    if (rule.matchProfile && !manifest.matchProfiles[rule.matchProfile])
+      issues.push(`plugin.yaml rules[${i}]: matchProfile "${rule.matchProfile}" is not in the manifest`);
+  }
+  return issues;
 }
 
 const OPTIONAL_BY_CAPABILITY = {
@@ -50,7 +84,7 @@ function explain(err: unknown): string {
 }
 
 export async function checkConformance(opts: ConformanceOptions): Promise<string[]> {
-  const issues: string[] = [];
+  const issues: string[] = opts.settings ? checkManifest(opts.manifest, opts.settings) : [];
   const { handlers } = opts;
 
   let manifest: Manifest;
