@@ -12,3 +12,5 @@ export * from './pending.js';
 export * from './catalog-helpers.js';
 export * from './plugin-kit.js';
 export * from './rules.js';
+export * from './openapi.js';
+export * from './static-catalog.js';
