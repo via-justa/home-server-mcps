@@ -8,6 +8,7 @@ WORKDIR /app
 RUN corepack enable
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY scripts/check-node.mjs scripts/
 COPY packages/plugin-sdk/package.json packages/plugin-sdk/
 COPY packages/core/package.json packages/core/
 COPY packages/admin-ui/package.json packages/admin-ui/
@@ -28,6 +29,7 @@ WORKDIR /app
 RUN corepack enable
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY scripts/check-node.mjs scripts/
 COPY --from=build /app/packages/plugin-sdk/package.json packages/plugin-sdk/
 COPY --from=build /app/packages/plugin-sdk/dist packages/plugin-sdk/dist
 COPY --from=build /app/packages/core/package.json packages/core/

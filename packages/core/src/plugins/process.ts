@@ -1,6 +1,7 @@
 import { fork } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import {
   GuideSchema,
@@ -118,7 +119,9 @@ export class PluginProcess extends EventEmitter<PluginProcessEvents> {
   /** Forks the entry under the Node permission model: read-only access to its own dir, nothing else. */
   start(): void {
     if (this.child) throw new Error('Plugin process already started');
-    const dir = path.resolve(this.opts.dir);
+    // The permission model checks real paths, but the grant is taken literally: through a symlinked dir (macOS's
+    // /var -> /private/var tmpdir, a symlinked DATA_DIR) the child could not even load its own entry.
+    const dir = realpathSync(path.resolve(this.opts.dir));
     this.child = fork(path.resolve(dir, this.opts.entry), [], {
       cwd: dir,
       execArgv: ['--permission', `--allow-fs-read=${dir}`, `--max-old-space-size=${this.opts.memoryMb ?? 256}`],

@@ -4,7 +4,7 @@ Thanks for taking the time to contribute. Bug reports, feature requests and pull
 
 ## Development setup
 
-Requires [Node.js](https://nodejs.org/) ≥ 22.12 and [pnpm](https://pnpm.io/) 10 (`corepack enable`).
+Requires [Node.js](https://nodejs.org/) 22 (≥ 22.12) or 24 and [pnpm](https://pnpm.io/) 10 (`corepack enable`).
 
 ```sh
 pnpm install

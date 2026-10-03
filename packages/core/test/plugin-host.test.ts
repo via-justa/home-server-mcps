@@ -65,8 +65,20 @@ describe('PluginProcess', () => {
     );
     await expect(invoke({ action: 'write' })).resolves.toBe('ERR_ACCESS_DENIED');
     expect(existsSync(path.join(FIXTURE, 'written.txt'))).toBe(false);
-    await expect(invoke({ action: 'env' })).resolves.toEqual(['NODE_ENV', 'PLUGIN_INSTANCE_ID']);
+    // macOS adds __CF_USER_TEXT_ENCODING to every process it launches; it is not inherited from core.
+    const env = (await invoke({ action: 'env' })) as string[];
+    expect(env.filter((k) => k !== '__CF_USER_TEXT_ENCODING')).toEqual(['NODE_ENV', 'PLUGIN_INSTANCE_ID']);
     await expect(invoke({ action: 'secrets' })).resolves.toEqual(['apiKey']);
+  });
+
+  it('starts from a symlinked plugin dir (macOS tmpdir, symlinked DATA_DIR)', async () => {
+    const link = path.join(tmp(), 'echo');
+    symlinkSync(FIXTURE, link);
+    const proc = new PluginProcess({ dir: link, entry: 'index.mjs', instanceId: 'inst-1', defaultTimeoutMs: 2000 });
+    proc.start();
+    cleanup.push(() => proc.stop(500));
+    await proc.call('init', { instanceId: 'inst-1', config: {}, secrets: {}, sdkVersion: '0.1.0' });
+    await expect(proc.call('getUpstreamVersion')).resolves.toBe('1.0');
   });
 
   it('maps plugin errors, contract violations and timeouts', async () => {
