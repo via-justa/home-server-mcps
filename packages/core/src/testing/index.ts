@@ -233,3 +233,7 @@ function splitConnection(manifest: Manifest, connection: Record<string, unknown>
 
 export { verifyPluginRepository } from './repository.js';
 export type { VerifiedPlugin, VerifyRepositoryOptions } from './repository.js';
+export { startFakeHttp } from './fake-http.js';
+export type { FakeHttp, FakeHttpOptions, FakeRequest, FakeResponse, FakeRoute } from './fake-http.js';
+export { checkPluginContract } from './contract.js';
+export type { ContractCall, PluginContractOptions } from './contract.js';
