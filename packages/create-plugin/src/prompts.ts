@@ -1,5 +1,13 @@
 import * as p from '@clack/prompts';
-import { ARCHETYPES, AUTH_KINDS, camelCase, validateId, validateNamespace } from './scaffold.js';
+import {
+  ARCHETYPES,
+  AUTH_KINDS,
+  camelCase,
+  validateDescription,
+  validateId,
+  validateName,
+  validateNamespace,
+} from './scaffold.js';
 import type { Archetype, AuthKind, NewPluginOptions } from './scaffold.js';
 
 /** Flags shared by `create-plugin` and `synoikia-plugin new`. */
@@ -77,6 +85,9 @@ export async function askPluginOptions(root: string, flags: PluginFlags): Promis
         )
       : titleCase(id!);
   }
+
+  check(validateName(name!));
+  if (flags.description !== undefined) check(validateDescription(flags.description));
 
   let namespace = flags.namespace;
   if (namespace === undefined) {

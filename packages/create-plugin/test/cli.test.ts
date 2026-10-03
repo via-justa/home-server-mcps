@@ -31,6 +31,28 @@ describe('templates', () => {
     expect(fill('{{constructor}}', {})).toBe('{{constructor}}');
   });
 
+  it('refuses names that would break out of generated code', () => {
+    const root = path.join(work(), 'r');
+    createRepo({ dir: root, ranges: RANGES });
+    for (const name of ["A'; process.exit(1); '", 'A"b', 'line\nbreak', 'back\\slash'])
+      expect(
+        () => newPlugin({ root, id: 'acme', name, archetype: 'blank', auth: 'none', ranges: RANGES }),
+        name,
+      ).toThrow(/Name/);
+    expect(() =>
+      newPlugin({
+        root,
+        id: 'acme',
+        name: 'Acme',
+        description: 'x`y',
+        archetype: 'blank',
+        auth: 'none',
+        ranges: RANGES,
+      }),
+    ).toThrow(/Description/);
+    expect(() => createRepo({ dir: path.join(work(), 'Bad"Name'), ranges: RANGES })).toThrow(/directory name/);
+  });
+
   it('validates ids and namespaces', () => {
     expect(validateId('acme-box')).toBeUndefined();
     expect(validateId('Acme')).toBeDefined();

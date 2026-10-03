@@ -60,6 +60,14 @@ export function staticHttpBinding(opts: StaticHttpBindingOptions) {
     if (!op?.http) throw new PluginError(ErrorCodes.UnknownOperation, `${key} is not a ${opts.service} operation`);
     return op as StaticOperation & { http: NonNullable<StaticOperation['http']> };
   };
+  const pathStrings = (path: Record<string, unknown>) =>
+    Object.fromEntries(
+      Object.entries(path).map(([k, v]) => {
+        if (typeof v !== 'string' && typeof v !== 'number')
+          throw new PluginError(ErrorCodes.InvalidParams, `path.${k} must be a string or number`);
+        return [k, String(v)];
+      }),
+    );
   const asParams = (raw: unknown): RestParams => {
     if (raw === undefined) return {};
     if (!isPlainObject(raw)) throw new PluginError(ErrorCodes.InvalidParams, 'params must be an object');
@@ -69,9 +77,7 @@ export function staticHttpBinding(opts: StaticHttpBindingOptions) {
     if (query !== undefined && !isPlainObject(query))
       throw new PluginError(ErrorCodes.InvalidParams, 'query must be an object');
     return {
-      ...(path && Object.keys(path).length
-        ? { path: Object.fromEntries(Object.entries(path).map(([k, v]) => [k, String(v)])) }
-        : {}),
+      ...(path && Object.keys(path).length ? { path: pathStrings(path) } : {}),
       ...(query && Object.keys(query).length ? { query } : {}),
       ...(body !== undefined ? { body } : {}),
     };

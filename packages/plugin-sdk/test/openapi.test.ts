@@ -150,6 +150,53 @@ describe('buildOpenApiCatalog', () => {
     });
   });
 
+  it('refuses lookalike templates that would route around a rule', () => {
+    const dup = `openapi: 3.0.0
+paths:
+  /user/{userId}:
+    delete: {}
+  /user/{id}/:
+    delete: {}
+`;
+    expect(() => buildOpenApiCatalog(dup, { service: 'Acme', rules })).toThrow(
+      'The Acme API spec has two operations for DELETE /user/{}: DELETE /user/{userId} and DELETE /user/{id}/',
+    );
+  });
+
+  it('flags GETs whose path names an action, even without a description', () => {
+    expect(classifyRest('GET /settings/discover/reset', '')).toMatchObject({
+      classification: 'write',
+      needsReview: true,
+    });
+    expect(classifyRest('GET /jobs/run-now', '')).toMatchObject({ classification: 'write' });
+    expect(classifyRest('GET /tests/{id}', '')).toMatchObject({ classification: 'read' });
+    expect(classifyRest('GET /x/reset', '', null, null)).toMatchObject({ classification: 'read' });
+    expect(classifyRest('GET /x', 'Restarts the service')).toMatchObject({ classification: 'write' });
+  });
+
+  it('refuses a spec whose $refs fan out too far', () => {
+    const props = Object.fromEntries(
+      Array.from({ length: 40 }, (_, i) => [`p${i}`, { $ref: '#/components/schemas/L1' }]),
+    );
+    const level = (n: number) =>
+      Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`p${i}`, { $ref: `#/components/schemas/L${n + 1}` }]));
+    const bomb = {
+      openapi: '3.0.0',
+      components: {
+        schemas: {
+          L1: { properties: level(1) },
+          L2: { properties: level(2) },
+          L3: { properties: level(3) },
+          L4: { properties: level(4) },
+        },
+      },
+      paths: {
+        '/x': { post: { requestBody: { content: { 'application/json': { schema: { properties: props } } } } } },
+      },
+    };
+    expect(() => buildOpenApiCatalog(bomb, { service: 'Acme', rules })).toThrow(/too many schema nodes/);
+  });
+
   it('refuses a partial catalog', () => {
     expect(() => buildOpenApiCatalog(SPEC, { service: 'Acme', rules, minOperations: 50 })).toThrow(/only 9 operations/);
   });
@@ -174,6 +221,13 @@ describe('matchPath and fillTemplate', () => {
   it('does not match a path param named like a prototype key into the prototype', () => {
     const m = matchPath(catalog, 'GET', '/items/__proto__');
     expect(Object.getPrototypeOf(m!.pathParams)).toBe(Object.prototype);
+  });
+
+  it('refuses dot segments and objects as path parameters', () => {
+    expect(() => fillTemplate('/u/{id}', { id: '..' })).toThrow(/cannot be \.\./);
+    expect(() => fillTemplate('/u/{id}', { id: '.' })).toThrow(SpecError);
+    expect(() => fillTemplate('/u/{id}', { id: { a: 1 } })).toThrow(/string or number/);
+    expect(fillTemplate('/u/{id}', { id: '...' })).toBe('/u/...');
   });
 
   it('fills templates with encoded values', () => {
@@ -255,6 +309,17 @@ describe('restBinding against an HTTP upstream', () => {
       targets: [],
     });
     expect(s.text).toMatch(/^Acme POST \/items\/9\/close\?a=1 \{"x":"y+…  ?\(another user's item\)$/);
+  });
+
+  it('never lets a path parameter leave the gated endpoint', async () => {
+    const before = calls.length;
+    const lookup = restLookup(() => client);
+    await expect(lookup('GET /items/{itemId}', [{ itemId: '..' }], 1000)).rejects.toThrow();
+    await expect(client.request('GET', '/items/%2e%2e/cache')).rejects.toMatchObject({
+      code: ErrorCodes.InvalidParams,
+    });
+    await expect(client.request('GET', '/items/./x')).rejects.toMatchObject({ code: ErrorCodes.InvalidParams });
+    expect(calls.length).toBe(before);
   });
 
   it('looks names up with GETs only', async () => {
@@ -354,6 +419,12 @@ describe('static catalogs', () => {
       key: 'items.list',
       params: { query: { q: 1 } },
     });
+    await expect(
+      b.resolveOperation({ fn: 'call', args: ['items.delete', { path: { id: { x: 1 } } }] }),
+    ).rejects.toThrow('path.id must be a string or number');
+    await expect(
+      b.invoke({ key: 'items.delete', params: { path: { id: '..' } }, context: { callId: 'c', deadlineMs: 10 } }),
+    ).rejects.toMatchObject({ code: ErrorCodes.InvalidParams });
     expect(await b.summarize({ key: 'items.delete', params: { path: { id: '4' } }, targets: [] })).toEqual({
       text: 'Acme items.delete: DELETE /items/4',
       confirmLiteral: '4',

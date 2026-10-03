@@ -222,10 +222,61 @@ describe('compiled rules', () => {
       { id: 1, key: REDACTED },
       { id: 2 },
     ]);
-    expect(rules.maskResult('key.create', { key: { nested: 'x' } })).toEqual({ key: { nested: 'x' } });
+    // Whatever the value under a secret key: a number, an object.
+    expect(rules.maskResult('key.create', { key: { nested: 'x' } })).toEqual({ key: REDACTED });
+    expect(rules.maskResult('key.create', { key: 1234 })).toEqual({ key: REDACTED });
+    expect(rules.maskResult('token.make', 123456)).toBe(REDACTED);
+    expect(rules.maskResult('token.make', { token: 'x' })).toBe(REDACTED);
+    expect(rules.maskResult('token.make', null)).toBeNull();
+    // Deeper than masking looks is hidden, not passed through.
+    let nested: unknown = { key: 's' };
+    for (let i = 0; i < 20; i++) nested = { a: nested };
+    expect(JSON.stringify(rules.maskResult('cloud.query', nested))).not.toContain('"s"');
     const deep = rules.maskResult('cloud.query', { a: [{ provider: { key: 'k', secret: 's', type: 'B2' } }] });
     expect(deep).toEqual({ a: [{ provider: { key: REDACTED, secret: REDACTED, type: 'B2' } }] });
     expect(rules.maskResult('other', { key: 'k' })).toEqual({ key: 'k' });
+  });
+
+  it('refuses more sensitiveParams than core takes', () => {
+    const many = compileRules(
+      parsePluginSettings({
+        rules: [
+          { match: 'x', sensitiveParams: Array.from({ length: 20 }, (_, i) => `/a/${i}`) },
+          { match: 'x', sensitiveParams: Array.from({ length: 20 }, (_, i) => `/b/${i}`) },
+        ],
+      }),
+    );
+    expect(() => many.decorate(draft('x'))).toThrow(/limit is 32/);
+  });
+
+  it('looks up only plain ids and matches only rows that have the field', async () => {
+    const seen: unknown[][] = [];
+    const r = compileRules(
+      parsePluginSettings({
+        rules: [
+          {
+            match: 'a',
+            locked: true,
+            confirm: { lookup: { op: 'get', args: [{ $param: '/id' }], field: 'name' } },
+          },
+          {
+            match: 'b',
+            locked: true,
+            confirm: { lookup: { op: 'list', find: { field: 'id', equals: { $param: '/id' } }, field: 'name' } },
+          },
+        ],
+      }),
+      {
+        lookup: async (op, args) => {
+          seen.push(args);
+          return op === 'list' ? [{ name: 'no id' }, { id: 2, name: 'Two' }] : { name: 'Named' };
+        },
+      },
+    );
+    expect(await r.confirmLiteral({ key: 'a', params: { id: { evil: true } }, targets: [] })).toBeUndefined();
+    expect(seen).toEqual([]);
+    expect(await r.confirmLiteral({ key: 'b', params: { id: 'undefined' }, targets: [] })).toBe('undefined');
+    expect(await r.confirmLiteral({ key: 'b', params: { id: 2 }, targets: [] })).toBe('Two');
   });
 
   it('never pollutes prototypes when masking', () => {

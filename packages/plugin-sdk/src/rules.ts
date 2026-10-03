@@ -52,9 +52,9 @@ const ConfirmSchema = z.union([ConfirmSourceSchema, z.array(ConfirmSourceSchema)
 export type ConfirmSource = z.infer<typeof ConfirmSourceSchema>;
 
 const SensitiveResultSchema = z.union([
-  /** The whole result is a secret string (a token, a key). */
+  /** The whole result is a secret (a token, a key). */
   z.literal('whole'),
-  /** String fields named `keys` in the result (or each row of it); with `deep`, at any depth. */
+  /** Fields named `keys` in the result (or each row of it), whatever their value; with `deep`, at any depth. */
   z.object({ keys: z.array(z.string().min(1)).min(1), deep: z.boolean().default(false) }).strict(),
 ]);
 
@@ -253,20 +253,27 @@ function pickField(row: unknown, fields: string | string[]): string | undefined 
   return undefined;
 }
 
+/** A value worth masking: anything but null, undefined and the empty string. */
+const present = (v: unknown) => v !== null && v !== undefined && v !== '';
+
+const MAX_MASK_DEPTH = 16;
+
 function maskDeep(value: unknown, keys: ReadonlySet<string>, depth = 0): unknown {
-  if (depth > 8 || value === null || typeof value !== 'object') return value;
+  if (value === null || typeof value !== 'object') return value;
+  // Deeper than anything masking looks into: hide it rather than pass an unchecked secret through.
+  if (depth > MAX_MASK_DEPTH) return REDACTED;
   if (Array.isArray(value)) return value.map((v) => maskDeep(v, keys, depth + 1));
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value))
-    define(out, k, keys.has(k) && typeof v === 'string' && v ? REDACTED : maskDeep(v, keys, depth + 1));
+    define(out, k, keys.has(k) && present(v) ? REDACTED : maskDeep(v, keys, depth + 1));
   return out;
 }
 
 function maskShallow(value: unknown, keys: ReadonlySet<string>): unknown {
   const mask = (row: unknown) => {
-    if (!isPlainObject(row) || ![...keys].some((k) => typeof row[k] === 'string')) return row;
+    if (!isPlainObject(row) || ![...keys].some((k) => present(row[k]))) return row;
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(row)) define(out, k, keys.has(k) && typeof v === 'string' ? REDACTED : v);
+    for (const [k, v] of Object.entries(row)) define(out, k, keys.has(k) && present(v) ? REDACTED : v);
     return out;
   };
   return Array.isArray(value) ? value.map(mask) : mask(value);
@@ -365,12 +372,16 @@ export function compileRules<P>(settings: PluginSettings<P>, hooks: RuleHooks = 
     const used: unknown[] = [];
     const args = fillParams(src.lookup.args, ctx.params, used) as unknown[];
     const equals = src.lookup.find ? fillParams(src.lookup.find.equals, ctx.params, used) : undefined;
-    if (used.some((v) => v === undefined || v === null || v === '')) return undefined;
+    // Only a plain id may be looked up, or shown back as the literal.
+    if (used.some((v) => stringOr(v) === undefined)) return undefined;
     let result = await lookup(src.lookup.op, args);
     if (src.lookup.find) {
       const { field } = src.lookup.find;
       result = Array.isArray(result)
-        ? result.find((row) => String(readPointer(row, field)) === String(equals))
+        ? result.find((row) => {
+            const id = stringOr(readPointer(row, field));
+            return id !== undefined && id === stringOr(equals);
+          })
         : undefined;
     }
     return pickField(result, src.lookup.field) ?? (used.length ? String(used[0]) : undefined);
@@ -397,7 +408,10 @@ export function compileRules<P>(settings: PluginSettings<P>, hooks: RuleHooks = 
       reason = 'default:ambiguous';
     }
     if (m.needsReview !== undefined) needsReview = m.needsReview;
-    const sensitiveParams = [...new Set([...(draft.sensitiveParams ?? []), ...m.sensitiveParams])].slice(0, 32);
+    const sensitiveParams = [...new Set([...(draft.sensitiveParams ?? []), ...m.sensitiveParams])];
+    // Core takes at most 32; dropping the rest silently would stop redacting them.
+    if (sensitiveParams.length > 32)
+      throw new Error(`plugin.yaml: ${draft.key} has ${sensitiveParams.length} sensitiveParams; the limit is 32`);
     const base = baseKey(draft.key);
     const description = m.description?.replaceAll('{base}', base).replaceAll('{key}', draft.key) ?? docs?.description;
     const guidance = m.guidance ?? docs?.guidance;
@@ -444,7 +458,7 @@ export function compileRules<P>(settings: PluginSettings<P>, hooks: RuleHooks = 
     maskResult(key, result) {
       const spec = merged(key).sensitiveResult;
       if (!spec) return result;
-      if (spec === 'whole') return typeof result === 'string' && result ? REDACTED : result;
+      if (spec === 'whole') return present(result) ? REDACTED : result;
       const keys = new Set(spec.keys);
       return spec.deep ? maskDeep(result, keys) : maskShallow(result, keys);
     },

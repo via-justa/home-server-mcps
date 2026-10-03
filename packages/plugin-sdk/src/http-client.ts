@@ -125,6 +125,15 @@ export class HttpJsonClient {
     const deadline = opts.deadline ?? Date.now() + (opts.timeoutMs ?? this.opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const left = deadline - Date.now();
     if (left <= 0) return Promise.reject(new PluginError(ErrorCodes.UpstreamError, `${label}: timed out`));
+    // A `.` or `..` segment (also percent-encoded) would resolve to another endpoint than the one gated.
+    const dotted = path.split('/').some((seg) => {
+      try {
+        return ['.', '..'].includes(decodeURIComponent(seg));
+      } catch {
+        return true;
+      }
+    });
+    if (dotted) return Promise.reject(new PluginError(ErrorCodes.InvalidParams, `${label}: invalid path`));
     const url = new URL(`${this.base}${path}${queryString(opts.query)}`);
     if (url.host !== this.host || !`${url.pathname}/`.startsWith(`${this.basePath}/`))
       return Promise.reject(new PluginError(ErrorCodes.InvalidParams, `${label}: invalid path`));

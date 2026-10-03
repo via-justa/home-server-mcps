@@ -91,8 +91,17 @@ A field set by several matching rules takes the **first** rule's value, except `
 1. `exclude` (unless `include`d): the operation doesn't exist.
 2. `locked`, or being a split twin: write, typed confirmation.
 3. A rule's `classification`.
-4. The plugin's own heuristic (an OpenAPI GET reads, other verbs write, an action-shaped GET is a write flagged for review).
+4. The plugin's own heuristic (an OpenAPI GET reads, other verbs write, and a GET whose description or path names an action, such as `/cache/flush`, is a write flagged for review).
 5. Nothing settled it: write.
+
+### What the SDK refuses
+
+- An OpenAPI spec with two templates a concrete path can't tell apart (`/user/{id}` and `/user/{userId}/`): rules match keys by text, so a lookalike key could route around a lock.
+- Path parameters that are `.`, `..` or not a plain string or number, and request paths with dot segments: the endpoint core gated is the one called.
+- More than 32 `sensitiveParams` on one operation (core's limit), rather than silently redacting fewer.
+- A spec whose `$ref`s expand past a fixed budget, and YAML aliases past 100.
+
+`sensitiveResult` masks any non-empty value under a listed key (strings, numbers, objects), and anything nested deeper than it looks.
 
 ## The SDK
 

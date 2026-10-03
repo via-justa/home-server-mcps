@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 /**
@@ -248,10 +249,25 @@ export function createRepoTool(opts: RepoOptions) {
     };
     for (const r of releases) {
       const tarball = path.join(out, r.file);
-      // Left by a run that stopped before updating the index: replace its assets with this run's, which
-      // the index about to be published describes.
+      // Left by a run that stopped before updating the index. Released bytes never change: continue only
+      // if the tarball there is exactly this run's (packing is deterministic), and only then refresh its
+      // signature, which the index about to be published carries.
       if (exists(r.tag)) {
-        gh('release', 'upload', r.tag, tarball, `${tarball}.minisig`, '--clobber');
+        const dir = mkdtempSync(path.join(tmpdir(), 'synoikia-release-'));
+        try {
+          execFileSync('gh', ['release', 'download', r.tag, '--pattern', r.file, '--dir', dir], {
+            cwd: root,
+            stdio: 'ignore',
+          });
+          const published = createHash('sha256')
+            .update(readFileSync(path.join(dir, r.file)))
+            .digest('hex');
+          if (published !== r.sha256)
+            throw new Error(`${r.tag} is already released with different contents; bump the version instead`);
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+        gh('release', 'upload', r.tag, `${tarball}.minisig`, '--clobber');
         continue;
       }
       gh(

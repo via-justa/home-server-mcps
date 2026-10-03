@@ -58,6 +58,24 @@ export function validateId(id: string, root?: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Display names and descriptions land in generated code (`const SERVICE = '…'`), YAML and Markdown:
+ * plain text only, so no quote, backslash or newline can break out of them.
+ */
+const SAFE_TEXT = /^[\p{L}\p{N}][\p{L}\p{N} .,:()&+_/-]*$/u;
+
+export function validateName(name: string): string | undefined {
+  if (name.length > 64 || !SAFE_TEXT.test(name))
+    return 'Use letters, digits, spaces and . , : ( ) & + _ / - (up to 64 characters)';
+  return undefined;
+}
+
+export function validateDescription(text: string): string | undefined {
+  if (text.length > 200 || !SAFE_TEXT.test(text))
+    return 'Use plain text without quotes or newlines (up to 200 characters)';
+  return undefined;
+}
+
 export function validateNamespace(ns: string): string | undefined {
   if (!JS_IDENTIFIER.test(ns)) return 'Must be a JavaScript identifier';
   if ((RESERVED_NAMESPACES as readonly string[]).includes(ns)) return `"${ns}" is reserved by core`;
@@ -254,6 +272,10 @@ export function newPlugin(opts: NewPluginOptions): string[] {
   const namespace = opts.namespace ?? camelCase(opts.id);
   const nsProblem = validateNamespace(namespace);
   if (nsProblem) throw new Error(`Namespace: ${nsProblem}`);
+  const nameProblem = validateName(opts.name);
+  if (nameProblem) throw new Error(`Name: ${nameProblem}`);
+  const descProblem = opts.description === undefined ? undefined : validateDescription(opts.description);
+  if (descProblem) throw new Error(`Description: ${descProblem}`);
   if (!ARCHETYPES[opts.archetype]) throw new Error(`Unknown archetype ${opts.archetype}`);
   if (!AUTH[opts.auth]) throw new Error(`Unknown auth ${opts.auth}`);
   const header = (opts.apiKeyHeader ?? 'X-Api-Key').toLowerCase();
@@ -297,6 +319,9 @@ export function createRepo(opts: CreateRepoOptions): string[] {
   const dir = path.resolve(opts.dir);
   if (existsSync(dir) && readdirSync(dir).length) throw new Error(`${dir} is not empty`);
   const name = path.basename(dir);
+  // The directory name becomes the package name and appears in generated files.
+  if (!/^[a-z0-9][a-z0-9._-]{0,213}$/.test(name))
+    throw new Error(`${name}: use a lowercase directory name (letters, digits, . _ -), as for an npm package`);
   const repository = opts.repository ?? `OWNER/${name}`;
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new Error('repository must look like owner/name');
   const vars = {

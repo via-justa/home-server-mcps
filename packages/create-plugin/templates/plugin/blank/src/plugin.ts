@@ -52,7 +52,9 @@ export function create{{Pascal}}Plugin(): PluginHandlers {
             throw new PluginError(ErrorCodes.UnknownOperation, `${String(key)} is not a ${SERVICE} operation`);
           if (params !== undefined && !isPlainObject(params))
             throw new PluginError(ErrorCodes.InvalidParams, 'params must be an object');
-          return { key, params: params ?? {} };
+          // A split twin declared in plugin.yaml is locked; take it unless code here decides the call is safe.
+          const split = rules.splits(key)[0];
+          return { key: split ? `${key}#${split}` : key, params: params ?? {} };
         },
 
         async summarize({ key, params, targets }) {

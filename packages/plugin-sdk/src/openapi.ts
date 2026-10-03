@@ -17,10 +17,20 @@ import type { CompiledRules, OperationDraft } from './rules.js';
  */
 
 export const HTTP_VERBS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
+
+const isParam = (segment: string) => segment.startsWith('{') && segment.endsWith('}');
 export type HttpVerb = (typeof HTTP_VERBS)[number];
 
 /** Summary/description words that suggest a GET changes something. */
-export const DEFAULT_ACTION_WORDS = /\b(reset\w*|regenerat\w*|sync\w*|flush\w*|run|runs|cancel\w*|invok\w*)\b/i;
+export const DEFAULT_ACTION_WORDS =
+  /\b(reset\w*|regenerat\w*|sync\w*|flush\w*|run|runs|cancel\w*|invok\w*|delet\w*|remov\w*|clear\w*|restart\w*|reboot\w*|shut\s?down\w*|purg\w*|refresh\w*|trigger\w*|start\w*|stop\w*|log\s?out\w*|execut\w*|appl(y|ies)|rotat\w*|revok\w*)\b/i;
+
+/**
+ * Path segment words that suggest a GET changes something, matched on each literal segment's words
+ * (`/cache/flush`, `/jobs/run-now`): the path is checked too, because a spec may describe nothing.
+ */
+export const DEFAULT_PATH_ACTION_WORDS =
+  /^(reset|regenerate|sync|flush|run|cancel|invoke|delete|remove|clear|restart|reboot|shutdown|purge|refresh|scan|test|trigger|start|stop|logout|execute|apply|rotate|revoke|enable|disable|import|install|upgrade)$/i;
 
 export class SpecError extends Error {}
 
@@ -52,8 +62,10 @@ export interface OpenApiCatalogOptions {
   rules: CompiledRules<unknown>;
   /** Refuse a catalog smaller than this: an empty or truncated spec must not replace a real one. */
   minOperations?: number;
-  /** GET-as-action heuristic; `null` turns it off. */
+  /** GET-as-action heuristic on the summary, description and query parameter text; `null` turns it off. */
   actionWords?: RegExp | null;
+  /** GET-as-action heuristic on the words of each literal path segment; `null` turns it off. */
+  pathActionWords?: RegExp | null;
   /** Group used for operations without a tag. */
   defaultGroup?: string;
 }
@@ -78,10 +90,29 @@ export function parseOpenApi(spec: string | Record<string, unknown>, service?: s
 }
 
 const MAX_SCHEMA_DEPTH = 6;
+const MAX_NESTING = 64;
 
-/** Resolves local `$ref`s so a descriptor's schema stands alone; cycles and deep nesting are cut off. */
-export function resolveRefs(spec: Record<string, unknown>, value: unknown, depth = 0, seen: string[] = []): unknown {
-  if (Array.isArray(value)) return value.map((v) => resolveRefs(spec, v, depth, seen));
+/** How many schema nodes one catalog build may produce: a spec with huge `$ref` fan-out is refused, not expanded. */
+export interface RefBudget {
+  left: number;
+}
+export const DEFAULT_REF_BUDGET = 500_000;
+
+/**
+ * Resolves local `$ref`s so a descriptor's schema stands alone; cycles, deep `$ref` chains and deep
+ * nesting are cut off, and the whole expansion is bounded by `budget` (throws `SpecError` past it).
+ */
+export function resolveRefs(
+  spec: Record<string, unknown>,
+  value: unknown,
+  depth = 0,
+  seen: string[] = [],
+  budget: RefBudget = { left: DEFAULT_REF_BUDGET },
+  nesting = 0,
+): unknown {
+  if (--budget.left < 0) throw new SpecError('The API spec expands to too many schema nodes');
+  if (nesting > MAX_NESTING) return { description: 'Nested too deeply' };
+  if (Array.isArray(value)) return value.map((v) => resolveRefs(spec, v, depth, seen, budget, nesting + 1));
   if (!value || typeof value !== 'object') return value;
   const ref = (value as { $ref?: unknown }).$ref;
   if (typeof ref === 'string') {
@@ -90,12 +121,14 @@ export function resolveRefs(spec: Record<string, unknown>, value: unknown, depth
     for (const part of ref.slice(2).split('/')) {
       target = isPlainObject(target) && Object.hasOwn(target, part) ? target[part] : undefined;
     }
-    return target === undefined ? { description: `See ${ref}` } : resolveRefs(spec, target, depth + 1, [...seen, ref]);
+    return target === undefined
+      ? { description: `See ${ref}` }
+      : resolveRefs(spec, target, depth + 1, [...seen, ref], budget, nesting + 1);
   }
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value))
     Object.defineProperty(out, k, {
-      value: resolveRefs(spec, v, depth, seen),
+      value: resolveRefs(spec, v, depth, seen, budget, nesting + 1),
       enumerable: true,
       writable: true,
       configurable: true,
@@ -104,13 +137,13 @@ export function resolveRefs(spec: Record<string, unknown>, value: unknown, depth
 }
 
 /** `{ path, query, body }`, the shape the binding produces, as one JSON schema. */
-function paramsSchema(spec: Record<string, unknown>, pathParams: unknown[], op: OpenApiOperation) {
+function paramsSchema(spec: Record<string, unknown>, pathParams: unknown[], op: OpenApiOperation, budget: RefBudget) {
   const groups: Record<'path' | 'query', { properties: Record<string, unknown>; required: string[] }> = {
     path: { properties: {}, required: [] },
     query: { properties: {}, required: [] },
   };
   for (const raw of [...pathParams, ...(op.parameters ?? [])]) {
-    const p = resolveRefs(spec, raw) as {
+    const p = resolveRefs(spec, raw, 0, [], budget) as {
       name?: unknown;
       in?: unknown;
       required?: unknown;
@@ -134,16 +167,22 @@ function paramsSchema(spec: Record<string, unknown>, pathParams: unknown[], op: 
         ...(g.required.length ? { required: g.required } : {}),
       };
   }
-  const body = resolveRefs(spec, op.requestBody) as { content?: Record<string, { schema?: unknown }> } | undefined;
+  const body = resolveRefs(spec, op.requestBody, 0, [], budget) as
+    { content?: Record<string, { schema?: unknown }> } | undefined;
   const bodySchema = body?.content?.['application/json']?.schema;
   if (bodySchema) properties.body = bodySchema;
   return Object.keys(properties).length ? { type: 'object', properties } : undefined;
 }
 
 /** The text the GET-as-action heuristic reads: summary, description and query parameter descriptions. */
-export function actionText(spec: Record<string, unknown>, pathParams: unknown[], op: OpenApiOperation): string {
+export function actionText(
+  spec: Record<string, unknown>,
+  pathParams: unknown[],
+  op: OpenApiOperation,
+  budget?: RefBudget,
+): string {
   const params = [...pathParams, ...(op.parameters ?? [])]
-    .map((raw) => resolveRefs(spec, raw) as { in?: unknown; description?: unknown })
+    .map((raw) => resolveRefs(spec, raw, 0, [], budget) as { in?: unknown; description?: unknown })
     .filter((p) => p.in === 'query' && typeof p.description === 'string')
     .map((p) => p.description as string);
   return [op.summary ?? '', op.description ?? '', ...params].join(' ');
@@ -154,17 +193,20 @@ export function classifyRest(
   key: string,
   text: string,
   actionWords: RegExp | null = DEFAULT_ACTION_WORDS,
+  pathActionWords: RegExp | null = DEFAULT_PATH_ACTION_WORDS,
 ): Pick<OperationDraft, 'classification' | 'classificationReason' | 'needsReview'> {
-  const method = key.split(' ')[0];
+  const [method, template = ''] = key.split(' ');
   if (method === 'GET') {
-    if (actionWords?.test(text))
+    const pathWords = template
+      .split('/')
+      .filter((s) => s && !isParam(s))
+      .flatMap((s) => s.split(/[-_.]/));
+    if (actionWords?.test(text) || (pathActionWords && pathWords.some((w) => pathActionWords.test(w))))
       return { classification: 'write', classificationReason: 'heuristic:get-as-action', needsReview: true };
     return { classification: 'read', classificationReason: 'verb:GET', needsReview: false };
   }
   return { classification: 'write', classificationReason: `verb:${method}`, needsReview: false };
 }
-
-const isParam = (segment: string) => segment.startsWith('{') && segment.endsWith('}');
 
 /** Literal segments beat `{params}`, compared left to right. */
 function bySpecificity(a: RestOperation, b: RestOperation): number {
@@ -176,13 +218,20 @@ function bySpecificity(a: RestOperation, b: RestOperation): number {
   return 0;
 }
 
-/** Builds the catalog. Throws `SpecError` for an invalid or implausibly small spec. */
+/**
+ * Builds the catalog. Throws `SpecError` for an invalid or implausibly small spec, or for one with two
+ * templates a concrete path can't tell apart (`/user/{id}` and `/user/{userId}/`): rules match keys by
+ * their text, so the upstream must not be able to route a call around a lock with a lookalike key.
+ */
 export function buildOpenApiCatalog(
   specText: string | Record<string, unknown>,
   opts: OpenApiCatalogOptions,
 ): OpenApiCatalog {
   const spec = parseOpenApi(specText, opts.service);
   const actionWords = opts.actionWords === undefined ? DEFAULT_ACTION_WORDS : opts.actionWords;
+  const pathActionWords = opts.pathActionWords === undefined ? DEFAULT_PATH_ACTION_WORDS : opts.pathActionWords;
+  const budget: RefBudget = { left: DEFAULT_REF_BUDGET };
+  const shapes = new Map<string, string>();
   const operations: OperationDescriptor[] = [];
   const byVerb = new Map<HttpVerb, RestOperation[]>(HTTP_VERBS.map((v) => [v, []]));
   for (const [template, item] of Object.entries(spec.paths as Record<string, unknown>)) {
@@ -196,7 +245,11 @@ export function buildOpenApiCatalog(
       const op = rawOp as OpenApiOperation;
       const key = `${method} ${template}`;
       if (opts.rules.excluded(key)) continue;
-      const schema = paramsSchema(spec, pathLevel, op);
+      const shape = `${method} /${segments.map((s) => (isParam(s) ? '{}' : s)).join('/')}`;
+      const twin = shapes.get(shape);
+      if (twin) throw new SpecError(`The ${opts.service} API spec has two operations for ${shape}: ${twin} and ${key}`);
+      shapes.set(shape, key);
+      const schema = paramsSchema(spec, pathLevel, op, budget);
       const summary = op.summary?.trim().slice(0, 500);
       const description = op.description?.trim().slice(0, 2000);
       operations.push(
@@ -207,7 +260,7 @@ export function buildOpenApiCatalog(
             Array.isArray(op.tags) && typeof op.tags[0] === 'string' ? op.tags[0] : '',
             opts.defaultGroup ?? 'other',
           ),
-          ...classifyRest(key, actionText(spec, pathLevel, op), actionWords),
+          ...classifyRest(key, actionText(spec, pathLevel, op, budget), actionWords, pathActionWords),
           ...(schema ? { paramsSchema: schema } : {}),
           ...(summary || description
             ? { docs: { ...(summary ? { summary } : {}), ...(description ? { description } : {}) } }
@@ -276,7 +329,11 @@ export function fillTemplate(template: string, pathParams: Record<string, unknow
   return template.replace(/\{([^}]+)\}/g, (_, name: string) => {
     const value = Object.hasOwn(pathParams, name) ? pathParams[name] : undefined;
     if (value === undefined || value === null || value === '') throw new SpecError(`Missing path parameter ${name}`);
-    return encodeURIComponent(String(value));
+    if (typeof value === 'object') throw new SpecError(`Path parameter ${name} must be a string or number`);
+    const text = String(value);
+    // `encodeURIComponent` keeps dots, and a `.` or `..` segment would make the URL resolve elsewhere.
+    if (text === '.' || text === '..') throw new SpecError(`Path parameter ${name} cannot be ${text}`);
+    return encodeURIComponent(text);
   });
 }
 
@@ -451,10 +508,21 @@ export async function fetchSpec(opts: FetchSpecOptions): Promise<{ text: string;
       throw new PluginError(ErrorCodes.UpstreamError, `Could not fetch the ${name} from ${new URL(url).host}`);
     }
     if (res.ok) {
-      const text = await res.text();
-      if (text.length > (opts.maxBytes ?? 5 * 1024 * 1024))
-        throw new PluginError(ErrorCodes.UpstreamError, `The ${name} is too large`);
-      return { text, ref };
+      const max = opts.maxBytes ?? 5 * 1024 * 1024;
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      const reader = res.body?.getReader();
+      for (;;) {
+        const chunk = reader ? await reader.read() : { done: true as const, value: undefined };
+        if (chunk.done) break;
+        size += chunk.value.byteLength;
+        if (size > max) {
+          await reader?.cancel();
+          throw new PluginError(ErrorCodes.UpstreamError, `The ${name} is too large`);
+        }
+        chunks.push(chunk.value);
+      }
+      return { text: Buffer.concat(chunks).toString('utf8'), ref };
     }
     await res.body?.cancel();
     if (res.status !== 404)
