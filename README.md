@@ -148,7 +148,7 @@ cp .env.example .env   # set MASTER_KEY, PUBLIC_MCP_URL, …
 docker compose -f docker-compose.example.yml up -d
 ```
 
-Pulls the published image from `ghcr.io/via-justa/synoikia` — `latest` tracks the newest stable release; pin an explicit version tag (e.g. `ghcr.io/via-justa/synoikia:0.1.0`) in production. Deploys with [Docker Compose][compose]. Put `:8080` behind your reverse proxy (such as [Caddy][caddy], [Traefik][traefik] or a [Cloudflare Tunnel][cf-tunnel]) as the public MCP hostname and set `PUBLIC_MCP_URL` to it. Keep `:8081` reachable from the LAN or VPN only. See design §11.
+Pulls the published image from `ghcr.io/via-justa/synoikia` — `latest` tracks the newest stable release; pin an explicit version tag (e.g. `ghcr.io/via-justa/synoikia:0.2.0`) in production. Deploys with [Docker Compose][compose]. Put `:8080` behind your reverse proxy (such as [Caddy][caddy], [Traefik][traefik] or a [Cloudflare Tunnel][cf-tunnel]) as the public MCP hostname and set `PUBLIC_MCP_URL` to it. Keep `:8081` reachable from the LAN or VPN only. See design §11.
 
 On first start, open the admin portal and create the first account (or set `ADMIN_BOOTSTRAP_USERNAME`/`ADMIN_BOOTSTRAP_PASSWORD` once). Then install and enable plugins, create an endpoint, raise the access groups you want above Read, and connect your MCP client to `PUBLIC_MCP_URL/<slug>`.
 
