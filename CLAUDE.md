@@ -1,0 +1,54 @@
+# Synoikia core
+
+One MCP server for many self-hosted services. Each plugin instance gets its own endpoint exposing two tools, `search(code)` and `execute(code)`, and every call goes through one sandbox, permission gate, approval flow, redaction and audit log. Architecture and rationale: `docs/design/unified-mcp-server.md`. Code comments cite its sections (`§5.2`) and phases (`§13`).
+
+**The rule everything follows: security lives in core, once.** A plugin only describes its upstream API; it never decides what is allowed. Don't add a plugin-side switch for anything the gate, sandbox, approvals, redaction or auth already decide. Core stays plugin-agnostic: no plugin names (TrueNAS, Seerr, Home Assistant) in core code, tests or UI placeholders. The plugins live in `via-justa/synoikia-core-plugins`.
+
+## Layout
+
+| Path                        | What                                                                                  |
+| --------------------------- | ------------------------------------------------------------------------------------- |
+| `packages/core`             | Server: MCP endpoints, admin API, gate, sandbox, plugin host, SQLite (Drizzle)        |
+| `packages/plugin-sdk`       | Manifest schema, core ⇄ plugin RPC contract, `runPlugin()`. Published to npm          |
+| `packages/admin-ui`         | Admin portal: Vue 3, Pinia, Vite                                                      |
+| `packages/core/src/testing` | `@synoikia/core/testing`: the plugin harness plugin repos test against. Published API |
+
+Each security-critical directory under `packages/core/src` (`gate/`, `sandbox/`, `plugins/`, `auth/`) has a short `README.md` with its pipeline and design sections. Read it before changing that module.
+
+## Commands
+
+Node 22.12+ or 24 (`.nvmrc` pins 22), pnpm 10.
+
+```sh
+pnpm lint && pnpm format:check && pnpm typecheck && pnpm build && pnpm test   # what CI runs, in that order
+pnpm --filter @synoikia/core exec vitest run test/gate.test.ts                # one test file
+pnpm --filter @synoikia/core test:coverage                                      # enforces coverage floors
+pnpm format                                                                     # fix formatting
+```
+
+- Tests resolve workspace packages to their TypeScript sources (the `synoikia-source` export condition), so no build is needed before `pnpm test`.
+- `isolated-vm` needs `--no-node-snapshot`; the vitest config and `pnpm start` already pass it. Any new way of running core must too.
+- `packages/core/vitest.config.ts` sets coverage floors for `gate/`, `auth/`, `approvals/`, `sandbox/` and `crypto/`. A change there comes with tests that keep coverage above them.
+
+## Conventions
+
+- TypeScript is strict with `noUncheckedIndexedAccess` and `verbatimModuleSyntax`: use `import type` for types, and `.js` extensions on relative imports.
+- Unused variables are allowed only with a `_` prefix.
+- Prettier formats everything (a hook runs it after each edit). Template layout in `.vue` files is Prettier's job, not ESLint's.
+- Keep changes focused, add tests for new behavior, and update the README or design doc when behavior changes (see `.github/PULL_REQUEST_TEMPLATE.md`).
+
+## Database
+
+Schema is `packages/core/src/db/schema.ts`. Migrations in `packages/core/drizzle/` are generated with `pnpm --filter @synoikia/core db:generate` and applied on startup. Never hand-edit `drizzle/meta/`, and never change a migration that has shipped. A data migration is appended to the newly generated `.sql` file and tested in `packages/core/test/migrations.test.ts`. The `db-migration` skill walks through it.
+
+## Releases
+
+Maintainers bump versions; don't bump them unless asked. `@synoikia/plugin-sdk` and `@synoikia/core` publish to npm when their `version` changes on `main`. The Docker image uses the root `package.json` version, separate from the package versions. A breaking change to the SDK or `@synoikia/core/testing` breaks every plugin repo, so call it out.
+
+## Security review
+
+Before opening a PR that touches `gate/`, `sandbox/`, `approvals/`, `auth/`, `crypto/`, `plugins/`, `http/`, `runtime/`, `instances/`, the SDK's RPC contract, the DB schema, a `package.json` or the `Dockerfile`, run the `security-reviewer` subagent (`.claude/agents/security-reviewer.md`) on the diff and address its findings. It also runs `pnpm audit` and triages known CVEs by whether the vulnerable dependency ships and is reachable.
+
+## Protected files
+
+A PreToolUse hook (`.claude/hooks/guard-paths.mjs`) denies edits to `drizzle/meta/` and `pnpm-lock.yaml`, and asks first for migration SQL and `packages/core/src/plugins/default-repo.ts`. That file pins the plugin repository's signing key, and changing it makes every install block plugin installs until an admin confirms the new key.
