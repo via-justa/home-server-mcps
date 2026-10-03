@@ -17,7 +17,7 @@ import { verifyAttestationKey } from './attestation.js';
 import { canonicalJson, sha256Hex } from './canonical.js';
 import { evaluatePreApproval } from './preapproval.js';
 import type { SlidingWindowLimiter } from './rate-limit.js';
-import { redactPaths } from './redact.js';
+import { redactDiff, redactPaths } from './redact.js';
 import type { Redactor } from './redact.js';
 
 /**
@@ -318,7 +318,8 @@ export function createGateBindings(
             resolvedTargets: targets,
             summary: summary.text,
             confirmLiteral: operation.typedConfirmation ? summary.confirmLiteral : undefined,
-            diff,
+            // The diff names changed fields in its paths, which key-based redaction can't see.
+            diff: redactDiff(diff as Parameters<typeof redactDiff>[0], rt.redact, operation.sensitiveParams),
             expectedHash,
             client: caller.client,
             mcpSessionId: caller.mcpSessionId,

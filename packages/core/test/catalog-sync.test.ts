@@ -165,6 +165,15 @@ describe('applyCatalogSync', () => {
     expect(resolveAccess(db, instanceId, 'app.stop')).toMatchObject({ mode: 'approve', level: 'ask' });
   });
 
+  it('keeps a locked operation closed when a sync unlocks it and moves it at once', () => {
+    const { db, instanceId } = seedInstance();
+    applyCatalogSync(db, instanceId, catalog(op('app.x', { locked: true }), op('app.query'), op('vm.start')));
+    setGroupLevel(db, instanceId, 'app', 'write');
+    setGroupLevel(db, instanceId, 'vm', 'none');
+    applyCatalogSync(db, instanceId, catalog(op('app.x', { group: 'vm' }), op('app.query'), op('vm.start')));
+    expect(resolveAccess(db, instanceId, 'app.x')).toEqual({ reachable: false, reason: 'level_none' });
+  });
+
   it('keeps an acknowledged write moved into a group at Write asking as before', () => {
     const { db, instanceId } = seedInstance();
     applyCatalogSync(db, instanceId, catalog(op('app.upgrade'), op('vm.start')));

@@ -176,7 +176,7 @@ export function applyCatalogSync(
         levelOverride = normalizeLevel({ classification, locked }, prev.levelOverride);
       else if (prev.groupId !== fields.groupId && !locked) {
         const had = levelInForce(
-          { classification: prev.classification, locked: false, levelOverride: null, writeAcknowledged: false },
+          { classification: prev.classification, locked: prev.locked, levelOverride: null, writeAcknowledged: false },
           groupsBefore.get(prev.groupId),
         );
         const newGroup = [...groups.values()].find((g) => g.id === fields.groupId);

@@ -33,7 +33,10 @@ export const GLOBAL_SENSITIVE_KEYS = [
 
 const normalize = (key: string) => key.toLowerCase().replace(/[_-]/g, '');
 
-export type Redactor = <T>(value: T) => T;
+export type Redactor = (<T>(value: T) => T) & {
+  /** Whether a key name (in an object, or a segment of a diff path) holds a secret. */
+  isSensitiveKey?: (key: string) => boolean;
+};
 
 /** Secret values shorter than this are not scrubbed from text: too likely to match ordinary words. */
 const MIN_SCRUB_LENGTH = 6;
@@ -85,12 +88,28 @@ export function createInstanceRedactor(opts: {
     if (Array.isArray(value)) return value.map((v) => walk(v, seen));
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
-      out[scrub(k)] = hide(k, v) ? REDACTED : walk(v, seen);
+      // defineProperty, not assignment: a `__proto__` key must stay a visible own key, or it would
+      // vanish from what approvers and the audit log see while still reaching the plugin.
+      Object.defineProperty(out, scrub(k), {
+        value: hide(k, v) ? REDACTED : walk(v, seen),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
     }
     return out;
   };
-  return <T>(value: T) => walk(value, new WeakSet()) as T;
+  const redact = (<T>(value: T) => walk(value, new WeakSet()) as T) as Redactor;
+  redact.isSensitiveKey = (key: string) => sensitivity(key) !== null;
+  return redact;
 }
+
+/** Decodes a JSON pointer (`/a/b~1c`) into its segments. */
+const pointerSegments = (path: string) =>
+  path
+    .split('/')
+    .slice(1)
+    .map((p) => p.replace(/~1/g, '/').replace(/~0/g, '~'));
 
 /**
  * Hides values at JSON-pointer `paths` (`/1`, `/0/password`): secrets the plugin declared by position
@@ -101,10 +120,7 @@ export function redactPaths<T>(value: T, paths: readonly string[] | null | undef
   if (!paths?.length || value === null || typeof value !== 'object') return value;
   const out = structuredClone(value) as unknown;
   for (const path of paths) {
-    const parts = path
-      .split('/')
-      .slice(1)
-      .map((p) => p.replace(/~1/g, '/').replace(/~0/g, '~'));
+    const parts = pointerSegments(path);
     let node: unknown = out;
     for (const [i, part] of parts.entries()) {
       if (node === null || typeof node !== 'object' || !Object.hasOwn(node, part)) break;
@@ -116,4 +132,37 @@ export function redactPaths<T>(value: T, paths: readonly string[] | null | undef
     }
   }
   return out as T;
+}
+
+export interface DiffEntry {
+  path: string;
+  before?: unknown;
+  after?: unknown;
+}
+
+/**
+ * Redacts a config diff (`prepareWrite`). Entries name the changed field in their `path`, so key-based
+ * redaction alone would show a secret's `before`/`after`: an entry whose path has a sensitive segment,
+ * or sits at or under one of the operation's `sensitiveParams` paths, has both values hidden. Every
+ * other entry goes through the instance redactor.
+ */
+export function redactDiff(
+  diff: readonly DiffEntry[] | undefined,
+  redact: Redactor,
+  sensitiveParams?: readonly string[] | null,
+): DiffEntry[] | undefined {
+  if (!diff) return diff;
+  return diff.map((entry) => {
+    const path = typeof entry.path === 'string' ? entry.path : '';
+    const segments = pointerSegments(path);
+    const secret =
+      segments.some((s) => redact.isSensitiveKey?.(s)) ||
+      (sensitiveParams ?? []).some((p) => path === p || path.startsWith(`${p}/`));
+    if (!secret) return redact(entry);
+    return {
+      path: redact(path),
+      ...('before' in entry ? { before: REDACTED } : {}),
+      ...('after' in entry ? { after: REDACTED } : {}),
+    };
+  });
 }

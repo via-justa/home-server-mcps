@@ -314,6 +314,54 @@ describe('execute → gate → plugin', () => {
       expect(t.audits()[0]?.params).toEqual({ name: 'x', pin: '[REDACTED]' });
     });
 
+    it('hides secrets in a config diff from the approval, the stored row and a form prompt', async () => {
+      const t = await setup({ formElicitationApprovals: 'writes' });
+      t.setLevel('ask');
+      // Make echo.set a config write whose prepareWrite returns a diff that touches secrets.
+      t.db.update(operations).set({ kind: 'config' }).where(eq(operations.key, 'echo.set')).run();
+      t.rt.manifest = { ...t.rt.manifest, capabilities: { ...t.rt.manifest.capabilities, configTransform: true } };
+      const real = t.rt.plugin();
+      t.rt.plugin = () =>
+        ({
+          call: (method: string, params: unknown, ...rest: unknown[]) =>
+            method === 'prepareWrite'
+              ? Promise.resolve({
+                  params: (params as { params: unknown }).params,
+                  diff: [
+                    { path: '/smtp/password', before: 'old-smtp-secret', after: 'new-smtp-secret' },
+                    { path: '/pin', after: '4711' },
+                    { path: '/name', before: 'a', after: 'b' },
+                  ],
+                  expectedHash: 'h1',
+                })
+              : (real.call as (...a: unknown[]) => Promise<unknown>)(method, params, ...rest),
+        }) as unknown as ReturnType<typeof t.rt.plugin>;
+      const client = formClient();
+      await t.exec(`await echo.call('echo.set', { name: 'x', pin: '4711' });`, client.prompts);
+      const row = t.db.select().from(pendingApprovals).get()!;
+      expect(row.diff).toEqual([
+        { path: '/smtp/password', before: '[REDACTED]', after: '[REDACTED]' },
+        { path: '/pin', after: '[REDACTED]' },
+        { path: '/name', before: 'a', after: 'b' },
+      ]);
+      expect(client.asked).toHaveLength(1);
+      expect(client.asked[0]?.message).toContain('/smtp/password');
+      const shown = JSON.stringify(client.asked);
+      for (const secret of ['old-smtp-secret', 'new-smtp-secret', '4711']) expect(shown).not.toContain(secret);
+    });
+
+    it('keeps a __proto__ param visible to the approver', async () => {
+      const t = await setup();
+      t.setLevel('ask');
+      const client = urlClient((req) => t.approvals.decide(req.approvalId, { approve: false, decidedBy: 'admin' }));
+      await t.exec(
+        `await echo.call('echo.set', JSON.parse('{"name":"x","__proto__":{"force":true}}'));`,
+        client.prompts,
+      );
+      const shown = JSON.stringify(t.db.select().from(pendingApprovals).get()?.paramsDisplay);
+      expect(shown).toContain('"__proto__":{"force":true}');
+    });
+
     it('denies at once when the client cannot show prompts', async () => {
       const t = await setup();
       t.setLevel('ask');

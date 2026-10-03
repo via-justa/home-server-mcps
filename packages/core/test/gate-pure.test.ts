@@ -6,6 +6,7 @@ import {
   createRedactor,
   GLOBAL_SENSITIVE_KEYS,
   REDACTED,
+  redactDiff,
   redactPaths,
 } from '../src/gate/redact.js';
 
@@ -231,5 +232,41 @@ describe('redactPaths', () => {
     expect(redactPaths({ 'a/b': 's', 'c~d': 't' }, ['/a~1b', '/c~0d'])).toEqual({ 'a/b': REDACTED, 'c~d': REDACTED });
     expect(redactPaths('plain', ['/0'])).toBe('plain');
     expect(redactPaths({ a: 1 }, null)).toEqual({ a: 1 });
+  });
+});
+
+describe('redactor and __proto__', () => {
+  it('keeps a __proto__ key as a visible own key instead of a prototype', () => {
+    const out = createRedactor([])(JSON.parse('{"a":1,"__proto__":{"x":1}}') as object);
+    expect(JSON.stringify(out)).toBe('{"a":1,"__proto__":{"x":1}}');
+    expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+  });
+});
+
+describe('redactDiff', () => {
+  const redact = createRedactor(GLOBAL_SENSITIVE_KEYS, ['webhook_id']);
+  it('hides both sides of entries whose path names a secret or a sensitive param', () => {
+    expect(
+      redactDiff(
+        [
+          { path: '/action/0/data/password', before: 'old', after: 'new' },
+          { path: '/trigger/webhook_id', after: 'hook-123' },
+          { path: '/pin', before: '1' },
+          { path: '/pin/deep', after: '2' },
+          { path: '/alias', before: 'Lights', after: 'Lamps' },
+          { path: '/data', after: { token: 'abc', keep: 1 } },
+        ],
+        redact,
+        ['/pin'],
+      ),
+    ).toEqual([
+      { path: '/action/0/data/password', before: REDACTED, after: REDACTED },
+      { path: '/trigger/webhook_id', after: REDACTED },
+      { path: '/pin', before: REDACTED },
+      { path: '/pin/deep', after: REDACTED },
+      { path: '/alias', before: 'Lights', after: 'Lamps' },
+      { path: '/data', after: { token: REDACTED, keep: 1 } },
+    ]);
+    expect(redactDiff(undefined, redact)).toBeUndefined();
   });
 });
