@@ -58,15 +58,17 @@ export interface OpenApiCatalogOptions {
   defaultGroup?: string;
 }
 
-/** Parses and validates the spec text; throws `SpecError` rather than returning a partial catalog. */
-export function parseOpenApi(text: string, service?: string): Record<string, unknown> {
+/** Parses (if text) and validates the spec; throws `SpecError` rather than returning a partial catalog. */
+export function parseOpenApi(spec: string | Record<string, unknown>, service?: string): Record<string, unknown> {
   const name = service ? `${service} API spec` : 'API spec';
-  let doc: unknown;
-  try {
-    // JSON is YAML too. The alias cap stops billion-laughs expansion.
-    doc = parse(text, { maxAliasCount: 100 });
-  } catch {
-    throw new SpecError(`The ${name} is not valid YAML`);
+  let doc: unknown = spec;
+  if (typeof spec === 'string') {
+    try {
+      // JSON is YAML too. The alias cap stops billion-laughs expansion.
+      doc = parse(spec, { maxAliasCount: 100 });
+    } catch {
+      throw new SpecError(`The ${name} is not valid YAML`);
+    }
   }
   if (!isPlainObject(doc)) throw new SpecError(`The ${name} is empty`);
   if (typeof doc.openapi !== 'string' || !/^3\.[01]\./.test(doc.openapi))
@@ -175,7 +177,10 @@ function bySpecificity(a: RestOperation, b: RestOperation): number {
 }
 
 /** Builds the catalog. Throws `SpecError` for an invalid or implausibly small spec. */
-export function buildOpenApiCatalog(specText: string, opts: OpenApiCatalogOptions): OpenApiCatalog {
+export function buildOpenApiCatalog(
+  specText: string | Record<string, unknown>,
+  opts: OpenApiCatalogOptions,
+): OpenApiCatalog {
   const spec = parseOpenApi(specText, opts.service);
   const actionWords = opts.actionWords === undefined ? DEFAULT_ACTION_WORDS : opts.actionWords;
   const operations: OperationDescriptor[] = [];
@@ -407,6 +412,20 @@ export function restBinding(opts: RestBindingOptions): RestBinding {
       });
       return opts.rules.maskResult(key, result);
     },
+  };
+}
+
+/**
+ * A `lookup` hook for `compileRules` on a REST upstream: `op` is `GET /path/{param}` and `args[0]` the
+ * path parameters. Only GETs, so a confirmation lookup can never change anything.
+ */
+export function restLookup(client: () => HttpJsonClient) {
+  return async (op: string, args: unknown[], timeoutMs: number): Promise<unknown> => {
+    const [method, template] = op.split(' ') as [string, string | undefined];
+    if (method !== 'GET' || !template?.startsWith('/'))
+      throw new PluginError(ErrorCodes.InvalidParams, `plugin.yaml lookup ${op}: only GET /path lookups are allowed`);
+    const pathParams = isPlainObject(args[0]) ? args[0] : {};
+    return client().request('GET', fillTemplate(template, pathParams), { timeoutMs });
   };
 }
 

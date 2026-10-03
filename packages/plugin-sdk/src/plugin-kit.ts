@@ -59,6 +59,8 @@ export interface PluginKit<C> {
   timeout(context: InvokeContext): number;
   /** Runs `fn` after every successful `init`, e.g. to clear plugin-held state. */
   onInit(fn: () => void): void;
+  /** The upstream's version (the definition's `version`). */
+  version(): Promise<string>;
 }
 
 export interface PluginDefinition<C> {
@@ -92,6 +94,7 @@ export function definePlugin<C>(def: PluginDefinition<C>): PluginHandlers {
     },
     timeout: (context) => Math.max(1000, context.deadlineMs),
     onInit: (fn) => hooks.push(fn),
+    version: () => def.version(kit),
   };
   const handlers = def.handlers(kit);
   const close = async () => {

@@ -223,7 +223,7 @@ describe('definePlugin', () => {
           syncCatalog: async () => ({ upstreamVersion: String(await catalog.get()), operations: [] }),
           resolveOperation: () => ({ key: kit.client().url, params: kit.init().secrets.token }),
           summarize: () => ({ text: 'x' }),
-          invoke: ({ context }) => kit.timeout(context),
+          invoke: async ({ context }) => (context.callId === 'v' ? kit.version() : kit.timeout(context)),
         };
       },
     });
@@ -271,5 +271,6 @@ describe('definePlugin', () => {
     await handlers.init(init());
     expect(await handlers.invoke({ key: 'k', params: {}, context: { callId: 'c', deadlineMs: 5 } })).toBe(1000);
     expect(await handlers.invoke({ key: 'k', params: {}, context: { callId: 'c', deadlineMs: 5000 } })).toBe(5000);
+    expect(await handlers.invoke({ key: 'k', params: {}, context: { callId: 'v', deadlineMs: 5000 } })).toBe('1.2.3');
   });
 });

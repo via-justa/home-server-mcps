@@ -14,6 +14,7 @@ import {
   parseOpenApi,
   parsePluginSettings,
   restBinding,
+  restLookup,
   SpecError,
   staticCatalog,
   staticHttpBinding,
@@ -77,6 +78,8 @@ describe('parseOpenApi', () => {
     expect(() => parseOpenApi('', 'Acme')).toThrow('The Acme API spec is empty');
     expect(() => parseOpenApi('openapi: 3.0.0\n')).toThrow('The API spec has no paths');
     expect(parseOpenApi('{"openapi": "3.1.0", "paths": {}}')).toMatchObject({ openapi: '3.1.0' });
+    expect(parseOpenApi({ openapi: '3.0.3', paths: {} })).toMatchObject({ openapi: '3.0.3' });
+    expect(() => parseOpenApi({ swagger: '2.0' })).toThrow(SpecError);
   });
 
   it('caps YAML alias expansion', () => {
@@ -252,6 +255,13 @@ describe('restBinding against an HTTP upstream', () => {
       targets: [],
     });
     expect(s.text).toMatch(/^Acme POST \/items\/9\/close\?a=1 \{"x":"y+…  ?\(another user's item\)$/);
+  });
+
+  it('looks names up with GETs only', async () => {
+    const lookup = restLookup(() => client);
+    expect(await lookup('GET /items/{itemId}', [{ itemId: '5' }], 1000)).toEqual({ ok: true, url: '/api/v1/items/5' });
+    await expect(lookup('DELETE /items/{itemId}', [{ itemId: '5' }], 1000)).rejects.toThrow(/only GET/);
+    await expect(lookup('GET items', [], 1000)).rejects.toThrow(/only GET/);
   });
 
   it('invokes the matching request', async () => {
