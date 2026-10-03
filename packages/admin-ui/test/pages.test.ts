@@ -45,7 +45,9 @@ const op = (key: string, extra: Record<string, unknown> = {}) => ({
   locked: false,
   attestationRequired: false,
   levelOverride: null,
-  level: 'ask',
+  level: 'read',
+  allowedLevels: ['none', 'read', 'ask'],
+  description: null,
   writeAcknowledged: true,
   needsReview: false,
   matchProfile: null,
@@ -56,6 +58,8 @@ const op = (key: string, extra: Record<string, unknown> = {}) => ({
   reason: null,
   ...extra,
 });
+
+const WRITE = ['none', 'ask', 'write'];
 
 describe('Access page', () => {
   function api(extra: Record<string, unknown> = {}) {
@@ -79,11 +83,18 @@ describe('Access page', () => {
         },
       ],
       'GET /api/instances/i1/operations': [
-        op('app.query'),
-        op('app.start', { classification: 'write', mode: 'approve' }),
-        op('app.stop', { classification: 'write', mode: 'approve', writeAcknowledged: false }),
+        op('app.query', { description: 'Query apps.', inferredReason: 'roles:read(APPS_READ)' }),
+        op('app.start', { classification: 'write', mode: 'approve', level: 'ask', allowedLevels: WRITE }),
+        op('app.stop', {
+          classification: 'write',
+          mode: 'approve',
+          level: 'ask',
+          allowedLevels: WRITE,
+          writeAcknowledged: false,
+        }),
         op('app.redeploy', {
           classification: 'write',
+          allowedLevels: WRITE,
           levelOverride: 'none',
           level: 'none',
           reachable: false,
@@ -93,6 +104,8 @@ describe('Access page', () => {
         op('app.delete', {
           classification: 'write',
           locked: true,
+          level: 'none',
+          allowedLevels: ['none', 'ask'],
           reachable: false,
           mode: null,
           reason: 'locked_not_opted_in',
@@ -133,7 +146,9 @@ describe('Access page', () => {
     expect(dialog.text()).toContain('run without asking');
     expect(dialog.text()).toContain('app.start');
     expect(dialog.text()).toContain('app.stop');
-    expect(dialog.text()).not.toContain('app.redeploy'); // has its own level
+    // Setting the group resets operations with their own level, so app.redeploy runs too.
+    expect(dialog.text()).toContain('app.redeploy');
+    expect(dialog.text()).toContain('go back to following the group');
     expect(dialog.text()).not.toContain('app.delete'); // locked never auto-runs
     await dialog
       .findAll('button')
@@ -142,7 +157,7 @@ describe('Access page', () => {
     await flushPromises();
     expect(calls.find((c) => c.method === 'PATCH')).toMatchObject({
       path: '/api/instances/i1/groups/app',
-      body: { level: 'write', acknowledge: ['op-app.start', 'op-app.stop'] },
+      body: { level: 'write', acknowledge: ['op-app.start', 'op-app.stop', 'op-app.redeploy'] },
     });
   });
 
@@ -177,11 +192,12 @@ describe('Access page', () => {
       'POST /api/instances/i1/groups/bulk-level': [],
     });
     const { wrapper } = await mountAt('/endpoints/nas/access');
-    await wrapper
-      .findAll('button')
-      .find((b) => b.text() === 'All → Write…')!
-      .trigger('click');
+    const bulk = wrapper.get('select.bulk');
+    expect(bulk.findAll('option').map((o) => o.text())).toEqual(['Set all groups…', 'None', 'Read', 'Ask', 'Write…']);
+    await bulk.setValue('write');
     await flushPromises();
+    // The dropdown goes back to its prompt once a choice is made.
+    expect((bulk.element as HTMLSelectElement).value).toBe('');
     const dialog = wrapper.get('[role="dialog"]');
     expect(dialog.text()).toContain('Ask → Write');
     const confirm = dialog.findAll('button').find((b) => b.text() === 'Set all to Write')!;
@@ -197,34 +213,74 @@ describe('Access page', () => {
     });
   });
 
-  it('gives operations their own level, never Write for locked ones', async () => {
+  it('gives operations their own level with the same toggles, only the levels their kind allows', async () => {
     const { calls } = api({
       'PATCH /api/instances/i1/operations/op-app.delete': {},
       'PATCH /api/instances/i1/operations/op-app.redeploy': {},
+      'PATCH /api/instances/i1/operations/op-app.query': {},
+      'PATCH /api/instances/i1/operations/op-app.start': {},
     });
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     const { wrapper } = await mountAt('/endpoints/nas/access');
     await wrapper.get('[data-group="app"] .caret').trigger('click');
+    const radios = (key: string) => wrapper.get(`[data-op="${key}"]`).findAll('[role="radio"]');
+    const patched = (key: string) => calls.filter((c) => c.path === `/api/instances/i1/operations/op-${key}`);
 
+    // No read/write dropdown: the kind tag says where it came from.
+    expect(wrapper.find('[data-op="app.query"] select').exists()).toBe(false);
+    expect(wrapper.get('[data-op="app.query"] .kind').attributes('title')).toBe('Requires APPS_READ');
+    expect(wrapper.get('[data-op="app.query"]').text()).toContain('Query apps.');
+
+    expect(radios('app.query').map((b) => b.text())).toEqual(['None', 'Read', 'Ask']);
+    expect(radios('app.start').map((b) => b.text())).toEqual(['None', 'Ask', 'Write']);
+    expect(
+      radios('app.query')
+        .find((b) => b.attributes('aria-checked') === 'true')
+        ?.text(),
+    ).toBe('Read');
+
+    // A locked op shows Write disabled, and asks before opening at Ask.
     const locked = wrapper.get('[data-op="app.delete"]');
     expect(locked.text()).toContain('Locked — not enabled');
-    const lockedLevel = locked.get('select.level');
-    const write = lockedLevel.findAll('option').find((o) => o.attributes('value') === 'write')!;
+    const write = radios('app.delete').find((b) => b.text().startsWith('Write'))!;
     expect(write.attributes('disabled')).toBeDefined();
-    expect(locked.findAll('select')).toHaveLength(1); // classification of locked ops can't change
-    await lockedLevel.setValue('ask');
+    await radios('app.delete')
+      .find((b) => b.text() === 'Ask')!
+      .trigger('click');
     await flushPromises();
     expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('fresh authenticator code'));
-    expect(calls.find((c) => c.path === '/api/instances/i1/operations/op-app.delete')?.body).toEqual({ level: 'ask' });
+    expect(patched('app.delete')[0]?.body).toEqual({ level: 'ask' });
 
-    // "Follow group" resets an operation's own level.
-    const redeploy = wrapper.get('[data-op="app.redeploy"] select.level');
-    expect((redeploy.element as HTMLSelectElement).value).toBe('none');
-    await redeploy.setValue('');
+    // A read at its own Ask.
+    await radios('app.query')
+      .find((b) => b.text() === 'Ask')!
+      .trigger('click');
     await flushPromises();
-    expect(calls.find((c) => c.path === '/api/instances/i1/operations/op-app.redeploy')?.body).toEqual({
-      level: null,
-    });
+    expect(patched('app.query')[0]?.body).toEqual({ level: 'ask' });
+
+    // Picking what the group already gives (Ask) just clears an own level.
+    await radios('app.redeploy')
+      .find((b) => b.text() === 'Ask')!
+      .trigger('click');
+    await flushPromises();
+    expect(patched('app.redeploy')[0]?.body).toEqual({ level: null });
+
+    // ↺ only on operations with their own level, to the right of the toggle.
+    expect(wrapper.find('[data-op="app.start"] .reset').exists()).toBe(false);
+    const reset = wrapper.get('[data-op="app.redeploy"] .reset');
+    expect(reset.element.previousElementSibling?.classList.contains('segmented')).toBe(true);
+    await reset.trigger('click');
+    await flushPromises();
+    expect(patched('app.redeploy')[1]?.body).toEqual({ level: null });
+    expect(wrapper.get('[data-op="app.redeploy"]').text()).not.toContain('own level');
+
+    // Write on a plain write warns first.
+    await radios('app.start')
+      .find((b) => b.text() === 'Write')!
+      .trigger('click');
+    await flushPromises();
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('without asking anyone'));
+    expect(patched('app.start')[0]?.body).toEqual({ level: 'write' });
   });
 
   it('shows what each call does now', async () => {
@@ -233,7 +289,7 @@ describe('Access page', () => {
     await wrapper.get('[data-group="app"] .caret').trigger('click');
     expect(wrapper.get('[data-op="app.query"]').text()).toContain('Runs');
     expect(wrapper.get('[data-op="app.start"]').text()).toContain('Asks');
-    expect(wrapper.get('[data-op="app.redeploy"]').text()).toContain('Level None');
+    expect(wrapper.get('[data-op="app.redeploy"]').text()).toContain('Off');
   });
 });
 

@@ -248,12 +248,18 @@ describe('instances and access', () => {
     const t = await withInstance();
     expect(await (await t.b.post(`/api/instances/${t.id}/sync`)).json()).toMatchObject({ added: 5 });
     expect(await (await t.b.get(`/api/instances/${t.id}/groups`)).json()).toMatchObject([
-      { key: 'echo', level: 'read', counts: { read: 1, write: 2, locked: 2, pendingReview: 0 } },
+      { key: 'echo', level: 'ask', counts: { read: 1, write: 2, locked: 2, pendingReview: 0 } },
     ]);
-    const ops = (await (await t.b.get(`/api/instances/${t.id}/operations?reason=read_only`)).json()) as {
+    // At Read, the group's writes are simply off: there is no "write at level Read".
+    expect((await t.b.patch(`/api/instances/${t.id}/groups/echo`, { level: 'read' })).status).toBe(200);
+    const ops = (await (await t.b.get(`/api/instances/${t.id}/operations?reason=level_none`)).json()) as {
       key: string;
+      level: string;
     }[];
-    expect(ops.map((o) => o.key)).toEqual(['echo.guided', 'echo.set']);
+    expect(ops.map((o) => [o.key, o.level])).toEqual([
+      ['echo.guided', 'none'],
+      ['echo.set', 'none'],
+    ]);
 
     const refused = await t.b.patch(`/api/instances/${t.id}/groups/echo`, { level: 'write' });
     expect(refused.status).toBe(409);
@@ -285,6 +291,7 @@ describe('instances and access', () => {
   it('rejects rules on locked operations and unknown match fields, and flags inert rules', async () => {
     const t = await withInstance();
     await t.b.post(`/api/instances/${t.id}/sync`);
+    await t.b.patch(`/api/instances/${t.id}/groups/echo`, { level: 'read' });
     const ops = (await (await t.b.get(`/api/instances/${t.id}/operations`)).json()) as { id: string; key: string }[];
     const opId = (k: string) => ops.find((o) => o.key === k)!.id;
 
@@ -306,7 +313,7 @@ describe('instances and access', () => {
       rateLimit: 10,
     });
     expect(created.status).toBe(201);
-    expect(await created.json()).toMatchObject({ windowSeconds: 3600, inert: 'read_only' });
+    expect(await created.json()).toMatchObject({ windowSeconds: 3600, inert: 'level_none' });
     const [rule] = (await (await t.b.get(`/api/instances/${t.id}/rules`)).json()) as { id: string }[];
     expect(
       await (await t.b.patch(`/api/instances/${t.id}/rules/${rule!.id}`, { enabled: false })).json(),
@@ -317,7 +324,15 @@ describe('instances and access', () => {
   it('sets per-operation levels, keeps locked ops off Write, and has no portal approval inbox', async () => {
     const t = await withInstance();
     await t.b.post(`/api/instances/${t.id}/sync`);
-    type Op = { id: string; key: string; level: string; levelOverride: string | null; mode: string | null };
+    type Op = {
+      id: string;
+      key: string;
+      level: string;
+      levelOverride: string | null;
+      mode: string | null;
+      allowedLevels: string[];
+      description: string | null;
+    };
     const list = async () => (await (await t.b.get(`/api/instances/${t.id}/operations`)).json()) as Op[];
     const opId = async (k: string) => (await list()).find((o) => o.key === k)!.id;
     const patch = async (key: string, body: unknown) =>
@@ -330,10 +345,21 @@ describe('instances and access', () => {
       writeAcknowledged: true,
     });
     expect((await patch('echo.set', { level: 'admin' })).status).toBe(400);
+    // Each kind only takes the levels that mean something for it.
+    expect(await (await patch('echo.query', { level: 'write' })).json()).toMatchObject({
+      error: 'invalid_level_for_operation',
+    });
+    expect((await patch('echo.set', { level: 'read' })).status).toBe(400);
     const byKey = Object.fromEntries((await list()).map((o) => [o.key, o]));
-    expect(byKey['echo.delete']).toMatchObject({ level: 'ask', mode: 'approve' });
-    expect(byKey['echo.set']).toMatchObject({ level: 'write', mode: 'auto' });
-    expect(byKey['echo.guided']).toMatchObject({ level: 'read', levelOverride: null, mode: null });
+    expect(byKey['echo.delete']).toMatchObject({ level: 'ask', mode: 'approve', allowedLevels: ['none', 'ask'] });
+    expect(byKey['echo.set']).toMatchObject({ level: 'write', mode: 'auto', allowedLevels: ['none', 'ask', 'write'] });
+    expect(byKey['echo.guided']).toMatchObject({ level: 'ask', levelOverride: null, mode: 'approve' });
+    expect(byKey['echo.query']).toMatchObject({
+      level: 'read',
+      allowedLevels: ['none', 'read', 'ask'],
+      description: 'Echoes the query back.',
+    });
+    expect(byKey['echo.set']?.description).toBeNull();
 
     expect(await (await patch('echo.set', { level: null })).json()).toMatchObject({ levelOverride: null });
     const group = ((await (await t.b.get(`/api/instances/${t.id}/groups`)).json()) as { counts: object }[])[0];

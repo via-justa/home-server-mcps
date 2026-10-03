@@ -121,16 +121,17 @@ describe('execute → gate → plugin', () => {
     ]);
   });
 
-  it('rejects writes at level Read with a catchable reason', async () => {
+  it('treats a write in a group at Read as off, with a catchable reason', async () => {
     const t = await setup();
+    t.setLevel('read');
     const r = await t.exec(
       `try { await echo.call('echo.set', { name: 'x' }); } catch (e) { return [e.code, e.message]; }`,
     );
     expect(r).toMatchObject({
       ok: true,
-      value: ['OPERATION_DISABLED', 'echo.set is a write, and its access level on this endpoint is Read'],
+      value: ['OPERATION_DISABLED', 'echo.set is disabled on this endpoint (access level None)'],
     });
-    expect(t.audits()[0]).toMatchObject({ decision: 'rejected:read_only', resultStatus: 'rejected' });
+    expect(t.audits()[0]).toMatchObject({ decision: 'rejected:level_none', resultStatus: 'rejected' });
   });
 
   it('rejects everything at level None', async () => {
@@ -189,6 +190,21 @@ describe('execute → gate → plugin', () => {
   });
 
   describe('level Ask: approvals', () => {
+    it('asks for a read given its own Ask, through a read-only connection too, without using the write budget', async () => {
+      const t = await setup({ writesPerMinute: 1 });
+      updateOperation(t.db, t.instanceId, t.opId('echo.query'), { level: 'ask' });
+      const client = urlClient((req) => t.approvals.decide(req.approvalId, { approve: true, decidedBy: 'admin' }));
+      for (let i = 0; i < 2; i++) {
+        const r = await t.exec(`return await echo.call('echo.query', { n: ${i} });`, client.prompts, 'read');
+        expect(r).toMatchObject({ ok: true, value: { key: 'echo.query' } });
+      }
+      expect(client.opened).toHaveLength(2);
+      expect(t.audits().map((a) => [a.decision, a.classification])).toEqual([
+        ['human-approved', 'read'],
+        ['human-approved', 'read'],
+      ]);
+    });
+
     it('sends the human to the approval page (URL prompt) and runs the call once approved there', async () => {
       const t = await setup();
       t.setLevel('ask');
@@ -680,6 +696,7 @@ describe('search', () => {
     const t = await setup();
     const search = (code: string, ceiling?: AccessCeiling) =>
       searchCode(t.deps, t.rt, t.caller(undefined, ceiling), code);
+    t.setLevel('read');
 
     await expect(search(`return (await catalog.find()).map((o) => o.key);`)).resolves.toMatchObject({
       value: ['echo.query'],
@@ -690,10 +707,10 @@ describe('search', () => {
     expect(all).toMatchObject({
       value: [
         ['echo.delete', 'locked', 'locked_not_opted_in'],
-        ['echo.guided', 'write', 'read_only'],
+        ['echo.guided', 'write', 'level_none'],
         ['echo.nolit', 'locked', 'locked_not_opted_in'],
         ['echo.query', 'read', null],
-        ['echo.set', 'write', 'read_only'],
+        ['echo.set', 'write', 'level_none'],
       ],
     });
     await expect(

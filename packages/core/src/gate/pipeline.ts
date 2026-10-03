@@ -95,7 +95,6 @@ function toBindingError(err: unknown): BindingError {
 const DISABLED_MESSAGES: Record<string, string> = {
   group_missing: 'is not available on this endpoint',
   level_none: 'is disabled on this endpoint (access level None)',
-  read_only: 'is a write, and its access level on this endpoint is Read',
   token_read_only: 'is a write, and this connection was granted read-only access',
   locked_not_opted_in: 'is a protected operation that the administrator has not enabled',
   unknown_operation: 'is not in the current catalog',
@@ -231,7 +230,9 @@ export function createGateBindings(
       }
       const operation = op!;
       const mode = access.reachable ? access.mode : 'run';
-      const isWrite = mode !== 'run';
+      // A read at its own Ask needs a decision too, but only writes use the write budget or prepareWrite.
+      const needsDecision = mode !== 'run';
+      const isWrite = operation.locked || operation.classification === 'write';
       audit.classification = operation.locked ? 'locked' : operation.classification;
 
       // 3. Concrete targets, so rules and approvers see exactly what will be touched. Fails closed.
@@ -252,7 +253,7 @@ export function createGateBindings(
         expectedHash = prepared.expectedHash;
       }
 
-      // 5. Reads run straight away.
+      // 5. Reads run straight away, unless the read has its own Ask.
       let decision = 'auto-executed';
       let approval: Decision | undefined;
       // Each principal has its own write budget, charged only for writes that actually run (step 9):
@@ -260,12 +261,12 @@ export function createGateBindings(
       const writeBucket = `write:${rt.instanceId}:${principalKey(caller)}`;
       const overWriteBudget = () =>
         reject('rejected:rate_limited', new BindingError('RATE_LIMITED', 'Too many write calls; slow down'));
-      if (isWrite) {
+      if (needsDecision) {
         // Checked before asking anyone, so nobody approves a call that would be refused anyway.
-        if (!deps.limiter.allows(writeBucket, rt.settings.writesPerMinute, 60_000)) overWriteBudget();
+        if (isWrite && !deps.limiter.allows(writeBucket, rt.settings.writesPerMinute, 60_000)) overWriteBudget();
 
-        // 6. Level `write`: acknowledged writes are auto-approved. Level `ask`: pre-approval rules, which
-        //    never cover locked ops nor writes still waiting for acknowledgement.
+        // 6. Level `write`: acknowledged writes are auto-approved. Level `ask` (a write, or a read given
+        //    its own Ask): pre-approval rules, which never cover locked ops nor unacknowledged writes.
         let preapproved = false;
         if (mode === 'auto') {
           preapproved = true;

@@ -4,7 +4,7 @@ import { writeAudit } from '../audit.js';
 import type { Db, DbLike } from '../db/index.js';
 import { operationGroupAliases, operationGroups, operations, pluginInstances } from '../db/schema.js';
 import { ConflictError, NotFoundError, ValidationError } from '../errors.js';
-import { ACCESS_LEVELS, FULL_ACCESS, effectiveAccess, isAccessLevel, minLevel } from '../gate/access.js';
+import { ACCESS_LEVELS, FULL_ACCESS, allowedLevels, effectiveAccess, isAccessLevel, minLevel } from '../gate/access.js';
 import type { AccessDecision, AccessLevel, AccessPrincipal } from '../gate/access.js';
 
 /**
@@ -35,10 +35,28 @@ export const accessInput = (op: OperationRow) => ({
 const isPlainWrite = (op: OperationRow) => !op.stale && !op.locked && op.classification === 'write';
 
 /**
- * Writes that would run without asking once their group is at `write`: plain writes that follow the
- * group. Raising a group to `write` must acknowledge exactly these (locked ops never auto-run).
+ * Writes that would run without asking once their group is at `write`. Setting a group's level resets
+ * every operation in it to follow the group, so that is every plain write in it; raising a group to
+ * `write` must acknowledge exactly these (locked ops never auto-run).
  */
-const followsGroupWrite = (op: OperationRow) => isPlainWrite(op) && op.levelOverride === null;
+const runsAtGroupWrite = isPlainWrite;
+
+/** Resets every operation in these groups to follow its group; returns the keys that had their own level. */
+function resetOwnLevels(db: DbLike, groupIds: string[]): string[] {
+  const own = opsInGroups(db, groupIds).filter((o) => o.levelOverride !== null);
+  if (own.length > 0) {
+    db.update(operations)
+      .set({ levelOverride: null })
+      .where(
+        inArray(
+          operations.id,
+          own.map((o) => o.id),
+        ),
+      )
+      .run();
+  }
+  return own.map((o) => o.key);
+}
 
 /** Writes whose effective level is `write` but that nobody acknowledged yet: they ask until someone does. */
 function isPendingWrite(op: OperationRow, group: GroupRow | undefined): boolean {
@@ -130,7 +148,8 @@ export function resolveAccess(
 // ── group level ──────────────────────────────────────────────────────────────────────────────────
 
 /**
- * Sets one group's level; operations with their own level keep it. Raising to `write` must carry
+ * Sets one group's level and resets every operation in it to follow the group (locked operations go
+ * back to closed). Raising to `write` must carry
  * `acknowledge` = exactly the writes that will then run without asking (the list the admin was
  * shown); if a sync changed that list in between, this fails with 409 and the fresh list.
  */
@@ -148,7 +167,7 @@ export function setGroupLevel(
     const group = getGroup(tx, instanceId, key);
     let acknowledged: string[] = [];
     if (level === 'write') {
-      const autoRun = opsInGroups(tx, [group.id]).filter(followsGroupWrite);
+      const autoRun = opsInGroups(tx, [group.id]).filter(runsAtGroupWrite);
       const expected = autoRun.map((o) => o.id);
       if (!sameSet(opts.acknowledge, expected)) {
         throw new ConflictError(
@@ -168,7 +187,8 @@ export function setGroupLevel(
       );
       acknowledged = fresh.map((o) => o.key);
     }
-    if (group.level === level && acknowledged.length === 0) return;
+    const reset = resetOwnLevels(tx, [group.id]);
+    if (group.level === level && acknowledged.length === 0 && reset.length === 0) return;
     tx.update(operationGroups)
       .set({ level, levelChangedAt: now, levelChangedBy: actor.userId ?? null })
       .where(eq(operationGroups.id, group.id))
@@ -181,7 +201,7 @@ export function setGroupLevel(
         decision: 'group_level_changed',
         actorKind: 'user',
         actorId: actor.userId,
-        detail: { group: key, from: group.level, to: level, acknowledged },
+        detail: { group: key, from: group.level, to: level, acknowledged, reset },
       },
       now,
     );
@@ -210,7 +230,7 @@ export function previewBulkLevel(db: DbLike, instanceId: string, level: string):
       ? opsInGroups(
           db,
           groups.map((g) => g.id),
-        ).filter(followsGroupWrite)
+        ).filter(runsAtGroupWrite)
       : [];
   const preview = groups.map((g) => ({
     key: g.key,
@@ -222,7 +242,7 @@ export function previewBulkLevel(db: DbLike, instanceId: string, level: string):
 }
 
 /**
- * Sets every group of an instance to one level (operations with their own level keep it).
+ * Sets every group of an instance to one level and resets every operation to follow its group.
  * `none`/`read`/`ask` apply directly. `write` requires `confirm` = the instance slug and
  * `acknowledge` = the current preview's list. Locked operations never auto-run.
  */
@@ -259,12 +279,21 @@ export function applyBulkLevel(
             .all()
             .map((g) => g.id),
         )
-          .filter((o) => followsGroupWrite(o) && !o.writeAcknowledged)
+          .filter((o) => runsAtGroupWrite(o) && !o.writeAcknowledged)
           .map((o) => o.id),
         actor,
         now,
       );
     }
+    const reset = resetOwnLevels(
+      tx,
+      tx
+        .select({ id: operationGroups.id })
+        .from(operationGroups)
+        .where(eq(operationGroups.instanceId, instanceId))
+        .all()
+        .map((g) => g.id),
+    );
     tx.update(operationGroups)
       .set({ level, levelChangedAt: now, levelChangedBy: actor.userId ?? null })
       .where(eq(operationGroups.instanceId, instanceId))
@@ -281,6 +310,7 @@ export function applyBulkLevel(
           to: level,
           groups: preview.groups.map((g) => ({ key: g.key, from: g.from, to: level })),
           acknowledged: preview.groups.flatMap((g) => g.exposes.map((o) => o.key)),
+          reset,
         },
       },
       now,
@@ -398,18 +428,17 @@ export function mergeGroups(
 // ── per-operation state ──────────────────────────────────────────────────────────────────────────
 
 export interface OperationPatch {
-  /** The operation's own level; `null` makes it follow its group again. */
+  /** The operation's own level (one its kind allows); `null` makes it follow its group again. */
   level?: AccessLevel | null;
   acknowledged?: boolean;
-  classification?: 'read' | 'write';
   /** Require a best-practice key (guides) for this operation; turning it off is remembered across syncs. */
   attestationRequired?: boolean;
 }
 
 /**
- * Per-operation level, acknowledgement and classification override. Locked operations can't be set
- * to `write` and can't change classification (409). Setting a write to `write`, or overriding an
- * operation's classification to write, acknowledges it.
+ * Per-operation level and acknowledgement. Read or write comes from the plugin and isn't editable. The
+ * level must be one the operation's kind allows (reads: none/read/ask; writes: none/ask/write; locked:
+ * none/ask); locked operations refuse `write` with 409. Setting a write to `write` acknowledges it.
  */
 export function updateOperation(
   db: Db,
@@ -429,22 +458,24 @@ export function updateOperation(
     if (!op) throw new NotFoundError('operation_not_found', 'No such operation on this instance');
 
     const set: Partial<typeof operations.$inferInsert> = {};
-    if (patch.classification !== undefined && patch.classification !== op.classification) {
-      if (op.locked)
-        throw new ConflictError('operation_locked', `${op.key} is locked; its classification can't change`);
-      set.classification = patch.classification;
-      set.classificationSource = 'override';
-    }
     if (patch.level !== undefined && patch.level !== op.levelOverride) {
-      if (patch.level !== null) assertLevel(patch.level);
-      if (patch.level === 'write' && op.locked) {
-        throw new ConflictError('operation_locked', `${op.key} is locked; it always asks for approval`);
+      if (patch.level !== null) {
+        assertLevel(patch.level);
+        if (patch.level === 'write' && op.locked) {
+          throw new ConflictError('operation_locked', `${op.key} is locked; it always asks for approval`);
+        }
+        const allowed = allowedLevels(op);
+        if (!allowed.includes(patch.level)) {
+          throw new ValidationError(
+            'invalid_level_for_operation',
+            `${op.key} is a ${op.locked ? 'locked operation' : op.classification}; its level must be one of ${allowed.join(', ')}`,
+          );
+        }
       }
       set.levelOverride = patch.level;
     }
-    const isWrite = (set.classification ?? op.classification) === 'write';
-    const acknowledges =
-      patch.acknowledged === true || set.classification === 'write' || (patch.level === 'write' && isWrite);
+    const isWrite = op.locked || op.classification === 'write';
+    const acknowledges = patch.acknowledged === true || (patch.level === 'write' && isWrite);
     if (acknowledges && !op.writeAcknowledged) {
       Object.assign(set, { writeAcknowledged: true, acknowledgedAt: now, acknowledgedBy: actor.userId ?? null });
     }
@@ -471,7 +502,6 @@ export function updateOperation(
           before: {
             level: op.levelOverride,
             writeAcknowledged: op.writeAcknowledged,
-            classification: op.classification,
             attestationRequired: op.attestationRequired,
           },
           after: set,

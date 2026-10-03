@@ -71,6 +71,13 @@
       "when": 1790515212837,
       "tag": "0009_drop_plugin_source",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1791017854360,
+      "tag": "0010_access_by_kind",
+      "breakpoints": true
     }
   ]
 }

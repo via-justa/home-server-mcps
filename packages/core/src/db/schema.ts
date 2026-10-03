@@ -134,7 +134,7 @@ export const operationGroups = sqliteTable(
       .references(() => pluginInstances.id, { onDelete: 'cascade' }),
     key: text('key').notNull(),
     label: text('label').notNull(),
-    /** New groups start read-only. */
+    /** Catalog sync creates groups at `ask` (reads run, writes ask); the column default is only a fallback. */
     level: text('level', { enum: ['none', 'read', 'ask', 'write'] })
       .notNull()
       .default('read'),

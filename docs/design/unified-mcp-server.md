@@ -25,7 +25,7 @@ These decisions are not reopened. Each is now implemented once in core and appli
 
 - **Two MCP tools per endpoint:** `search(code)` and `execute(code)`.
 - **Fail-closed classification.** Precedence is `locked` > `override` > inferred/default. Ambiguous cases default to `write`.
-- **Reachability is a separate gate from classification**, and every endpoint starts read-only. What changes is _how_ it is controlled: an access level per group instead of a toggle per operation (§1.2, §5.2.1).
+- **Reachability is a separate gate from classification**, and every endpoint starts at Ask (reads run, writes ask). What changes is _how_ it is controlled: an access level per group instead of a toggle per operation (§1.2, §5.2.1).
 - **Call-time interception.** The bound function is the sandbox's only egress and the only enforcement point.
 - **Approvals.** Approvals happen through the MCP client's prompts (elicitation). Unanswered approvals are auto-denied after 15 min. Approvals are single-use and scoped to the exact params (and resolved targets). What changes is _who_ can approve (§1.2, §5.3).
 - **Typed confirmation** for `locked` operations.
@@ -395,7 +395,7 @@ The harness offers:
 
 1. The code runs in a fresh `isolated-vm` context (§5.4).
 2. Injected read-only APIs, all served by core from the DB (they never call the plugin):
-   - `catalog.find({ text?, group?, tag?, kind?, classification?, includeDisabled? })` → descriptors. By default this returns **callable operations only** (§5.2.1), each with `approval: 'none' | 'required' | 'auto'` (runs, asks a human, or is auto-approved at level `write`). When `includeDisabled` is set, the others are included and tagged `disabled` with their `reason` (`level_none`, `read_only`, `token_read_only`, `locked_not_opted_in`).
+   - `catalog.find({ text?, group?, tag?, kind?, classification?, includeDisabled? })` → descriptors. By default this returns **callable operations only** (§5.2.1), each with `approval: 'none' | 'required' | 'auto'` (runs, asks a human, or is auto-approved at level `write`). When `includeDisabled` is set, the others are included and tagged `disabled` with their `reason` (`level_none`, `token_read_only`, `locked_not_opted_in`).
    - `catalog.groups()` → `{ key, label, level, counts: { read, write, locked, pendingReview, overridden } }[]`, so the model can explain why something isn't callable ("apps are read-only on this endpoint").
    - `catalog.get(key)` → the full descriptor with `paramsSchema` and docs.
    - `registry.find({ kind?, text?, parent?, scopes? })` (only if the plugin has `registry`) → matched entries only, never the whole registry. `scopes` matches entries whose scope values equal the ones given.
@@ -426,7 +426,7 @@ binding(args)
 ```
 
 - **Invoke timeouts can't be undone.** When `invoke` times out, the upstream may still have carried the write out; there is no cancellation RPC. The call is audited `error:UPSTREAM_TIMEOUT` (meaning "outcome unknown", not "did not happen"), and every `invoke` carries a unique `context.callId` so a plugin whose upstream supports idempotency keys can pass it on and make a retry safe.
-- Errors are thrown **into** the sandbox as catchable `Error`s with a `code` property. They never crash the host. Codes: `UNKNOWN_OPERATION`, `ATTESTATION_REQUIRED`, `OPERATION_DISABLED` (message says why: level None, a write at level Read, a read-only connection, a locked operation nobody enabled, or disabled while its approval was open), `TARGET_RESOLUTION_FAILED`, `CONFIG_CONFLICT`, `PERMISSION_DENIED` (denied, declined in the client, timed out, or the client cannot approve), `RATE_LIMITED`, `UPSTREAM_DENIED`, `UPSTREAM_ERROR`, `UPSTREAM_TIMEOUT`, `PLUGIN_UNAVAILABLE`, `PLUGIN_ERROR`, `EXECUTION_ENDED`.
+- Errors are thrown **into** the sandbox as catchable `Error`s with a `code` property. They never crash the host. Codes: `UNKNOWN_OPERATION`, `ATTESTATION_REQUIRED`, `OPERATION_DISABLED` (message says why: level None (including a write in a group at Read), a read-only connection, a locked operation nobody enabled, or disabled while its approval was open), `TARGET_RESOLUTION_FAILED`, `CONFIG_CONFLICT`, `PERMISSION_DENIED` (denied, declined in the client, timed out, or the client cannot approve), `RATE_LIMITED`, `UPSTREAM_DENIED`, `UPSTREAM_ERROR`, `UPSTREAM_TIMEOUT`, `PLUGIN_UNAVAILABLE`, `PLUGIN_ERROR`, `EXECUTION_ENDED`.
 - `prepareWrite` (step 4) runs for write operations whose descriptor `kind` is `config`, on plugins that declare `configTransform`.
 - **An `execute` ends with its sandbox.** When the script returns, throws or times out — or the MCP request is cancelled, or its session closes — calls it left behind are refused (`EXECUTION_ENDED`) and an approval still open is cancelled, so nothing reaches the upstream after the tool call has answered.
 - Calls are serialized within one `execute` by default. While one call waits for approval, the whole `execute` blocks. Per-instance setting: `concurrentReadsDuringApproval` (default `false`).
@@ -440,29 +440,37 @@ binding(args)
 
 ### 5.2.1 Access levels (replace per-operation Enabled toggles)
 
-Every operation has an **access level**. Admins normally set it **per access group**, which the plugin derives during discovery (§3.4); a group's level applies to every operation in it. An operation can be given **its own level**, which wins over its group in both directions and survives later group changes ("Follow group" resets it).
+Every operation has an **access level**. Admins normally set it **per access group**, which the plugin derives during discovery (§3.4). Setting a group's level resets every operation in it to follow the group. An operation can be given **its own level**, which wins over its group until the group's level is set again (or ↺ puts it back).
 
-| Level   | Read operations | Write operations                                                             | Locked operations                                   |
-| ------- | --------------- | ---------------------------------------------------------------------------- | --------------------------------------------------- |
-| `none`  | hidden          | hidden                                                                       | hidden                                              |
-| `read`  | run             | hidden                                                                       | hidden                                              |
-| `ask`   | run             | every call asks for approval (§5.3); pre-approval rules can cover some calls | only with the operation's **own** `ask` (see below) |
-| `write` | run             | run **without asking** once acknowledged                                     | never auto-run; capped at `ask`                     |
+Read or write comes from the upstream API, never from an admin: REST plugins use the HTTP method (`GET` reads), TrueNAS the roles a method requires (a `*_READ` or `READONLY_ADMIN` role makes it a read), and only methods that declare nothing fall back to naming. There is no classification override.
+
+What a **group** level means for each kind of operation that follows it:
+
+| Group level | Read operations | Write operations                                                             | Locked operations                                   |
+| ----------- | --------------- | ---------------------------------------------------------------------------- | --------------------------------------------------- |
+| `none`      | off             | off                                                                          | off                                                 |
+| `read`      | run             | off                                                                          | off                                                 |
+| `ask`       | run             | every call asks for approval (§5.3); pre-approval rules can cover some calls | only with the operation's **own** `ask` (see below) |
+| `write`     | run             | run **without asking** once acknowledged                                     | only with its own `ask`; never auto-run             |
+
+An operation's **own** level is one its kind allows, so there is no "write at level Read":
+
+| Kind   | Own levels             | Meaning                                                           |
+| ------ | ---------------------- | ----------------------------------------------------------------- |
+| read   | `none`, `read`, `ask`  | off · runs · every call asks for approval                         |
+| write  | `none`, `ask`, `write` | off · every call asks · runs without asking once acknowledged     |
+| locked | `none`, `ask`          | off · every call asks, with a typed confirmation and a fresh TOTP |
 
 **One pure function** in core (`packages/core/src/gate/access.ts`) decides this. The gate, `search`, and the portal all use it:
 
 ```
 effectiveAccess(op, group, principal):
   group missing / unknown level        → hidden (group_missing)       -- fail closed
-  level = op.levelOverride ?? group.level   (an unknown override counts as none)
-  level == none                        → hidden (level_none)
-  op is read (and not locked)          → run
+  level = levelInForce(op, group)       -- own level (narrowed to its kind), else the table above
+  level == none                        → hidden (locked_not_opted_in for a locked op its group would open, else level_none)
+  op is read (and not locked)          → run, or approve at its own ask
   principal.ceiling == read            → hidden (token_read_only)     -- consent / bearer ceiling, §6.2
-  op.locked:
-    no own level, or own level < ask   → hidden (locked_not_opted_in)
-    otherwise                          → approve (at most ask; never auto)
-  level == read                        → hidden (read_only)
-  level == ask                         → approve
+  level == ask, or op.locked           → approve (a locked op never auto-runs)
   !op.write_acknowledged               → approve (pendingReview)
   otherwise                            → auto
 ```
@@ -471,23 +479,26 @@ effectiveAccess(op, group, principal):
 
 **Acknowledgement.** `write` runs calls with nobody approving, so the admin sees the list first:
 
-- Raising a group to `write` opens a confirmation listing the writes that will then run without asking: the group's non-locked writes that follow its level. Confirming acknowledges exactly those (the API rejects the request with 409 and the fresh list if a sync changed it in between). Moving to `ask` or lower needs no confirmation.
+- Raising a group to `write` opens a confirmation listing the writes that will then run without asking: every non-locked write in the group, since setting the level resets them to follow it. Confirming acknowledges exactly those (the API rejects the request with 409 and the fresh list if a sync changed it in between). Moving to `ask` or lower needs no confirmation.
 - Setting one operation to `write` acknowledges it.
-- Writes that appear in **later syncs** start unacknowledged. At level `write` they **ask** until an admin acknowledges them; the group shows "N to acknowledge", and a `sync.pending_review` notification is sent (§9).
-- If a sync changes an operation's inferred classification from read to write, its acknowledgement is reset. So does a change to an acknowledged write's parameters schema, kind, match profile or lock, or its return from stale: the admin acknowledged what it was, not what it became. An admin override that makes an operation `write` counts as acknowledging it.
+- Operations that appear in a **later sync**, in a group that already existed, get their own level so an opened group never exposes them by itself: reads `read`, writes `none` (in a group at `none` they just follow it). A `sync.pending_review` notification is sent for the new writes (§9). Operations in a brand-new group follow it.
+- Writes still unacknowledged at level `write` (one that became a write, or changed, under a group at `write`) **ask** until an admin acknowledges them; the group shows "N to acknowledge".
+- If a sync changes an operation's inferred classification from read to write, its acknowledgement is reset. So does a change to an acknowledged write's parameters schema, kind, match profile or lock, or its return from stale: the admin acknowledged what it was, not what it became. An own level that no longer fits the operation's new kind is narrowed (a read's `read` becomes `none` when it turns into a write).
 - Each sync re-checks enabled pre-approval rules against the new catalog and the plugin's match profiles. Rules that no longer fit (a field removed or its operator changed) are disabled, audited (`rules_disabled_operation_changed`) and counted in the `sync.pending_review` notification.
 - If a sync newly locks an operation, its own level is cleared, so it starts closed again.
 
-**Defaults.** A newly discovered group starts at `read`. Every endpoint therefore starts read-only. A group whose operations are all writes (such as a smart-home service domain where every service call is a write) exposes nothing at `read`.
+**Defaults.** A newly discovered group starts at `ask`: reads run and every write asks for approval. Locked operations stay off until set to `ask` one by one. A connection's own ceiling (read only by default, §6.2) still keeps a client away from writes.
 
 **Bulk actions** (Access page):
 
-- "All → None", "All → Read" and "All → Ask" apply at once; operations with their own level keep it. They are audited.
-- **"All → Write"** requires a confirmation dialog listing, per group, the writes that will run without asking, and the admin must **type the instance slug**. It acknowledges exactly the previewed operations (409 if the preview is stale). Locked operations still ask. It is audited as one `config` event with every group's before/after level.
+- One **"Set all groups…"** dropdown. None, Read and Ask apply after a confirmation; like a single group, every operation goes back to following its group. They are audited.
+- **Write** requires a confirmation dialog listing, per group, the writes that will run without asking, and the admin must **type the instance slug**. It acknowledges exactly the previewed operations (409 if the preview is stale). Locked operations still ask. It is audited as one `config` event with every group's before/after level.
 
 **Regrouping.** The plugin's grouping is the default. The admin can **merge** groups (e.g. fold `app.image` into `app`) and **rename** labels. Merges are stored as aliases (`plugin_group → group_key`) and applied on every sync, so custom grouping survives re-discovery. Merging groups with different levels takes the **lower** level.
 
-**Pre-approval rules** still target individual operations, and only apply at level `ask`. A rule on an operation that is hidden, or at `write` (where it runs anyway), is inert, and the rule list flags it.
+**Pre-approval rules** still target individual operations, and only apply at level `ask` (a write, or a read given its own `ask`). A rule on an operation that is hidden, or at `write` (where it runs anyway), is inert, and the rule list flags it.
+
+**Migration to levels by kind (0010).** Own levels that don't fit their kind keep what they did: a read at `ask`/`write` ran, so it becomes `read`; a write at `read` was hidden, so `none`; a locked op at `read` becomes `none` and at `write` becomes `ask`. Classification overrides go back to the plugin's; where that flips read and write, the operation gets its own `none` if it was off, else `ask`, so nothing opens wider than before.
 
 **Migration from the three-level model.** The old `write` level asked for approval on every write, so it became `ask`; nothing started running without asking. Exclusions became the operation's own `none`. A locked operation's opt-in became its own `ask` where its group was at the old `write`.
 

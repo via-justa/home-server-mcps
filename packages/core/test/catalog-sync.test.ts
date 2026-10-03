@@ -10,7 +10,7 @@ const opRow = (db: ReturnType<typeof seedInstance>['db'], key: string) =>
   db.select().from(operations).where(eq(operations.key, key)).get()!;
 
 describe('applyCatalogSync', () => {
-  it('creates groups at read, classifies, and quarantines new writes', () => {
+  it('creates groups at ask, classifies, and quarantines new writes', () => {
     const { db, instanceId } = seedInstance();
     const summary = applyCatalogSync(
       db,
@@ -24,16 +24,19 @@ describe('applyCatalogSync', () => {
       pendingReview: ['app.upgrade', 'app.delete'],
     });
     expect(listGroups(db, instanceId).map((g) => [g.key, g.level])).toEqual([
-      ['app', 'read'],
-      ['store', 'read'],
+      ['app', 'ask'],
+      ['store', 'ask'],
     ]);
+    // Operations in a brand-new group follow it.
+    expect(opRow(db, 'app.upgrade').levelOverride).toBeNull();
     expect(opRow(db, 'app.delete')).toMatchObject({
       classification: 'write',
       classificationSource: 'locked',
       typedConfirmation: true,
     });
     expect(resolveAccess(db, instanceId, 'app.query')).toEqual({ reachable: true, mode: 'run', level: 'read' });
-    expect(resolveAccess(db, instanceId, 'app.upgrade')).toEqual({ reachable: false, reason: 'read_only' });
+    expect(resolveAccess(db, instanceId, 'app.upgrade')).toEqual({ reachable: true, mode: 'approve', level: 'ask' });
+    expect(resolveAccess(db, instanceId, 'app.delete')).toEqual({ reachable: false, reason: 'locked_not_opted_in' });
 
     const instance = db.select().from(pluginInstances).where(eq(pluginInstances.id, instanceId)).get();
     expect(instance).toMatchObject({ upstreamVersion: '25.10.7', lastSyncStatus: 'ok' });
@@ -46,7 +49,7 @@ describe('applyCatalogSync', () => {
     ).toEqual(['catalog_synced']);
   });
 
-  it('makes new writes ask, even in a group already at write, until acknowledged', () => {
+  it('adds a new write to an open group switched off, as its own level, until an admin opens it', () => {
     const { db, instanceId } = seedInstance();
     applyCatalogSync(db, instanceId, catalog(op('app.query'), op('app.upgrade')));
     setGroupLevel(db, instanceId, 'app', 'write', { acknowledge: [opRow(db, 'app.upgrade').id] });
@@ -54,20 +57,31 @@ describe('applyCatalogSync', () => {
 
     const summary = applyCatalogSync(db, instanceId, catalog(op('app.query'), op('app.upgrade'), op('app.rollback')));
     expect(summary.pendingReview).toEqual(['app.rollback']);
-    expect(resolveAccess(db, instanceId, 'app.rollback')).toEqual({
-      reachable: true,
-      mode: 'approve',
-      level: 'write',
-      pendingReview: true,
-    });
+    expect(opRow(db, 'app.rollback').levelOverride).toBe('none');
+    expect(resolveAccess(db, instanceId, 'app.rollback')).toEqual({ reachable: false, reason: 'level_none' });
     expect(resolveAccess(db, instanceId, 'app.upgrade')).toEqual({ reachable: true, mode: 'auto', level: 'write' });
-    expect(listGroups(db, instanceId)[0]?.counts.pendingReview).toBe(1);
+    expect(listGroups(db, instanceId)[0]?.counts).toMatchObject({ overridden: 1, pendingReview: 0 });
+
+    // Opening it at Write is the admin's acknowledgement.
+    updateOperation(db, instanceId, opRow(db, 'app.rollback').id, { level: 'write' });
+    expect(resolveAccess(db, instanceId, 'app.rollback')).toEqual({ reachable: true, mode: 'auto', level: 'write' });
   });
 
-  it('makes new reads reachable immediately', () => {
+  it('lets a new operation in a group at None follow the group', () => {
+    const { db, instanceId } = seedInstance();
+    applyCatalogSync(db, instanceId, catalog(op('app.query')));
+    setGroupLevel(db, instanceId, 'app', 'none');
+    applyCatalogSync(db, instanceId, catalog(op('app.query'), op('app.config'), op('app.upgrade')));
+    expect(opRow(db, 'app.config').levelOverride).toBeNull();
+    expect(opRow(db, 'app.upgrade').levelOverride).toBeNull();
+    expect(resolveAccess(db, instanceId, 'app.upgrade')).toEqual({ reachable: false, reason: 'level_none' });
+  });
+
+  it('makes new reads reachable immediately, at their own Read', () => {
     const { db, instanceId } = seedInstance();
     applyCatalogSync(db, instanceId, catalog(op('app.query')));
     applyCatalogSync(db, instanceId, catalog(op('app.query'), op('app.config')));
+    expect(opRow(db, 'app.config').levelOverride).toBe('read');
     expect(resolveAccess(db, instanceId, 'app.config')).toEqual({ reachable: true, mode: 'run', level: 'read' });
   });
 
@@ -91,15 +105,34 @@ describe('applyCatalogSync', () => {
     });
   });
 
-  it('keeps admin overrides unless the plugin locks the operation', () => {
+  it('always takes read or write from the plugin, narrowing own levels that no longer fit', () => {
     const { db, instanceId } = seedInstance();
-    applyCatalogSync(db, instanceId, catalog(op('app.frobnicate')));
-    updateOperation(db, instanceId, opRow(db, 'app.frobnicate').id, { classification: 'read' });
-    applyCatalogSync(db, instanceId, catalog(op('app.frobnicate')));
-    expect(opRow(db, 'app.frobnicate')).toMatchObject({ classification: 'read', classificationSource: 'override' });
+    applyCatalogSync(
+      db,
+      instanceId,
+      catalog(op('app.status', { classification: 'read' }), op('app.info', { classification: 'read' })),
+    );
+    updateOperation(db, instanceId, opRow(db, 'app.status').id, { level: 'read' });
+    updateOperation(db, instanceId, opRow(db, 'app.info').id, { level: 'ask' });
 
-    applyCatalogSync(db, instanceId, catalog(op('app.frobnicate', { locked: true })));
-    expect(opRow(db, 'app.frobnicate')).toMatchObject({ classification: 'write', classificationSource: 'locked' });
+    applyCatalogSync(
+      db,
+      instanceId,
+      catalog(op('app.status', { classification: 'write' }), op('app.info', { classification: 'write' })),
+    );
+    expect(opRow(db, 'app.status')).toMatchObject({
+      classification: 'write',
+      classificationSource: 'inferred',
+      levelOverride: 'none',
+    });
+    expect(opRow(db, 'app.info')).toMatchObject({ classification: 'write', levelOverride: 'ask' });
+
+    applyCatalogSync(
+      db,
+      instanceId,
+      catalog(op('app.status', { locked: true }), op('app.info', { classification: 'write' })),
+    );
+    expect(opRow(db, 'app.status')).toMatchObject({ classification: 'write', classificationSource: 'locked' });
   });
 
   it('disables pre-approval rules on operations that become locked', () => {

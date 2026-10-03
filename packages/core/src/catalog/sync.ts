@@ -6,6 +6,7 @@ import { writeAudit } from '../audit.js';
 import type { Db } from '../db/index.js';
 import { operationGroupAliases, operationGroups, operations, pluginInstances, preApprovalRules } from '../db/schema.js';
 import { ValidationError } from '../errors.js';
+import { normalizeLevel } from '../gate/access.js';
 import { MatchSchema } from '../gate/match.js';
 import { matchMisfit } from './rules.js';
 
@@ -37,13 +38,17 @@ const isEffectiveWrite = (op: Pick<OperationRow, 'classification' | 'locked'>) =
  * untrusted and re-validated here. Runs in one transaction: either the whole catalog lands or none.
  *
  * - Operations missing from the result are marked `stale`, never deleted (history is kept).
- * - `locked` always follows the plugin seed; admin overrides survive unless the op becomes locked.
+ * - Read or write always comes from the plugin (the upstream API decides); `locked` follows its seed.
  * - New writes, and reads reclassified to writes, arrive unacknowledged (quarantined). So does an
  *   acknowledged write whose parameters, kind, match profile or lock changed, or that returns from
  *   stale: the admin acknowledged what it was, not what it became.
  * - Enabled pre-approval rules are re-checked against the new catalog (and the plugin's match
  *   profiles, when given); rules that no longer fit are disabled and audited.
- * - Plugin groups are mapped through admin aliases; missing groups are created at `read`.
+ * - Plugin groups are mapped through admin aliases; missing groups are created at `ask`.
+ * - An operation that appears in a group that already existed gets its own level, so a group an admin
+ *   already opened never exposes it by itself: reads at Read, writes at None. In a group at None it
+ *   just follows the group. Operations in a brand-new group follow it.
+ * - An operation's own level that no longer fits its kind (it became a write, or locked) is narrowed.
  */
 export function applyCatalogSync(
   db: Db,
@@ -85,6 +90,9 @@ export function applyCatalogSync(
         .map((o) => [o.key, o]),
     );
 
+    // Groups as they were before this sync: only operations new to one of these become exceptions.
+    const groupsBefore = new Map([...groups.values()].map((g) => [g.id, g]));
+
     const summary: SyncSummary = {
       added: 0,
       updated: 0,
@@ -100,7 +108,7 @@ export function applyCatalogSync(
       const key = aliases.get(pluginGroup) ?? pluginGroup;
       const found = groups.get(key);
       if (found) return found.id;
-      const row = { id: randomUUID(), instanceId, key, label: label ?? key, level: 'read' as const, firstSeenAt: now };
+      const row = { id: randomUUID(), instanceId, key, label: label ?? key, level: 'ask' as const, firstSeenAt: now };
       tx.insert(operationGroups).values(row).run();
       groups.set(key, { ...row, levelChangedAt: null, levelChangedBy: null, stale: false });
       summary.newGroups.push(key);
@@ -110,9 +118,8 @@ export function applyCatalogSync(
     for (const d of result.operations) {
       const prev = existing.get(d.key);
       const locked = d.locked;
-      const override = !locked && prev?.classificationSource === 'override';
-      const classification = locked ? 'write' : override ? prev!.classification : d.classification;
-      const classificationSource = locked ? 'locked' : override ? 'override' : 'inferred';
+      const classification = locked ? 'write' : d.classification;
+      const classificationSource = locked ? 'locked' : 'inferred';
       const fields = {
         displayName: d.displayName ?? null,
         kind: d.kind,
@@ -136,12 +143,16 @@ export function applyCatalogSync(
       const nowWrite = isEffectiveWrite({ classification, locked });
 
       if (!prev) {
+        const group = groupsBefore.get(fields.groupId);
+        const ownLevel =
+          group && group.level !== 'none' && !locked ? (nowWrite ? ('none' as const) : ('read' as const)) : null;
         tx.insert(operations)
           .values({
             id: randomUUID(),
             instanceId,
             key: d.key,
             ...fields,
+            levelOverride: ownLevel,
             attestationRequired: d.attestationRequired,
             firstSeenAt: now,
           })
@@ -161,7 +172,12 @@ export function applyCatalogSync(
           attestationRequired: prev.attestationRequired || (d.attestationRequired && !prev.attestationWaived),
           ...(becameWrite ? { writeAcknowledged: false, acknowledgedAt: null, acknowledgedBy: null } : {}),
           // A newly locked op starts closed again: it needs its own `ask` level to be callable.
-          ...(becameLocked ? { levelOverride: null } : {}),
+          ...(becameLocked
+            ? { levelOverride: null }
+            : prev.levelOverride !== null &&
+                normalizeLevel({ classification, locked }, prev.levelOverride) !== prev.levelOverride
+              ? { levelOverride: normalizeLevel({ classification, locked }, prev.levelOverride) }
+              : {}),
         })
         .where(eq(operations.id, prev.id))
         .run();

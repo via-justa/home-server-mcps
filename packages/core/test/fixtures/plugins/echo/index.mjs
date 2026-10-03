@@ -11,7 +11,7 @@ const op = (key, classification, extra = {}) => ({
   ...extra,
 });
 const CATALOG = [
-  op('echo.query', 'read'),
+  op('echo.query', 'read', { docs: { summary: 'Echoes the query back.' } }),
   op('echo.set', 'write', { matchProfile: 'name-prefix' }),
   op('echo.delete', 'write', { locked: true }),
   op('echo.nolit', 'write', { locked: true }),

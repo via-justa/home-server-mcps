@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { effectiveAccess } from '../src/gate/access.js';
+import { allowedLevels, effectiveAccess, levelInForce, normalizeLevel } from '../src/gate/access.js';
 import type { AccessLevel, AccessOperation } from '../src/gate/access.js';
 
 const read: AccessOperation = { classification: 'read', locked: false, levelOverride: null, writeAcknowledged: false };
@@ -14,10 +14,12 @@ describe('effectiveAccess', () => {
     // [name, op, group level, expected]
     ['read op, none', read, 'none', { reachable: false, reason: 'level_none' }],
     ['read op, read', read, 'read', { reachable: true, mode: 'run', level: 'read' }],
-    ['read op, ask', read, 'ask', { reachable: true, mode: 'run', level: 'ask' }],
-    ['read op, write', read, 'write', { reachable: true, mode: 'run', level: 'write' }],
+    // A group at Ask or Write still lets its reads run; only a read's own Ask makes it ask.
+    ['read op, ask', read, 'ask', { reachable: true, mode: 'run', level: 'read' }],
+    ['read op, write', read, 'write', { reachable: true, mode: 'run', level: 'read' }],
     ['write op, none', write, 'none', { reachable: false, reason: 'level_none' }],
-    ['write op, read', write, 'read', { reachable: false, reason: 'read_only' }],
+    // There is no "write at level Read": the write is simply off.
+    ['write op, read', write, 'read', { reachable: false, reason: 'level_none' }],
     ['write op, ask', write, 'ask', { reachable: true, mode: 'approve', level: 'ask' }],
     ['write op, write', write, 'write', { reachable: true, mode: 'auto', level: 'write' }],
     ['locked op, none', locked, 'none', { reachable: false, reason: 'level_none' }],
@@ -81,10 +83,46 @@ describe('effectiveAccess', () => {
       mode: 'approve',
       level: 'ask',
     });
+    // A stored Read doesn't fit a locked op: it is None.
     expect(effectiveAccess({ ...locked, levelOverride: 'read' }, at('write'))).toEqual({
       reachable: false,
-      reason: 'locked_not_opted_in',
+      reason: 'level_none',
     });
+  });
+
+  it('makes a read with its own Ask need approval, even for a read-only connection', () => {
+    expect(effectiveAccess({ ...read, levelOverride: 'ask' }, at('read'))).toEqual({
+      reachable: true,
+      mode: 'approve',
+      level: 'ask',
+    });
+    expect(effectiveAccess({ ...read, levelOverride: 'ask' }, at('write'), readOnly)).toMatchObject({
+      mode: 'approve',
+    });
+  });
+
+  it('offers each kind only the levels that mean something for it', () => {
+    expect(allowedLevels(read)).toEqual(['none', 'read', 'ask']);
+    expect(allowedLevels(write)).toEqual(['none', 'ask', 'write']);
+    expect(allowedLevels(locked)).toEqual(['none', 'ask']);
+  });
+
+  it('narrows a stored level that does not fit, never widening it', () => {
+    expect(normalizeLevel(read, 'write')).toBe('read');
+    expect(normalizeLevel(write, 'read')).toBe('none');
+    expect(normalizeLevel(locked, 'read')).toBe('none');
+    expect(normalizeLevel(locked, 'write')).toBe('ask');
+    expect(normalizeLevel(write, 'bogus')).toBe('none');
+    expect(normalizeLevel(write, 'ask')).toBe('ask');
+  });
+
+  it('reports the level in force in the operation’s own terms', () => {
+    expect(levelInForce(read, at('ask'))).toBe('read');
+    expect(levelInForce(write, at('read'))).toBe('none');
+    expect(levelInForce(write, at('write'))).toBe('write');
+    expect(levelInForce(locked, at('write'))).toBe('none');
+    expect(levelInForce({ ...locked, levelOverride: 'ask' }, at('none'))).toBe('ask');
+    expect(levelInForce(read, undefined)).toBe('none');
   });
 
   it('treats a locked op as a write even if its row says read', () => {

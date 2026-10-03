@@ -33,8 +33,7 @@ export const AUTH_MODE_LABELS: Record<string, string> = {
 };
 
 export const REASON_LABELS: Record<string, string> = {
-  level_none: 'Level None',
-  read_only: 'Write at level Read',
+  level_none: 'Off',
   token_read_only: 'Read-only connection',
   locked_not_opted_in: 'Locked — not enabled',
   level_write: 'Auto-approved at Write',
@@ -47,7 +46,32 @@ export const LEVEL_LABELS: Record<string, string> = { none: 'None', read: 'Read'
 /** One line per level, shown as the control's tooltip and in help text. */
 export const LEVEL_HELP: Record<string, string> = {
   none: 'Nothing is callable',
-  read: 'Reads run; writes are hidden',
+  read: 'Reads run; writes are off',
   ask: 'Reads run; every write asks for approval (pre-approval rules can cover some)',
   write: 'Reads run; writes run without asking (locked operations still ask)',
 };
+
+/** What an operation's own level means, by kind (shown as the tooltip on its level control). */
+export const OP_LEVEL_HELP: Record<'read' | 'write' | 'locked', Record<string, string>> = {
+  read: { none: 'Off', read: 'Runs', ask: 'Every call asks for approval' },
+  write: { none: 'Off', ask: 'Every call asks for approval', write: 'Runs without asking' },
+  locked: {
+    none: 'Off',
+    ask: 'Every call asks for approval, with a typed confirmation',
+    write: 'Locked operations always ask',
+  },
+};
+
+/** Where an operation's read/write type came from, from the plugin's classification reason. */
+export function kindSource(reason: string | null | undefined, locked: boolean): string {
+  if (locked) return 'Locked: destructive or irreversible, so it always needs a human';
+  if (!reason) return '';
+  const role = /^roles:(?:read|write)\((.+)\)$/.exec(reason);
+  if (role) return `Requires ${role[1]}`;
+  const verb = /^verb:([A-Z]+)$/.exec(reason);
+  if (verb) return `HTTP ${verb[1]}`;
+  const naming = /^naming:(read|write)\((.+)\)$/.exec(reason);
+  if (naming) return `Named like a ${naming[1]} (${naming[2]})`;
+  if (reason === 'default:ambiguous') return 'Not recognised, so treated as a write';
+  return reason;
+}

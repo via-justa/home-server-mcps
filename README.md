@@ -61,7 +61,7 @@ Synoikia implements the security-critical parts **once, in core**, and applies t
 
 **🧰 Two tools per endpoint.** Every endpoint exposes just `search(code)` and `execute(code)`. The model discovers operations and calls them with code that runs inside an [`isolated-vm`][isolated-vm] sandbox with no Node APIs, network or timers.
 
-**🛂 A permission gate on every call.** Each operation has an access level, set per group with per-operation exceptions:
+**🛂 A permission gate on every call.** Each operation has an access level, set per group with per-operation exceptions. New groups start at Ask. Whether an operation reads or writes comes from the upstream API (the HTTP method, or the roles a TrueNAS method requires), not from a guess:
 
 | Level     | Behaviour                                                                   |
 | --------- | --------------------------------------------------------------------------- |
@@ -69,6 +69,8 @@ Synoikia implements the security-critical parts **once, in core**, and applies t
 | **Read**  | Reads only                                                                  |
 | **Ask**   | Writes wait for a human approval, unless a narrow pre-approval rule matches |
 | **Write** | Writes run without asking, once acknowledged                                |
+
+An operation's own level only offers what fits it: a read is None, Read or Ask (every call asks), a write None, Ask or Write.
 
 **✋ Human approvals the model can't fake.** The MCP client asks you to open an approval page ([URL-mode elicitation][elicitation]), where you sign in and decide with your authenticator app. The client that made the call can't approve it. Destructive operations are `locked`: off until you set them to Ask, and then they always need a human, a typed confirmation and a fresh authenticator code, and can never be pre-approved or set to Write.
 
