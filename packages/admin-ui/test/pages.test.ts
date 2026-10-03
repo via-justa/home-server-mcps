@@ -517,3 +517,84 @@ describe('Pre-approval rules', () => {
     });
   });
 });
+
+describe('Connect a client', () => {
+  function api(auth: string, opts: { dcr?: boolean; publicMcpUrl?: string | null } = {}) {
+    const inst = { ...instance, endpointUrl: 'https://mcp.example.com/nas', effectiveAuthMode: auth };
+    return fakeApi({
+      'GET /api/session': signedIn,
+      'GET /api/overview': {
+        ...overview,
+        instances: [inst],
+        publicMcpUrl: opts.publicMcpUrl === undefined ? 'https://mcp.example.com' : opts.publicMcpUrl,
+      },
+      'GET /api/instances/i1/connection': {
+        config: {},
+        schema: { type: 'object', properties: {} },
+        secrets: {},
+        help: 'Notes.',
+      },
+      'GET /api/settings': { mcp: { allowDynamicRegistration: opts.dcr ?? true } },
+    });
+  }
+  const card = async () => {
+    const { wrapper } = await mountAt('/endpoints/nas/connection');
+    return { wrapper, card: wrapper.get('.connect') };
+  };
+
+  afterEach(() => localStorage.clear());
+
+  it('shows the Claude Code command for an OAuth endpoint, below the setup notes', async () => {
+    api('oauth');
+    const { wrapper, card: c } = await card();
+    const cards = wrapper.findAll('aside .card').map((x) => x.find('h2').text());
+    expect(cards.slice(-2)).toEqual(['Setup notes', 'Connect a client']);
+    expect(
+      c
+        .get('select')
+        .findAll('option')
+        .map((o) => o.text()),
+    ).toEqual(['Claude Code', 'Claude Desktop', 'Cloudflare MCP portal']);
+    expect(c.get('[data-snippet="url"]').text()).toBe('https://mcp.example.com/nas');
+    expect(c.get('[data-snippet="command"]').text()).toBe(
+      ['claude mcp add', '--transport http', 'nas', 'https://mcp.example.com/nas'].join(' \\\n'),
+    );
+    expect(c.text()).toContain('Authenticate');
+  });
+
+  it('adds the bearer header and uses the config file for Claude Desktop', async () => {
+    api('bearer');
+    const { card: c } = await card();
+    expect(c.get('[data-snippet="command"]').text()).toContain('--header "Authorization: Bearer <token>"');
+    expect(c.text()).toContain('Clients & Tokens');
+    await c.get('select').setValue('claude-desktop');
+    const config = JSON.parse(c.get('[data-snippet="config"]').text());
+    expect(config.mcpServers.nas).toEqual({
+      command: 'npx',
+      args: ['-y', 'mcp-remote@latest', 'https://mcp.example.com/nas', '--header', 'Authorization:${AUTH}'],
+      env: { AUTH: 'Bearer <token>' },
+    });
+    expect(localStorage.getItem('synoikia.connectClient')).toBe('claude-desktop');
+  });
+
+  it('warns on the Cloudflare portal when the endpoint cannot do OAuth, DCR is off, or there is no public URL', async () => {
+    api('bearer', { dcr: false, publicMcpUrl: null });
+    const { card: c } = await card();
+    await c.get('select').setValue('cloudflare');
+    expect(c.find('[data-warn="auth"]').exists()).toBe(true);
+    expect(c.find('[data-warn="dcr"]').exists()).toBe(true);
+    expect(c.find('[data-warn="public-url"]').exists()).toBe(true);
+    expect(c.text()).toContain('Add MCP server');
+  });
+
+  it('shows no Cloudflare warnings when everything is in place, and copies snippets', async () => {
+    api('bearer+oauth');
+    const writeText = vi.fn(async () => undefined);
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+    const { card: c } = await card();
+    await c.get('select').setValue('cloudflare');
+    expect(c.findAll('.alert')).toHaveLength(0);
+    await c.get('.copy').trigger('click');
+    expect(writeText).toHaveBeenCalledWith('https://mcp.example.com/nas');
+  });
+});
