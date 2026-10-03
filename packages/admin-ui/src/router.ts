@@ -60,7 +60,7 @@ const routes: RouteRecordRaw[] = [
         children: [
           { path: '', redirect: '/settings/mcp' },
           { path: 'mcp', component: McpSettingsView, meta: { title: 'MCP access' } },
-          { path: 'security', component: SecuritySettingsView, meta: { title: 'Sign-in & security' } },
+          { path: 'security', component: SecuritySettingsView, meta: { title: 'Admin UI settings' } },
           { path: 'users', component: UsersView, meta: { title: 'Users' } },
           { path: 'notifications', component: NotificationsView, meta: { title: 'Notifications' } },
           { path: 'profile', component: ProfileView, meta: { title: 'My profile' } },

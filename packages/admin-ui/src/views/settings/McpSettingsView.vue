@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { errorText, http } from '../../api';
 import { AUTH_MODE_LABELS } from '../../format';
 import { AUTH_MODES } from '../../types';
@@ -8,6 +8,7 @@ import type { Settings } from '../../types';
 const form = ref<Settings['mcp']>();
 const publicMcpUrl = ref<string | null>(null);
 const message = ref<{ kind: 'ok' | 'error'; text: string }>();
+const endpointPattern = computed(() => `${publicMcpUrl.value ?? '<this server>'}/<slug>`);
 
 onMounted(async () => {
   try {
@@ -38,6 +39,31 @@ const MODE_HELP: Record<string, string> = {
 
 <template>
   <form v-if="form" class="stack" @submit.prevent="save">
+    <section class="card about">
+      <h2>How MCP access works</h2>
+      <ul class="small">
+        <li>
+          Each endpoint is its own MCP server at
+          <span class="mono">{{ endpointPattern }}</span
+          >. Add it to an MCP client from the endpoint's Connection tab.
+        </li>
+        <li>
+          An endpoint exposes two tools: <code>search</code> to explore the service's API and <code>execute</code> to
+          call it. Every call goes through the endpoint's Access levels, pre-approval rules, approvals and the audit
+          log.
+        </li>
+        <li>
+          The settings below only decide <em>who can connect</em>, not what a client may do. Endpoints use the default
+          authentication unless they override it in their own Settings tab.
+        </li>
+        <li>
+          Bearer tokens are created under <RouterLink to="/clients">Clients &amp; Tokens</RouterLink>. OAuth lets a
+          client sign in through this server with a portal account. External mode leaves authentication to a reverse
+          proxy in front of the server.
+        </li>
+      </ul>
+    </section>
+
     <section class="card">
       <h2>Default client authentication</h2>
       <p class="small muted">Endpoints use this unless they override it in their own settings.</p>
@@ -54,6 +80,7 @@ const MODE_HELP: Record<string, string> = {
 
     <section class="card">
       <h2>OAuth</h2>
+      <p class="small muted">Applies to endpoints using OAuth or Bearer or OAuth.</p>
       <div class="field check">
         <label
           ><input v-model="form.allowDynamicRegistration" type="checkbox" /> Let MCP clients register themselves
@@ -74,7 +101,9 @@ const MODE_HELP: Record<string, string> = {
 
     <section class="card">
       <h2>External mode</h2>
-      <p class="small muted">With Cloudflare Access, the server also verifies the Access JWT itself.</p>
+      <p class="small muted">
+        Applies to endpoints using External. With Cloudflare Access, the server also verifies the Access JWT itself.
+      </p>
       <div class="form-grid">
         <div class="field">
           <label for="m-cft">Cloudflare team domain</label>
@@ -97,3 +126,13 @@ const MODE_HELP: Record<string, string> = {
   </form>
   <p v-else-if="message" class="alert error">{{ message.text }}</p>
 </template>
+
+<style scoped>
+.about ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.about li + li {
+  margin-top: 6px;
+}
+</style>

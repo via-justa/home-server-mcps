@@ -70,6 +70,8 @@ export interface Overview {
   plugins: { id: string; pluginId: string; status: string; enabled: boolean }[];
   warnings: string[];
   publicMcpUrl: string | null;
+  /** The core's version. */
+  version?: string;
 }
 
 export interface UiHint {

@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { errorText, http } from '../../api';
 import ChipsInput from '../../components/ChipsInput.vue';
+import InfoTip from '../../components/InfoTip.vue';
 import ModalDialog from '../../components/ModalDialog.vue';
 import RegistryPicker from '../../components/RegistryPicker.vue';
 import { REASON_LABELS, ago, formatDate } from '../../format';
@@ -277,6 +278,25 @@ const pickable = computed(() => {
 watch(draft, (d) => {
   if (!d) opSearch.value = '';
 });
+
+/** Help shown beside each setting in the rule editor. */
+const TIPS = {
+  operation:
+    "The write this rule pre-approves. Rules apply while the operation is at Ask; at Write it already runs without asking. Locked operations can't be pre-approved and always ask a person.",
+  onlyWhen:
+    'The rule applies only to calls whose parameters all match what you set here. An empty field means the call must not send that parameter.',
+  anyValue: 'Accept this parameter with any value, or when it is left out.',
+  extraAny:
+    'Parameters this form does not list that a call may still send, with any value. Write them as paths, such as /quota.',
+  anyParams:
+    'Accept calls whatever other parameters they send. The rule then covers far more calls than the fields above suggest.',
+  rateLimit:
+    'How many calls this rule approves within the window. Calls over the limit are not refused; they ask a person instead. Leave empty for no limit.',
+  window: 'The length of the rate-limit window, in minutes. Defaults to 60.',
+  expires: 'After this time (your local time) the rule stops applying and calls ask again. Leave empty to keep it.',
+  reason: 'Why this is safe to run without asking. Recorded in the audit log with every call the rule approves.',
+  enabled: 'A disabled rule is kept but approves nothing, so matching calls ask a person.',
+};
 </script>
 
 <template>
@@ -338,7 +358,7 @@ watch(draft, (d) => {
 
     <ModalDialog v-if="draft" :title="draft.id ? 'Edit rule' : 'New pre-approval rule'" wide @close="draft = undefined">
       <div class="field">
-        <label for="r-op">Operation</label>
+        <label for="r-op">Operation <InfoTip :text="TIPS.operation" label="About the operation" /></label>
         <input
           v-if="!draft.id"
           v-model="opSearch"
@@ -355,18 +375,21 @@ watch(draft, (d) => {
       </div>
 
       <template v-if="draftOp">
-        <h2>Only when</h2>
+        <h2>Only when <InfoTip :text="TIPS.onlyWhen" label="About matching" /></h2>
         <p class="small muted">
           Strict: a call matches only if every parameter it sends is covered here. Leave a field empty to require that
           the parameter is absent, or tick “any value”.
         </p>
         <div v-for="f in fields" :key="f.field" class="field">
-          <label
-            >{{ f.label }} <span class="mono muted small">{{ f.field }}{{ f.op ? ` · ${f.op}` : '' }}</span></label
-          >
-          <label v-if="f.field !== '$targets'" class="row small any"
-            ><input v-model="valueOf(f).any" type="checkbox" /> any value</label
-          >
+          <div class="field-head">
+            <label
+              >{{ f.label }} <span class="mono muted small">{{ f.field }}{{ f.op ? ` · ${f.op}` : '' }}</span></label
+            >
+            <label v-if="f.field !== '$targets'" class="row small any"
+              ><input v-model="valueOf(f).any" type="checkbox" /> any value
+              <InfoTip :text="TIPS.anyValue" label="About any value" end
+            /></label>
+          </div>
           <RegistryPicker
             v-if="f.field === '$targets' && targets"
             v-model="valueOf(f).targets"
@@ -413,20 +436,23 @@ watch(draft, (d) => {
       </template>
 
       <div v-if="draftOp" class="field">
-        <label>Other parameters accepted with any value</label>
+        <label
+          >Other parameters accepted with any value <InfoTip :text="TIPS.extraAny" label="About other parameters"
+        /></label>
         <ChipsInput v-model="draft.extraAny" placeholder="e.g. /quota" />
         <label class="row small"
-          ><input v-model="draft.anyParams" type="checkbox" /> Accept any other parameters (not recommended)</label
-        >
+          ><input v-model="draft.anyParams" type="checkbox" /> Accept any other parameters (not recommended)
+          <InfoTip :text="TIPS.anyParams" label="About accepting any parameters"
+        /></label>
       </div>
 
       <div class="form-grid">
         <div class="field">
-          <label for="r-rate">Rate limit (calls)</label>
+          <label for="r-rate">Rate limit (calls) <InfoTip :text="TIPS.rateLimit" label="About the rate limit" /></label>
           <input id="r-rate" v-model="draft.rateLimit" type="number" min="1" placeholder="unlimited" />
         </div>
         <div class="field">
-          <label for="r-win">Per (minutes)</label>
+          <label for="r-win">Per (minutes) <InfoTip :text="TIPS.window" label="About the window" /></label>
           <input
             id="r-win"
             v-model="draft.windowMinutes"
@@ -437,16 +463,21 @@ watch(draft, (d) => {
           />
         </div>
         <div class="field">
-          <label for="r-exp">Expires</label>
+          <label for="r-exp">Expires <InfoTip :text="TIPS.expires" label="About expiry" end /></label>
           <input id="r-exp" v-model="draft.expiresAt" type="datetime-local" />
         </div>
       </div>
       <div class="field">
-        <label for="r-reason">Reason (required, shown in the audit log)</label>
+        <label for="r-reason"
+          >Reason (required, shown in the audit log) <InfoTip :text="TIPS.reason" label="About the reason"
+        /></label>
         <input id="r-reason" v-model="draft.reason" placeholder="Nightly media snapshots" />
       </div>
       <div class="field check">
-        <label><input v-model="draft.enabled" type="checkbox" /> Enabled</label>
+        <label
+          ><input v-model="draft.enabled" type="checkbox" /> Enabled
+          <InfoTip :text="TIPS.enabled" label="About enabled"
+        /></label>
       </div>
       <p v-if="draft.note" class="alert error" role="alert">{{ draft.note }}</p>
       <template #footer>
@@ -469,9 +500,18 @@ watch(draft, (d) => {
   color: var(--warning-text);
   margin-top: 4px;
 }
+.field-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+.field-head label {
+  margin-bottom: 0;
+}
 .any {
-  float: right;
-  margin: -2px 0 0;
+  align-items: center;
 }
 .off td {
   opacity: 0.55;

@@ -5,7 +5,7 @@ import PageHeader from '../../components/PageHeader.vue';
 const route = useRoute();
 const tabs = [
   { path: 'mcp', label: 'MCP access' },
-  { path: 'security', label: 'Sign-in & security' },
+  { path: 'security', label: 'Admin UI settings' },
   { path: 'users', label: 'Users' },
   { path: 'notifications', label: 'Notifications' },
   { path: 'profile', label: 'My profile' },

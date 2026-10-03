@@ -1,4 +1,5 @@
-/* Synoikia design tokens (tokens.json, v1). Light theme first; dark follows the OS setting. */
+/* Synoikia design tokens (tokens.json, v1). Light theme first; dark follows the OS setting unless the user
+   picked one on My profile (`data-theme` on <html>, see theme.ts). */
 @import '@fontsource/fraunces/latin-600.css';
 @import '@fontsource/ibm-plex-sans/latin-400.css';
 @import '@fontsource/ibm-plex-sans/latin-500.css';
@@ -61,7 +62,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme='light']) {
     color-scheme: dark;
     --surface-100: #14110e;
     --surface-nested: #181410;
@@ -94,6 +95,40 @@
     --shadow-md: 0 4px 12px rgb(0 0 0 / 40%);
     --shadow-lg: 0 12px 32px rgb(0 0 0 / 50%);
   }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --surface-100: #14110e;
+  --surface-nested: #181410;
+  --surface-200: #1d1914;
+  --surface-300: #262019;
+  --border: #3a3026;
+  --border-strong: #4d4030;
+  --ink: #f2e9db;
+  --ink-muted: #b8ab98;
+  --ink-faint: #877a68;
+  --brand: #d97250;
+  --brand-strong: #e88a63;
+  --brand-subtle: #3a231a;
+  --accent: #8fae8a;
+  --accent-strong: #a9c7a3;
+  --accent-subtle: #212b21;
+  --gold: #d9a94f;
+  --success: #7fc17f;
+  --success-subtle: #1c2a1c;
+  --warning: #e0b355;
+  --warning-subtle: #2e2617;
+  --danger: #e8685f;
+  --danger-subtle: #2e1c1b;
+  --link: var(--brand);
+  --on-brand: #14110e;
+  --success-text: var(--success);
+  --warning-text: var(--warning);
+  --danger-text: var(--danger);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 30%);
+  --shadow-md: 0 4px 12px rgb(0 0 0 / 40%);
+  --shadow-lg: 0 12px 32px rgb(0 0 0 / 50%);
 }
 
 body {
@@ -312,8 +347,8 @@ select.select:focus {
 }
 
 .page {
-  padding: 32px 40px 48px;
-  max-width: 1180px;
+  /* Centered in the area beside the sidebar, with 10% on each side. */
+  padding: 32px 10% 48px;
   width: 100%;
 }
 
@@ -483,9 +518,12 @@ select.select:focus {
 .tabs {
   display: flex;
   gap: 2px;
-  border-bottom: 1px solid var(--border);
+  /* The base line is a shadow, not a border: links overlay it without overflowing the box,
+     so the scroll container shows no scrollbar until the tabs really don't fit. */
+  box-shadow: inset 0 -1px 0 var(--border);
   margin-bottom: 20px;
   overflow-x: auto;
+  overflow-y: hidden;
 }
 .tabs a,
 .tabs button {
@@ -497,7 +535,6 @@ select.select:focus {
   border: none;
   background: none;
   border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
   cursor: pointer;
   font-weight: 600;
   white-space: nowrap;
